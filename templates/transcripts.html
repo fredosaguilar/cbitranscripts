@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+
+{% block title %}Transcripts{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="/static/css/transcripts.css">
+{% endblock %}
+
+{% block content %}
+
+<section class="transcript-page">
+    <div class="page-header">
+        <div>
+            <h2>Transcript List</h2>
+            <p class="page-subtitle">A compact view designed to keep every column visible without horizontal scrolling.</p>
+        </div>
+    </div>
+
+{% if transcripts and transcripts|length > 0 %}
+
+<div class="table-container">
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Owner ID</th>
+                <th>Client Name</th>
+                <th>Client Number</th>
+                <th>Recording ID</th>
+                <th>Agency Zoom Task IDs</th>
+                <th>File Link</th>
+                <th>Transcript</th>
+                <th>Status</th>
+                <th>View Details</th>
+                <th>Delete</th>
+            </tr>
+        </thead>
+
+        <tbody>
+            {% for item in transcripts %}
+            <tr>
+                <td>{{ loop.index }}</td>
+                <td>{{ item.owner_id }}</td>
+                <td>{{ item.client_name or "-" }}</td>
+                <td>{{ item.client_number or "-" }}</td>
+                <td>{{ item.recordingID or "-" }}</td>
+                <td>{{ (item.agency_zoom_task_ids or "-").replace('\n', ', ') }}</td>
+
+                <td>
+                    <a href="{{ item.file_link }}" target="_blank">View File</a>
+                </td>
+
+
+                <td class="transcription">
+                    {% if item.transcription %}
+                        {{ item.transcription[:30] }}...
+                    {% else %}
+                        <i>No transcript</i>
+                    {% endif %}
+                </td>
+
+                <td>
+                    <span class="status {{ item.status.value }}">{{ item.status.value }}</span>
+                </td>
+
+                <td>
+                    <a href="/user/transcripts/{{ item.id }}" class="detail-link">View Details</a>
+                </td>
+
+                <td>
+                    <form method="post" action="/admin/transcripts/{{ item.id }}/delete" onsubmit="return confirm('Delete this transcript?');">
+                        <button type="submit" class="danger-button danger-button-small">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% else %}
+
+<div class="empty">No transcript records available</div>
+
+{% endif %}
+</section>
+
+{% endblock %}

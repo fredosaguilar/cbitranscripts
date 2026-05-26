@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="/static/css/dashboard.css">
+{% endblock %}
+
+{% block content %}
+
+{% if request.query_params.get("updated") %}
+<div class="notice success">User updated successfully</div>
+{% endif %}
+
+<h2>User Tokens</h2>
+
+{% if users_tokens and users_tokens|length > 0 %}
+
+<div class="table-container">
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Owner Id</th>
+                <th>Token</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for user in users_tokens %}
+            <tr>
+                <td>{{ loop.index }}</td>
+                <td>{{ user.user_id }}</td>
+                <td class="token">{{ user.token }}</td>
+                <td class="actions">
+                    <a href="/admin/edit-user/{{ user.token_id }}" class="edit-btn">Edit</a>
+                    <a href="/admin/delete-user/{{ user.token_id }}" class="delete-btn" onclick="return confirm('Are you sure you want to delete this user?');">Delete</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% else %}
+
+<div class="empty">No token details available</div>
+
+{% endif %}
+
+{% endblock %}

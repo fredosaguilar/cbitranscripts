@@ -1,0 +1,10 @@
+.venv
+
+_pycache__
+*.pyc
+
+.env
+
+create_admin.py
+
+audio_cache/

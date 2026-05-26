@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+
+{% block title %}Error{% endblock %}
+
+{% block content %}
+
+<h2>Error</h2>
+
+<div class="error">{{ error_message or "An unexpected error occurred." }}</div>
+
+<div style="margin-top: 24px;">
+    <a href="{{ back_url or '/' }}" class="button">Go back</a>
+</div>
+
+{% endblock %}

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}Add User{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="/static/css/add_user.css">
+{% endblock %}
+
+{% block content %}
+
+<h2>Add User</h2>
+
+<div class="form-container surface">
+    <form method="post" action="/admin/add-user">
+
+        <label>User ID</label>
+        <input type="text" name="user_id" placeholder="Enter user ID" required>
+
+        <label>User Token</label>
+        <input type="text" name="user_token" placeholder="Enter user token" required>
+
+        <button type="submit">Add User</button>
+    </form>
+</div>
+
+{% endblock %}

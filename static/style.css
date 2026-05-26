@@ -1,0 +1,45 @@
+body {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 24px;
+}
+
+.login-container {
+    width: min(420px, 100%);
+    padding: 36px;
+    text-align: left;
+}
+
+.login-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    background: rgba(45, 108, 223, 0.1);
+    color: var(--accent);
+    margin-bottom: 16px;
+}
+
+.login-subtitle {
+    color: var(--muted);
+    margin-bottom: 20px;
+}
+
+.login-container form {
+    gap: 14px;
+}
+
+.login-container button {
+    width: 100%;
+    margin-top: 6px;
+}
+
+.error {
+    margin-top: 12px;
+}

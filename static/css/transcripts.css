@@ -1,0 +1,137 @@
+.transcript-page {
+    width: min(calc(100vw - 56px), 1760px);
+    margin-left: 50%;
+    transform: translateX(-50%);
+}
+
+.page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+.page-subtitle {
+    max-width: 760px;
+    color: var(--muted);
+    font-size: 14px;
+}
+
+.table-container {
+    margin-top: 16px;
+    padding: 12px;
+    overflow-x: hidden;
+}
+
+.table-container table {
+    table-layout: fixed;
+    min-width: 0;
+}
+
+.table-container th,
+.table-container td {
+    padding: 12px 10px;
+    font-size: 12px;
+    line-height: 1.35;
+    vertical-align: top;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.table-container th {
+    font-size: 11px;
+}
+
+.table-container td:first-child,
+.table-container th:first-child {
+    width: 44px;
+}
+
+.status {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.status.pending {
+    background: rgba(217, 119, 6, 0.16);
+    color: #b45309;
+}
+
+.status.approved {
+    background: rgba(30, 158, 106, 0.14);
+    color: #15825a;
+}
+
+.transcription {
+    max-width: none;
+    font-size: 12px;
+    color: var(--muted);
+}
+
+.detail-link {
+    color: var(--accent);
+    font-weight: 600;
+    text-decoration: none;
+    font-size: 12px;
+}
+
+.detail-link:hover {
+    text-decoration: underline;
+}
+
+.danger-button {
+    background: #d64545;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 12px;
+    cursor: pointer;
+}
+
+.danger-button:hover {
+    background: #b91c1c;
+}
+
+.danger-button-small {
+    padding: 6px 10px;
+    font-size: 12px;
+}
+
+.table-container form {
+    gap: 0;
+}
+
+@media (min-width: 1280px) {
+    .transcript-page {
+        width: min(calc(100vw - 72px), 1760px);
+    }
+}
+
+@media (max-width: 1024px) {
+    .transcript-page {
+        width: 100%;
+        margin-left: 0;
+        transform: none;
+    }
+
+    .page-header {
+        align-items: flex-start;
+    }
+
+    .table-container {
+        overflow-x: auto;
+    }
+
+    .table-container table {
+        min-width: 960px;
+    }
+}

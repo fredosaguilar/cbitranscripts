@@ -1,0 +1,353 @@
+{% extends "base.html" %}
+
+{% block title %}Transcript Detail{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="/static/css/transcript_detail.css">
+{% endblock %}
+
+{% block content %}
+
+<h2>Transcript Detail</h2>
+
+{% if transcript %}
+
+{% if error_message %}
+<div class="error">{{ error_message }}</div>
+{% endif %}
+
+<div class="card surface">
+
+    <div class="section">
+        <h3 class="section-title">Call Audio</h3>
+        {% if transcript.file_link or transcript.recordingID %}
+        <div class="audio-player-card">
+            <audio controls preload="none" class="audio-player" src="/api/transcripts/{{ transcript.id }}/audio">
+                Your browser does not support audio playback.
+            </audio>
+            <p class="audio-help">
+                Audio is streamed through the app so RingCentral recording links and recording content endpoints can be
+                played here.
+                {% if transcript.file_link %}
+                <a href="{{ transcript.file_link }}" target="_blank" rel="noopener noreferrer">Open source file</a>
+                {% endif %}
+            </p>
+        </div>
+        {% else %}
+        <p class="audio-help">No audio file is attached to this transcript.</p>
+        {% endif %}
+    </div>
+
+    <div class="section">
+        <h3 class="section-title">Display</h3>
+        <div class="meta-grid">
+            <p><b>ID:</b> {{ transcript.id }}</p>
+            <p><b>Owner ID:</b> {{ transcript.owner_id }}</p>
+            <p><b>Client Name:</b> {{ transcript.client_name or "-" }}</p>
+            <p><b>Client Number:</b> {{ transcript.client_number or "-" }}</p>
+            <p><b>Policy Type:</b> {{ transcript.policy_type or "-" }}</p>
+            <p><b>Customer Sentiment:</b> {{ transcript.customer_sentiment or "-" }}</p>
+            <p><b>Follow Up Needed:</b>
+                {% if transcript.follow_up_needed is not none %}
+                {{ "Yes" if transcript.follow_up_needed else "No" }}
+                {% else %}
+                -
+                {% endif %}
+            </p>
+            <p><b>Recording ID:</b> {{ transcript.recordingID or "-" }}</p>
+            <p>
+                <b>Agency Zoom Task IDs:</b>
+                {% if transcript.agency_zoom_task_ids %}
+                {{ transcript.agency_zoom_task_ids.replace('\n', ', ') }}
+                {% else %}
+                -
+                {% endif %}
+            </p>
+            <p>
+                <b>File:</b>
+                <a href="{{ transcript.file_link }}" target="_blank">Open File</a>
+            </p>
+            <p>
+                <b>Status:</b>
+                <span class="status {{ transcript.status.value }}">
+                    {{ transcript.status.value|capitalize }}
+                </span>
+            </p>
+        </div>
+    </div>
+
+    <div class="section">
+        <h3 class="section-title">Call Metadata</h3>
+        <div class="meta-grid">
+            <p><b>Caller Number:</b> {{ transcript.caller_number or "-" }}</p>
+            <p><b>From Name:</b> {{ transcript.from_name or "-" }}</p>
+            <p><b>Usage Type:</b> {{ transcript.usage_type or "-" }}</p>
+            <p><b>Usage Seconds:</b> {{ transcript.usage_sec if transcript.usage_sec is not none else "-" }}</p>
+            <p><b>Start Time:</b> {{ transcript.start_time or "-" }}</p>
+            <p><b>Call Type:</b> {{ transcript.call_type or "-" }}</p>
+            <p><b>Direction:</b> {{ transcript.direction or "-" }}</p>
+            <p><b>To Phone Number:</b> {{ transcript.to_phoneNumber or "-" }}</p>
+            <p><b>To Name:</b> {{ transcript.to_name or "-" }}</p>
+            <p><b>Created At:</b> {{ transcript.created_at or "-" }}</p>
+        </div>
+    </div>
+
+    <div class="section">
+        <h3 class="section-title">AI Extraction Fields</h3>
+        <p style="margin-bottom: 12px;"><b>Confidence Score:</b> {{ transcript.confidence_score if
+            transcript.confidence_score is not none else "-" }}</p>
+
+        <label class="field-label">Insured Intent</label>
+        <div class="transcription-box">{{ transcript.insured_intent or "No data available." }}</div>
+
+        <label class="field-label">Material Risk Facts</label>
+        <div class="transcription-box">{{ transcript.material_risk_facts or "No data available." }}</div>
+
+        <label class="field-label">Coverage Discussed</label>
+        <div class="transcription-box">{{ transcript.coverage_discussed or "No data available." }}</div>
+
+        <label class="field-label">Monetary Values</label>
+        <div class="transcription-box">{{ transcript.monetary_values or "No data available." }}</div>
+
+        <label class="field-label">Options Presented</label>
+        <div class="transcription-box">{{ transcript.options_presented or "No data available." }}</div>
+
+        <label class="field-label">Client Selection</label>
+        <div class="transcription-box">{{ transcript.client_selection or "No data available." }}</div>
+
+        <label class="field-label">Agent Recommendation</label>
+        <div class="transcription-box">{{ transcript.agent_recommendation or "No data available." }}</div>
+
+        <label class="field-label">E&amp;O Red Flags</label>
+        <div class="transcription-box">{{ transcript.eo_red_flags or "No data available." }}</div>
+
+        <label class="field-label">Agent Statements (Liability)</label>
+        <div class="transcription-box">{{ transcript.agent_statements_liability or "No data available." }}</div>
+
+        <label class="field-label">Missing Information</label>
+        <div class="transcription-box">{{ transcript.missing_information or "No data available." }}</div>
+    </div>
+
+    <div class="section">
+        <h3 class="section-title">Edit</h3>
+        <label class="field-label">Transcription</label>
+        <textarea id="transcriptionInput" rows="6">{{ transcript.transcription }}</textarea>
+
+        <label class="field-label">Reason For Call</label>
+        <textarea id="reasonForCallInput" rows="4">{{ transcript.reason_for_call }}</textarea>
+
+        <label class="field-label">Key Points</label>
+        <textarea id="keyPointsInput" rows="4">{{ transcript.key_points }}</textarea>
+
+        <label class="field-label">Follow Up Task</label>
+        <div id="followUpTaskList" class="follow-up-task-list">
+            {% if transcript.follow_up_task %}
+            {% for task in transcript.follow_up_task.splitlines() %}
+            {% if task.strip() %}
+            <div class="follow-up-task-item">
+                <span class="task-text">{{ task.strip() }}</span>
+                <div class="task-actions">
+                    <button type="button" class="task-edit"
+                        onclick="editFollowUpTask('{{ task.strip()|e }}')">Edit</button>
+                    <button type="button" class="task-delete"
+                        onclick="deleteFollowUpTask('{{ task.strip()|e }}')">Delete</button>
+                </div>
+            </div>
+            {% endif %}
+            {% endfor %}
+            {% else %}
+            <div class="follow-up-empty">No follow-up tasks yet.</div>
+            {% endif %}
+        </div>
+        <div class="follow-up-add">
+            <input id="followUpTaskInput" type="text" placeholder="Add follow-up task">
+            <button type="button" onclick="addFollowUpTask()">Add Task</button>
+        </div>
+
+        <label class="field-label">CRM Note</label>
+        <textarea id="crmNoteInput" rows="4">{{ transcript.crm_note }}</textarea>
+
+        <button onclick="updateTranscription()">Save Updates</button>
+    </div>
+
+    <hr>
+
+    <form method="post" action="/user/transcripts/{{ transcript.id }}/update" onsubmit="return validateApprovalForm();">
+        <label>Update Status</label>
+        <select name="status" id="statusSelect">
+            <option value="pending" {% if transcript.status.value=="pending" %}selected{% endif %}>Pending</option>
+            <option value="approved" {% if transcript.status.value=="approved" %}selected{% endif %}>Approved</option>
+        </select>
+
+        <input type="hidden" id="followUpTaskExists" value="{{ '1' if transcript.follow_up_task else '0' }}">
+        <button type="submit">Update</button>
+    </form>
+
+    <hr>
+
+    <form method="post" action="/admin/transcripts/{{ transcript.id }}/delete"
+        onsubmit="return confirm('Delete this transcript?');">
+        <button type="submit" class="danger-button">Delete Transcript</button>
+    </form>
+
+</div>
+
+{% else %}
+
+<div class="error">Transcript not found</div>
+
+{% endif %}
+
+<div id="toast" class="toast"></div>
+
+<script>
+    async function updateTranscription() {
+        const text = document.getElementById("transcriptionInput").value;
+        const reasonForCall = document.getElementById("reasonForCallInput").value;
+        const keyPoints = document.getElementById("keyPointsInput").value;
+        const crmNote = document.getElementById("crmNoteInput").value;
+        const id = "{{ transcript.id }}";
+
+        try {
+            const response = await fetch(`/api/transcripts/${id}/transcription`, {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    transcription: text,
+                    reason_for_call: reasonForCall,
+                    key_points: keyPoints,
+                    crm_note: crmNote
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error("Failed to update");
+            }
+
+            const data = await response.json();
+
+            showToast("Transcript updated successfully");
+
+        } catch (error) {
+            showToast("Error updating transcription");
+        }
+    }
+
+    async function addFollowUpTask() {
+        const input = document.getElementById("followUpTaskInput");
+        const task = input.value.trim();
+        if (!task) {
+            showToast("Please enter a follow-up task");
+            return;
+        }
+
+        const id = "{{ transcript.id }}";
+        try {
+            const response = await fetch(`/api/transcripts/${id}/follow-up`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    action: "add",
+                    task
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error("Failed to add task");
+            }
+
+            input.value = "";
+            window.location.reload();
+        } catch (error) {
+            showToast("Error adding follow-up task");
+        }
+    }
+
+    async function deleteFollowUpTask(task) {
+        const id = "{{ transcript.id }}";
+        try {
+            const response = await fetch(`/api/transcripts/${id}/follow-up`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    action: "delete",
+                    task
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error("Failed to delete task");
+            }
+
+            window.location.reload();
+        } catch (error) {
+            showToast("Error deleting follow-up task");
+        }
+    }
+
+    async function editFollowUpTask(task) {
+        const newTask = prompt("Edit follow-up task:", task);
+        if (newTask === null) {
+            return;
+        }
+        const trimmed = newTask.trim();
+        if (!trimmed) {
+            showToast("Follow-up task cannot be empty");
+            return;
+        }
+
+        const id = "{{ transcript.id }}";
+        try {
+            const response = await fetch(`/api/transcripts/${id}/follow-up`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    action: "edit",
+                    task,
+                    new_task: trimmed
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error("Failed to edit task");
+            }
+
+            window.location.reload();
+        } catch (error) {
+            showToast("Error editing follow-up task");
+        }
+    }
+
+    function validateApprovalForm() {
+        const status = document.getElementById("statusSelect").value;
+        const crmNote = document.getElementById("crmNoteInput").value.trim();
+        const followUpTaskExists = document.getElementById("followUpTaskExists").value === "1";
+
+        if (status === "approved" && !followUpTaskExists && !crmNote) {
+            showToast("CRM note is required to approve this transcript.");
+            return false;
+        }
+
+        return true;
+    }
+
+    function showToast(message) {
+        const toast = document.getElementById("toast");
+        toast.innerText = message;
+        toast.style.display = "block";
+
+        setTimeout(() => {
+            toast.style.display = "none";
+        }, 3000);
+    }
+</script>
+
+{% endblock %}

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}Edit User{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="/static/css/edit_user.css">
+{% endblock %}
+
+{% block content %}
+
+<h2>Edit User Token</h2>
+
+<div class="form-container surface">
+
+    {% if user %}
+    <form method="post" action="/admin/edit-user/{{ user.token_id }}">
+
+        <label>User ID</label>
+        <input type="text" value="{{ user.user_id }}" readonly>
+
+        <label>User Token</label>
+        <input type="text" name="user_token" value="{{ user.token }}" required>
+
+        <div class="btn-group">
+            <button type="submit">Update</button>
+            <a href="/admin/dashboard" class="cancel-btn">Cancel</a>
+        </div>
+
+    </form>
+    {% else %}
+        <div class="error">User not found</div>
+    {% endif %}
+
+</div>
+
+{% endblock %}
