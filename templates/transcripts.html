@@ -11,8 +11,8 @@
 <section class="transcript-page">
     <div class="page-header">
         <div>
-            <h2>Transcript List</h2>
-            <p class="page-subtitle">A compact view designed to keep every column visible without horizontal scrolling.</p>
+            <h2>Transcriptions</h2>
+            <p class="page-subtitle">Call recordings processed and analyzed by AI.</p>
         </div>
         <div class="bulk-actions">
             <button id="deleteSelectedBtn" class="danger-button" onclick="deleteSelected()" disabled>
@@ -20,6 +20,27 @@
             </button>
         </div>
     </div>
+
+{% if transcripts and transcripts|length > 0 %}
+
+<div class="stats-row">
+    <div class="stat-card">
+        <div class="stat-label">Total</div>
+        <div class="stat-value">{{ transcripts|length }}</div>
+    </div>
+    <div class="stat-card teal">
+        <div class="stat-label">Approved</div>
+        <div class="stat-value">{{ transcripts|selectattr('status.value','equalto','approved')|list|length }}</div>
+    </div>
+    <div class="stat-card gold">
+        <div class="stat-label">Pending</div>
+        <div class="stat-value">{{ transcripts|selectattr('status.value','equalto','pending')|list|length }}</div>
+    </div>
+</div>
+
+<div class="search-bar">
+    <input type="text" id="searchInput" placeholder="Search by client name, number, or recording ID…" oninput="filterTable()">
+</div>
 
 {% if transcripts and transcripts|length > 0 %}
 
@@ -94,9 +115,11 @@
 </div>
 
 {% else %}
+<div class="empty">No results match your search.</div>
+{% endif %}
 
-<div class="empty">No transcript records available</div>
-
+{% else %}
+<div class="empty">No transcript records available yet.</div>
 {% endif %}
 </section>
 
@@ -137,6 +160,13 @@
 
         document.body.appendChild(form);
         form.submit();
+    }
+
+    function filterTable() {
+        const q = document.getElementById('searchInput').value.toLowerCase();
+        document.querySelectorAll('tbody tr').forEach(row => {
+            row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
+        });
     }
 
     async function assignTranscript(id, userId) {

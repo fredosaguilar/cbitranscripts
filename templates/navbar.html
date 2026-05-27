@@ -1,12 +1,15 @@
 <nav class="navbar">
     <div class="nav-left">
-        <h3>Admin Panel</h3>
+        <div class="nav-logo">CBI</div>
+        <div>
+            <h3>Transcripts</h3>
+        </div>
     </div>
 
     <div class="nav-right">
-        <a href="/admin/dashboard">Dashboard</a>
-        <a href="/admin/add-user">Add User</a>
-        <a href="/admin/transcripts">Transcription</a>
-        <a href="/logout">Logout</a>
+        <a href="/admin/dashboard" class="{{ 'active' if request.url.path == '/admin/dashboard' else '' }}">Dashboard</a>
+        <a href="/admin/add-user" class="{{ 'active' if request.url.path == '/admin/add-user' else '' }}">Add User</a>
+        <a href="/admin/transcripts" class="{{ 'active' if request.url.path == '/admin/transcripts' else '' }}">Transcriptions</a>
+        <a href="/logout" class="logout">Logout</a>
     </div>
 </nav>
