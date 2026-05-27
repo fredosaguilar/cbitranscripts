@@ -110,6 +110,39 @@
     gap: 0;
 }
 
+.bulk-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+#deleteSelectedBtn:disabled {
+    background: #ccc;
+    cursor: not-allowed;
+}
+
+.assign-select {
+    font-size: 11px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    border: 1px solid var(--border, #d1d5db);
+    background: var(--surface, #fff);
+    color: var(--text, #111);
+    max-width: 130px;
+    cursor: pointer;
+}
+
+.assign-select:focus {
+    outline: none;
+    border-color: var(--accent, #0ea5e9);
+}
+
+.row-checkbox {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
 @media (min-width: 1280px) {
     .transcript-page {
         width: min(calc(100vw - 72px), 1760px);

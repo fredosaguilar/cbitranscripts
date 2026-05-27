@@ -85,6 +85,7 @@ class TranscriptResponse(Base):
     agent_statements_liability = Column(Text, nullable=True)
     missing_information = Column(Text, nullable=True)
     confidence_score = Column(Integer, nullable=True)
+    assigned_to = Column(String, nullable=True)
 
     created_at = Column(TIMESTAMP, default=datetime.utcnow)
 

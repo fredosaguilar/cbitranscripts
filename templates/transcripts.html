@@ -14,6 +14,11 @@
             <h2>Transcript List</h2>
             <p class="page-subtitle">A compact view designed to keep every column visible without horizontal scrolling.</p>
         </div>
+        <div class="bulk-actions">
+            <button id="deleteSelectedBtn" class="danger-button" onclick="deleteSelected()" disabled>
+                Delete Selected (<span id="selectedCount">0</span>)
+            </button>
+        </div>
     </div>
 
 {% if transcripts and transcripts|length > 0 %}
@@ -22,7 +27,9 @@
     <table>
         <thead>
             <tr>
+                <th><input type="checkbox" id="selectAll" onchange="toggleAll(this)" title="Select all"></th>
                 <th>#</th>
+                <th>Assigned To</th>
                 <th>Owner ID</th>
                 <th>Client Name</th>
                 <th>Client Number</th>
@@ -39,7 +46,16 @@
         <tbody>
             {% for item in transcripts %}
             <tr>
+                <td><input type="checkbox" class="row-checkbox" value="{{ item.id }}" onchange="updateCount()"></td>
                 <td>{{ loop.index }}</td>
+                <td>
+                    <select class="assign-select" onchange="assignTranscript('{{ item.id }}', this.value)">
+                        <option value="">— unassigned —</option>
+                        {% for uid in user_ids %}
+                        <option value="{{ uid }}" {% if item.assigned_to == uid %}selected{% endif %}>{{ uid }}</option>
+                        {% endfor %}
+                    </select>
+                </td>
                 <td>{{ item.owner_id }}</td>
                 <td>{{ item.client_name or "-" }}</td>
                 <td>{{ item.client_number or "-" }}</td>
@@ -49,7 +65,6 @@
                 <td>
                     <a href="{{ item.file_link }}" target="_blank">View File</a>
                 </td>
-
 
                 <td class="transcription">
                     {% if item.transcription %}
@@ -84,5 +99,59 @@
 
 {% endif %}
 </section>
+
+<script>
+    function toggleAll(checkbox) {
+        document.querySelectorAll('.row-checkbox').forEach(cb => {
+            cb.checked = checkbox.checked;
+        });
+        updateCount();
+    }
+
+    function updateCount() {
+        const checked = document.querySelectorAll('.row-checkbox:checked').length;
+        document.getElementById('selectedCount').textContent = checked;
+        document.getElementById('deleteSelectedBtn').disabled = checked === 0;
+
+        const total = document.querySelectorAll('.row-checkbox').length;
+        document.getElementById('selectAll').checked = checked === total && total > 0;
+        document.getElementById('selectAll').indeterminate = checked > 0 && checked < total;
+    }
+
+    function deleteSelected() {
+        const checked = [...document.querySelectorAll('.row-checkbox:checked')];
+        if (checked.length === 0) return;
+        if (!confirm(`Delete ${checked.length} transcript(s)? This cannot be undone.`)) return;
+
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = '/admin/transcripts/bulk-delete';
+
+        checked.forEach(cb => {
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'ids';
+            input.value = cb.value;
+            form.appendChild(input);
+        });
+
+        document.body.appendChild(form);
+        form.submit();
+    }
+
+    async function assignTranscript(id, userId) {
+        const formData = new FormData();
+        formData.append('assigned_to', userId);
+        try {
+            const res = await fetch(`/admin/transcripts/${id}/assign`, {
+                method: 'POST',
+                body: formData
+            });
+            if (!res.ok) throw new Error();
+        } catch (e) {
+            alert('Failed to save assignment. Please try again.');
+        }
+    }
+</script>
 
 {% endblock %}

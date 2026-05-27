@@ -7,6 +7,7 @@ import threading
 import time
 
 import requests
+from typing import List, Optional
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
@@ -525,7 +526,40 @@ def list_transcripts(request: Request, db: Session = Depends(get_db)):
         )
         .all()
     )
-    return templates.TemplateResponse(request, "transcripts.html", {"request": request, "transcripts": transcripts})
+    users = db.query(models.UserToken.user_id).distinct().all()
+    user_ids = sorted([u.user_id for u in users])
+    return templates.TemplateResponse(request, "transcripts.html", {
+        "request": request,
+        "transcripts": transcripts,
+        "user_ids": user_ids,
+    })
+
+
+@app.post("/admin/transcripts/bulk-delete")
+# Delete multiple transcript records at once.
+def bulk_delete_transcripts(request: Request, ids: Optional[List[str]] = Form(None), db: Session = Depends(get_db)):
+    if not get_logged_in_admin(request, db):
+        return RedirectResponse(url="/", status_code=303)
+
+    if ids:
+        for id in ids:
+            transcript = db.query(models.TranscriptResponse).filter(models.TranscriptResponse.id == id).first()
+            if transcript:
+                delete_local_audio_file(getattr(transcript, "local_audio_path", None))
+                db.delete(transcript)
+        db.commit()
+
+    return RedirectResponse(url="/admin/transcripts", status_code=303)
+
+
+@app.post("/admin/transcripts/{id}/assign")
+# Assign a transcript to a user.
+def assign_transcript(id: str, assigned_to: str = Form(""), db: Session = Depends(get_db)):
+    transcript = db.query(models.TranscriptResponse).filter(models.TranscriptResponse.id == id).first()
+    if transcript:
+        transcript.assigned_to = assigned_to if assigned_to else None
+        db.commit()
+    return JSONResponse(content={"status": "ok"})
 
 
 @app.post("/admin/transcripts/{id}/delete")
