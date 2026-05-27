@@ -42,6 +42,44 @@ models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Admin Panel API")
 
+
+@app.on_event("startup")
+def on_startup():
+    from sqlalchemy import text
+    migrations = [
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS assigned_to VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS caller_number VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS from_name VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS usage_type VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS usage_sec INTEGER",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS start_time TIMESTAMP",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS call_type VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS direction VARCHAR",
+        'ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS "to_phoneNumber" VARCHAR',
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS to_name VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS local_audio_path VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS insured_intent TEXT",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS material_risk_facts TEXT",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS coverage_discussed TEXT",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS monetary_values TEXT",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS options_presented TEXT",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS client_selection TEXT",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agent_recommendation TEXT",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS eo_red_flags TEXT",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agent_statements_liability TEXT",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS missing_information TEXT",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS confidence_score INTEGER",
+    ]
+    with engine.connect() as conn:
+        for sql in migrations:
+            try:
+                conn.execute(text(sql))
+                conn.commit()
+                logging.info(f"Migration OK: {sql[:60]}")
+            except Exception as e:
+                logging.error(f"Migration failed: {sql[:60]} — {e}")
+                conn.rollback()
+
 UNKNOWN_VALUE = "Unknown"
 
 
