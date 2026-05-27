@@ -2,6 +2,8 @@ from datetime import datetime, timezone
 import json
 import logging
 import os
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 import re
 import threading
 import time
