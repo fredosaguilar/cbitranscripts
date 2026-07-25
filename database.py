@@ -51,6 +51,10 @@ def run_safe_migrations():
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS assigned_to VARCHAR",
         # Original-language transcript (English translation lives in transcription)
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS transcription_original TEXT",
+        # Agency Zoom customer/lead match
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_id VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_type VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_name VARCHAR",
     ]
     try:
         with engine.connect() as conn:
