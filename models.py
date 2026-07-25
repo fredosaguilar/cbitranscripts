@@ -75,6 +75,7 @@ class TranscriptResponse(Base):
     extension_number = Column(String, nullable=True)
     extension_name = Column(String, nullable=True)
     queue_name = Column(String, nullable=True)
+    original_language = Column(String, nullable=True)
     usage_type = Column(String, nullable=True)
     usage_sec = Column(Integer, nullable=True)
     start_time = Column(TIMESTAMP, nullable=True)

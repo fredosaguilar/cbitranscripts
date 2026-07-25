@@ -59,6 +59,7 @@ def run_safe_migrations():
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_number VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_name VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS queue_name VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS original_language VARCHAR",
         # Per-user email for call assignment notifications
         "ALTER TABLE users_tokens ADD COLUMN IF NOT EXISTS email VARCHAR",
         "ALTER TABLE users_tokens ALTER COLUMN token DROP NOT NULL",
