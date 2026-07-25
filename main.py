@@ -83,6 +83,8 @@ def on_startup():
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_id VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_type VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_name VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_number VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_name VARCHAR",
     ]
     with engine.connect() as conn:
         for sql in migrations:
@@ -167,6 +169,10 @@ AUTO_TASK_MAX_AGE_DAYS = int(os.getenv("AUTO_TASK_MAX_AGE_DAYS", "7"))
 
 # Cached audio retention
 AUDIO_CACHE_RETENTION_DAYS = int(os.getenv("AUDIO_CACHE_RETENTION_DAYS", "90"))
+
+# Use the RingCentral extension as owner_id when the workflow reports one, so
+# agents sharing a phone number are told apart. Set false to keep phone numbers.
+OWNER_ID_FROM_EXTENSION = _env_flag("OWNER_ID_FROM_EXTENSION")
 
 FRONTEND_BASE_URL = (os.getenv("FRONTEND_BASE_URL") or "").rstrip("/")
 
@@ -1165,9 +1171,15 @@ def create_transcript(
     db: Session = Depends(get_db),
 ):
     is_outbound = (data.direction or "").strip().lower() == "outbound"
-    resolved_owner_id = _clean_string(data.caller_number) if is_outbound else _clean_string(data.owner_id) # default  owner id   assume the call is inbound
-    if not resolved_owner_id:
-        resolved_owner_id = _clean_string(data.owner_id) or _clean_string(data.to_phoneNumber) or UNKNOWN_VALUE
+    # On a shared line every call carries the same phone number, so the extension
+    # that handled it is what actually identifies the agent.
+    extension_number = _clean_string(data.extension_number)
+    if OWNER_ID_FROM_EXTENSION and extension_number:
+        resolved_owner_id = extension_number
+    else:
+        resolved_owner_id = _clean_string(data.caller_number) if is_outbound else _clean_string(data.owner_id) # default  owner id   assume the call is inbound
+        if not resolved_owner_id:
+            resolved_owner_id = _clean_string(data.owner_id) or _clean_string(data.to_phoneNumber) or UNKNOWN_VALUE
 
     
     # handle the client  number
@@ -1213,6 +1225,8 @@ def create_transcript(
         recordingID=normalized_recording_id,
         caller_number=data.caller_number,
         from_name=data.from_name,
+        extension_number=extension_number,
+        extension_name=data.extension_name,
         usage_type=data.usage_type,
         usage_sec=data.usage_sec,
         start_time=_parse_iso_datetime(data.start_time),

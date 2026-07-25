@@ -71,6 +71,8 @@ class TranscriptResponse(Base):
     local_audio_path = Column(String, nullable=True)
     caller_number = Column(String, nullable=True)
     from_name = Column(String, nullable=True)
+    extension_number = Column(String, nullable=True)
+    extension_name = Column(String, nullable=True)
     usage_type = Column(String, nullable=True)
     usage_sec = Column(Integer, nullable=True)
     start_time = Column(TIMESTAMP, nullable=True)
