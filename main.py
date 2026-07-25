@@ -1237,10 +1237,75 @@ def bulk_delete_transcripts(request: Request, ids: Optional[List[str]] = Form(No
 # Assign a transcript to a user.
 def assign_transcript(id: str, assigned_to: str = Form(""), db: Session = Depends(get_db)):
     transcript = db.query(models.TranscriptResponse).filter(models.TranscriptResponse.id == id).first()
-    if transcript:
-        transcript.assigned_to = assigned_to if assigned_to else None
-        db.commit()
-    return JSONResponse(content={"status": "ok"})
+    if not transcript:
+        return JSONResponse(content={"status": "ok", "emailed": False})
+
+    new_assignee = _clean_string(assigned_to)
+    changed = new_assignee != _clean_string(transcript.assigned_to)
+    transcript.assigned_to = new_assignee
+    db.commit()
+
+    # Assigning by hand should notify the agent, same as an automatic assignment
+    emailed = False
+    if ASSIGNMENT_EMAILS_ENABLED and changed and new_assignee:
+        user = db.query(models.UserToken).filter(models.UserToken.user_id == new_assignee).first()
+        recipient_email = _clean_string(getattr(user, "email", None))
+        if recipient_email:
+            try:
+                _send_assignment_email(transcript, recipient_email)
+                emailed = True
+            except Exception:
+                logger.exception("Failed to send assignment email for transcript %s", transcript.id)
+        else:
+            logger.info("No email on file for user %s; assignment email skipped", new_assignee)
+
+    return JSONResponse(content={"status": "ok", "emailed": emailed})
+
+
+@app.post("/admin/test-email")
+# Send a test message so email configuration can be checked without waiting for a call.
+def send_test_email(request: Request, user_id: str = Form(""), db: Session = Depends(get_db)):
+    if not get_logged_in_admin(request, db):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    if not alerts.is_smtp_configured():
+        return JSONResponse(status_code=400, content={
+            "status": "error",
+            "detail": "SMTP is not configured. Set SMTP_HOST, SMTP_USER and SMTP_PASSWORD in Railway.",
+        })
+
+    target = _clean_string(user_id)
+    query = db.query(models.UserToken).filter(models.UserToken.email.isnot(None))
+    if target:
+        query = query.filter(models.UserToken.user_id == target)
+    recipients = [(user.user_id, user.email) for user in query.all()]
+
+    if not recipients:
+        return JSONResponse(status_code=400, content={
+            "status": "error",
+            "detail": "No users have an email address yet. Add one on this page, "
+                      "or set EXTENSION_EMAIL_MAP in Railway.",
+        })
+
+    results = []
+    for extension, email in recipients:
+        # Send synchronously so the real SMTP error can be reported back
+        ok = alerts.send_email(
+            subject="Test email from CBI Transcripts",
+            body_text=(
+                f"This is a test message for extension {extension}.\n\n"
+                "If you received it, call assignment emails will reach you."
+            ),
+            to_addresses=[email],
+        )
+        results.append({"user_id": extension, "email": email, "sent": ok})
+
+    all_sent = all(item["sent"] for item in results)
+    return JSONResponse(status_code=200 if all_sent else 502, content={
+        "status": "ok" if all_sent else "error",
+        "results": results,
+        "detail": "" if all_sent else "SMTP rejected the message. Check the deploy logs for the exact error.",
+    })
 
 
 @app.get("/api/transcripts/{id}/agencyzoom/search")

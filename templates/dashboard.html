@@ -56,6 +56,29 @@
 
 <h2 style="margin-top:28px;">User Tokens</h2>
 
+<div style="display:flex; gap:10px; align-items:center; margin-bottom:12px; flex-wrap:wrap;">
+    <button type="button" onclick="sendTestEmail()">Send test email to all users</button>
+    <span id="testEmailResult" style="font-size:0.88rem;"></span>
+</div>
+
+<script>
+    async function sendTestEmail() {
+        const output = document.getElementById('testEmailResult');
+        output.textContent = 'Sending…';
+        try {
+            const res = await fetch('/admin/test-email', { method: 'POST', body: new FormData() });
+            const data = await res.json();
+            if (data.status === 'ok') {
+                output.textContent = 'Sent to: ' + data.results.map(r => r.email).join(', ');
+            } else {
+                output.textContent = data.detail || 'Could not send test email.';
+            }
+        } catch (e) {
+            output.textContent = 'Could not reach the server.';
+        }
+    }
+</script>
+
 {% if users_tokens and users_tokens|length > 0 %}
 
 <div class="table-container">
