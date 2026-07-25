@@ -85,6 +85,7 @@ def on_startup():
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_name VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_number VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_name VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS queue_name VARCHAR",
     ]
     with engine.connect() as conn:
         for sql in migrations:
@@ -1261,6 +1262,7 @@ def create_transcript(
         from_name=data.from_name,
         extension_number=extension_number,
         extension_name=data.extension_name,
+        queue_name=data.queue_name,
         usage_type=data.usage_type,
         usage_sec=data.usage_sec,
         start_time=_parse_iso_datetime(data.start_time),

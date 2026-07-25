@@ -86,6 +86,7 @@
                 {{ transcript.extension_name or "" }} (ext. {{ transcript.extension_number }})
                 {% else %}-{% endif %}
             </p>
+            <p><b>Arrived Via Queue:</b> {{ transcript.queue_name or "-" }}</p>
             <p><b>Usage Type:</b> {{ transcript.usage_type or "-" }}</p>
             <p><b>Usage Seconds:</b> {{ transcript.usage_sec if transcript.usage_sec is not none else "-" }}</p>
             <p><b>Start Time:</b> {{ transcript.start_time or "-" }}</p>
