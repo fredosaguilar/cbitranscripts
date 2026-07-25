@@ -86,6 +86,7 @@ def on_startup():
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_number VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_name VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS queue_name VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS original_language VARCHAR",
         "ALTER TABLE users_tokens ADD COLUMN IF NOT EXISTS email VARCHAR",
         # A user may be email-only, with no Pushover key
         "ALTER TABLE users_tokens ALTER COLUMN token DROP NOT NULL",
@@ -1429,6 +1430,7 @@ def create_transcript(
         extension_number=extension_number,
         extension_name=data.extension_name,
         queue_name=data.queue_name,
+        original_language=data.original_language,
         usage_type=data.usage_type,
         usage_sec=data.usage_sec,
         start_time=_parse_iso_datetime(data.start_time),

@@ -49,6 +49,7 @@ class TranscriptCreate(BaseModel):
     extension_number: Optional[str] = None
     extension_name: Optional[str] = None
     queue_name: Optional[str] = None
+    original_language: Optional[str] = None
     usage_type: Optional[str] = None
     usage_sec: Optional[int] = None
     start_time: Optional[str] = None
@@ -85,6 +86,7 @@ class TranscriptCreate(BaseModel):
         "extension_number",
         "extension_name",
         "queue_name",
+        "original_language",
         "usage_type",
         "start_time",
         "call_type",

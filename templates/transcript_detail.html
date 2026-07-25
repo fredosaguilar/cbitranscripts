@@ -157,8 +157,16 @@
 
     {% if transcript.transcription_original %}
     <div class="section">
-        <h3 class="section-title">Original Language Transcript</h3>
+        <h3 class="section-title">
+            Original Language Transcript
+            {% if transcript.original_language %}({{ transcript.original_language|title }}){% endif %}
+        </h3>
         <div class="transcription-box">{{ transcript.transcription_original }}</div>
+    </div>
+    {% elif transcript.original_language in ["english", "en"] %}
+    <div class="section">
+        <h3 class="section-title">Original Language Transcript</h3>
+        <div class="transcription-box">This call was spoken in English, so the transcript above is the original.</div>
     </div>
     {% endif %}
 
