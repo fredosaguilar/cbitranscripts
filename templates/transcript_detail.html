@@ -81,6 +81,11 @@
         <div class="meta-grid">
             <p><b>Caller Number:</b> {{ transcript.caller_number or "-" }}</p>
             <p><b>From Name:</b> {{ transcript.from_name or "-" }}</p>
+            <p><b>Handled By (Extension):</b>
+                {% if transcript.extension_number %}
+                {{ transcript.extension_name or "" }} (ext. {{ transcript.extension_number }})
+                {% else %}-{% endif %}
+            </p>
             <p><b>Usage Type:</b> {{ transcript.usage_type or "-" }}</p>
             <p><b>Usage Seconds:</b> {{ transcript.usage_sec if transcript.usage_sec is not none else "-" }}</p>
             <p><b>Start Time:</b> {{ transcript.start_time or "-" }}</p>
