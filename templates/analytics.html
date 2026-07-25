@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block title %}Analytics{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="/static/css/transcripts.css">
+<style>
+    .bar-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+    .bar-label { width: 160px; font-size: 0.85rem; text-align: right; flex-shrink: 0;
+                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .bar-track { flex: 1; background: rgba(128,128,128,0.15); border-radius: 4px; height: 18px; }
+    .bar-fill { background: #0f766e; height: 100%; border-radius: 4px; min-width: 2px; }
+    .bar-count { width: 48px; font-size: 0.85rem; }
+    .analytics-section { margin: 24px 0; }
+    .range-links a { margin-right: 12px; }
+    .range-links a.active { font-weight: 700; text-decoration: underline; }
+</style>
+{% endblock %}
+
+{% block content %}
+<section class="transcript-page">
+    <div class="page-header">
+        <div>
+            <h2>Call Analytics</h2>
+            <p class="page-subtitle">Last {{ days }} days of processed calls.</p>
+        </div>
+        <div class="range-links">
+            <a href="/admin/analytics?days=7" class="{{ 'active' if days == 7 else '' }}">7d</a>
+            <a href="/admin/analytics?days=30" class="{{ 'active' if days == 30 else '' }}">30d</a>
+            <a href="/admin/analytics?days=90" class="{{ 'active' if days == 90 else '' }}">90d</a>
+        </div>
+    </div>
+
+    <div class="stats-row">
+        <div class="stat-card">
+            <div class="stat-label">Calls Processed</div>
+            <div class="stat-value">{{ total_calls }}</div>
+        </div>
+        <div class="stat-card gold">
+            <div class="stat-label">E&amp;O Red Flags</div>
+            <div class="stat-value">{{ flagged_count }}</div>
+        </div>
+        <div class="stat-card teal">
+            <div class="stat-label">Follow-ups Needed</div>
+            <div class="stat-value">{{ follow_up_count }}</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Talk Minutes</div>
+            <div class="stat-value">{{ total_minutes }}</div>
+        </div>
+    </div>
+
+    <div class="analytics-section">
+        <h3 class="section-title">Calls Per Day</h3>
+        {% if daily_series %}
+            {% for day, count, pct in daily_series %}
+            <div class="bar-row">
+                <div class="bar-label">{{ day }}</div>
+                <div class="bar-track"><div class="bar-fill" style="width: {{ pct }}%;"></div></div>
+                <div class="bar-count">{{ count }}</div>
+            </div>
+            {% endfor %}
+        {% else %}
+            <div class="empty">No calls in this period.</div>
+        {% endif %}
+    </div>
+
+    <div class="analytics-section">
+        <h3 class="section-title">Reason For Call</h3>
+        {% for label, count, pct in reason_counts %}
+        <div class="bar-row">
+            <div class="bar-label">{{ label }}</div>
+            <div class="bar-track"><div class="bar-fill" style="width: {{ pct }}%;"></div></div>
+            <div class="bar-count">{{ count }}</div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="analytics-section">
+        <h3 class="section-title">Customer Sentiment</h3>
+        {% for label, count, pct in sentiment_counts %}
+        <div class="bar-row">
+            <div class="bar-label">{{ label }}</div>
+            <div class="bar-track"><div class="bar-fill" style="width: {{ pct }}%;"></div></div>
+            <div class="bar-count">{{ count }}</div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="analytics-section">
+        <h3 class="section-title">Calls By Line (Owner)</h3>
+        {% for label, count, pct in owner_counts %}
+        <div class="bar-row">
+            <div class="bar-label">{{ label }}</div>
+            <div class="bar-track"><div class="bar-fill" style="width: {{ pct }}%;"></div></div>
+            <div class="bar-count">{{ count }}</div>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endblock %}

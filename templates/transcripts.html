@@ -21,26 +21,45 @@
         </div>
     </div>
 
-{% if transcripts and transcripts|length > 0 %}
-
 <div class="stats-row">
     <div class="stat-card">
         <div class="stat-label">Total</div>
-        <div class="stat-value">{{ transcripts|length }}</div>
+        <div class="stat-value">{{ total_all }}</div>
     </div>
     <div class="stat-card teal">
         <div class="stat-label">Approved</div>
-        <div class="stat-value">{{ transcripts|selectattr('status.value','equalto','approved')|list|length }}</div>
+        <div class="stat-value">{{ approved_count }}</div>
     </div>
     <div class="stat-card gold">
         <div class="stat-label">Pending</div>
-        <div class="stat-value">{{ transcripts|selectattr('status.value','equalto','pending')|list|length }}</div>
+        <div class="stat-value">{{ pending_count }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Matching filters</div>
+        <div class="stat-value">{{ total_filtered }}</div>
     </div>
 </div>
 
-<div class="search-bar">
-    <input type="text" id="searchInput" placeholder="Search by client name, number, or recording ID…" oninput="filterTable()">
-</div>
+<form method="get" action="/admin/transcripts" class="search-bar" style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+    <input type="text" name="q" id="searchInput" value="{{ filters.q }}"
+           placeholder="Search client, number, recording ID…" style="flex:1; min-width:220px;">
+    <select name="status">
+        <option value="">All statuses</option>
+        <option value="pending" {% if filters.status == 'pending' %}selected{% endif %}>Pending</option>
+        <option value="approved" {% if filters.status == 'approved' %}selected{% endif %}>Approved</option>
+    </select>
+    <select name="assigned_to">
+        <option value="">All assignees</option>
+        <option value="unassigned" {% if filters.assigned_to == 'unassigned' %}selected{% endif %}>Unassigned</option>
+        {% for uid in user_ids %}
+        <option value="{{ uid }}" {% if filters.assigned_to == uid %}selected{% endif %}>{{ uid }}</option>
+        {% endfor %}
+    </select>
+    <input type="date" name="date_from" value="{{ filters.date_from }}" title="From date">
+    <input type="date" name="date_to" value="{{ filters.date_to }}" title="To date">
+    <button type="submit">Filter</button>
+    <a href="/admin/transcripts">Clear</a>
+</form>
 
 {% if transcripts and transcripts|length > 0 %}
 
@@ -68,7 +87,7 @@
             {% for item in transcripts %}
             <tr>
                 <td><input type="checkbox" class="row-checkbox" value="{{ item.id }}" onchange="updateCount()"></td>
-                <td>{{ loop.index }}</td>
+                <td>{{ row_offset + loop.index }}</td>
                 <td>
                     <select class="assign-select" onchange="assignTranscript('{{ item.id }}', this.value)">
                         <option value="">— unassigned —</option>
@@ -114,12 +133,20 @@
     </table>
 </div>
 
-{% else %}
-<div class="empty">No results match your search.</div>
+{% if pages > 1 %}
+<div class="pagination" style="display:flex; gap:8px; align-items:center; justify-content:center; margin:16px 0;">
+    {% if page > 1 %}
+    <a href="/admin/transcripts?page={{ page - 1 }}{% if base_query_string %}&{{ base_query_string }}{% endif %}">&larr; Previous</a>
+    {% endif %}
+    <span>Page {{ page }} of {{ pages }} ({{ total_filtered }} records)</span>
+    {% if page < pages %}
+    <a href="/admin/transcripts?page={{ page + 1 }}{% if base_query_string %}&{{ base_query_string }}{% endif %}">Next &rarr;</a>
+    {% endif %}
+</div>
 {% endif %}
 
 {% else %}
-<div class="empty">No transcript records available yet.</div>
+<div class="empty">No transcripts match these filters.</div>
 {% endif %}
 </section>
 

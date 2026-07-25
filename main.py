@@ -1,7 +1,10 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import json
 import logging
+import math
 import os
+import uuid
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 import re
@@ -15,7 +18,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import desc
+from sqlalchemy import desc, func, or_
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -24,7 +27,9 @@ import auth
 import models
 from schemas import TranscriptCreate, UpdateTranscriptRequest, FollowUpTaskUpdate
 from send_notification import send_push_notification
+import alerts
 from ringcentral_utils import (
+    LOCAL_AUDIO_CACHE_DIR,
     cache_audio_file,
     delete_local_audio_file,
     fetch_audio_stream,
@@ -126,6 +131,38 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL")
 N8N_WEBHOOK_DELAY_SECONDS = int(os.getenv("WEBHOOK_SCHEDULER_INTERVAL_SECONDS", "60"))
 WEBHOOK_SCHEDULER_ENABLED = os.getenv("WEBHOOK_SCHEDULER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_flag(name: str, default: str = "true") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Only trigger the n8n webhook during business hours to conserve n8n executions.
+BUSINESS_HOURS_ENABLED = _env_flag("BUSINESS_HOURS_ENABLED")
+BUSINESS_HOURS_START = int(os.getenv("BUSINESS_HOURS_START", "7"))
+BUSINESS_HOURS_END = int(os.getenv("BUSINESS_HOURS_END", "19"))
+# Monday=0 ... Sunday=6; default Monday-Saturday
+BUSINESS_DAYS = {
+    int(day) for day in (os.getenv("BUSINESS_DAYS") or "0,1,2,3,4,5").split(",") if day.strip().isdigit()
+}
+BUSINESS_TZ = os.getenv("BUSINESS_TZ", "America/Los_Angeles")
+
+# Immediate email alerts for E&O red flags (requires SMTP_* env vars; see alerts.py)
+RED_FLAG_ALERTS_ENABLED = _env_flag("RED_FLAG_ALERTS_ENABLED")
+RED_FLAG_MIN_CONFIDENCE = int(os.getenv("RED_FLAG_MIN_CONFIDENCE", "40"))
+
+# Daily digest email
+DIGEST_ENABLED = _env_flag("DIGEST_ENABLED")
+DIGEST_HOUR = int(os.getenv("DIGEST_HOUR", "8"))
+
+# Auto-create AgencyZoom tasks for fresh calls flagged follow_up_needed
+AUTO_AGENCY_ZOOM_TASKS = _env_flag("AUTO_AGENCY_ZOOM_TASKS")
+AUTO_TASK_MAX_AGE_DAYS = int(os.getenv("AUTO_TASK_MAX_AGE_DAYS", "7"))
+
+# Cached audio retention
+AUDIO_CACHE_RETENTION_DAYS = int(os.getenv("AUDIO_CACHE_RETENTION_DAYS", "90"))
+
+FRONTEND_BASE_URL = (os.getenv("FRONTEND_BASE_URL") or "").rstrip("/")
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -382,10 +419,24 @@ def _trigger_n8n_webhook(start_time: str):
         return False
 
 
+def _within_business_hours() -> bool:
+    if not BUSINESS_HOURS_ENABLED:
+        return True
+    try:
+        local_now = datetime.now(ZoneInfo(BUSINESS_TZ))
+    except Exception:
+        logger.warning("Unknown BUSINESS_TZ %s; ignoring business-hours window", BUSINESS_TZ)
+        return True
+    return local_now.weekday() in BUSINESS_DAYS and BUSINESS_HOURS_START <= local_now.hour < BUSINESS_HOURS_END
+
+
 def _trigger_n8n_webhook_after_delay():
     while True:
+        if not _within_business_hours():
+            time.sleep(N8N_WEBHOOK_DELAY_SECONDS)
+            continue
+
         start_time = _get_webhook_start_time_from_cache()
-        print('statt_time from cache:', start_time)
         if start_time:
             _trigger_n8n_webhook(start_time)
         else:
@@ -449,6 +500,181 @@ def start_webhook_scheduler():
         daemon=True,
     )
     app.state.webhook_thread.start()
+
+
+_NO_DATA_VALUES = {
+    "", "none", "n/a", "na", "no", "-", "not mentioned", "none noted",
+    "not applicable", "no data available", "no data available.", "nothing noted",
+}
+
+
+def _has_meaningful_value(value) -> bool:
+    cleaned = _clean_string(value)
+    return bool(cleaned) and cleaned.strip().lower() not in _NO_DATA_VALUES
+
+
+def _transcript_red_flag_reasons(data: TranscriptCreate) -> list[str]:
+    reasons = []
+    if _has_meaningful_value(data.eo_red_flags):
+        prefix = "HIGH RISK — " if "high risk" in data.eo_red_flags.lower() else ""
+        reasons.append(f"{prefix}E&O red flags: {data.eo_red_flags[:400]}")
+    if _has_meaningful_value(data.agent_statements_liability):
+        reasons.append(f"Agent statement implying coverage/binding: {data.agent_statements_liability[:400]}")
+    if data.confidence_score is not None and data.confidence_score < RED_FLAG_MIN_CONFIDENCE:
+        reasons.append(f"Low analysis confidence score: {data.confidence_score} (threshold {RED_FLAG_MIN_CONFIDENCE})")
+    return reasons
+
+
+def _send_red_flag_alert(transcript, data: TranscriptCreate, reasons: list[str]):
+    link = f"{FRONTEND_BASE_URL}/user/transcripts/{transcript.id}" if FRONTEND_BASE_URL else f"transcript id {transcript.id}"
+    lines = [
+        "A call was flagged during automated E&O analysis.",
+        "",
+        f"Client: {data.client_name or 'Unknown'}",
+        f"Number: {data.client_number or data.caller_number or 'Unknown'}",
+        f"Reason for call: {data.reason_for_call or 'Unknown'}",
+        f"Call time: {data.start_time or 'Unknown'}",
+        "",
+        "Flags:",
+    ]
+    lines += [f"  - {reason}" for reason in reasons]
+    lines += ["", f"Review: {link}"]
+    alerts.send_email_async(
+        subject=f"E&O ALERT: {data.client_name or data.caller_number or 'Unknown caller'}",
+        body_text="\n".join(lines),
+    )
+
+
+def _local_tz():
+    try:
+        return ZoneInfo(BUSINESS_TZ)
+    except Exception:
+        return timezone.utc
+
+
+def _build_daily_digest() -> tuple[str, str] | None:
+    tz = _local_tz()
+    local_now = datetime.now(tz)
+    day_start_local = (local_now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end_local = day_start_local + timedelta(days=1)
+    start_utc = day_start_local.astimezone(timezone.utc).replace(tzinfo=None)
+    end_utc = day_end_local.astimezone(timezone.utc).replace(tzinfo=None)
+
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(models.TranscriptResponse)
+            .filter(
+                models.TranscriptResponse.created_at >= start_utc,
+                models.TranscriptResponse.created_at < end_utc,
+            )
+            .order_by(models.TranscriptResponse.start_time.desc().nullslast())
+            .all()
+        )
+        unassigned_total = (
+            db.query(func.count(models.TranscriptResponse.id))
+            .filter(models.TranscriptResponse.assigned_to.is_(None))
+            .scalar()
+        ) or 0
+    finally:
+        db.close()
+
+    flagged = [r for r in rows if _has_meaningful_value(r.eo_red_flags)]
+    follow_ups = [r for r in rows if r.follow_up_needed]
+
+    day_label = day_start_local.strftime("%A, %B %d")
+    lines = [
+        f"Daily call digest for {day_label}",
+        "",
+        f"Calls processed: {len(rows)}",
+        f"Follow-ups needed: {len(follow_ups)}",
+        f"E&O red flags: {len(flagged)}",
+        f"Unassigned transcripts (all time): {unassigned_total}",
+    ]
+
+    def _entry(row) -> str:
+        name = row.client_name or row.caller_number or "Unknown"
+        link = f"{FRONTEND_BASE_URL}/user/transcripts/{row.id}" if FRONTEND_BASE_URL else str(row.id)
+        return f"  - {name} ({row.reason_for_call or 'Unknown reason'}) — {link}"
+
+    if flagged:
+        lines += ["", "Red-flagged calls:"] + [_entry(r) for r in flagged[:20]]
+    if follow_ups:
+        lines += ["", "Follow-ups needed:"] + [_entry(r) for r in follow_ups[:20]]
+
+    return f"Daily digest — {day_label}: {len(rows)} calls, {len(flagged)} flagged", "\n".join(lines)
+
+
+def _daily_digest_loop():
+    while True:
+        tz = _local_tz()
+        local_now = datetime.now(tz)
+        next_run = local_now.replace(hour=DIGEST_HOUR, minute=0, second=0, microsecond=0)
+        if next_run <= local_now:
+            next_run += timedelta(days=1)
+        time.sleep(max((next_run - local_now).total_seconds(), 60))
+        try:
+            digest = _build_daily_digest()
+            if digest:
+                alerts.send_email(digest[0], digest[1])
+        except Exception:
+            logger.exception("Failed to send daily digest")
+
+
+def _cleanup_audio_cache_once():
+    cache_dir = os.path.abspath(LOCAL_AUDIO_CACHE_DIR)
+    if not os.path.isdir(cache_dir):
+        return
+    cutoff = time.time() - AUDIO_CACHE_RETENTION_DAYS * 86400
+    removed = 0
+    for filename in os.listdir(cache_dir):
+        path = os.path.join(cache_dir, filename)
+        try:
+            if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+                os.remove(path)
+                removed += 1
+        except OSError:
+            logger.warning("Could not remove cached audio file %s", path)
+    if removed:
+        logger.info("Audio cache cleanup removed %s file(s) older than %s days", removed, AUDIO_CACHE_RETENTION_DAYS)
+
+    # Clear stale local_audio_path references so playback falls back to RingCentral
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(models.TranscriptResponse)
+            .filter(models.TranscriptResponse.local_audio_path.isnot(None))
+            .all()
+        )
+        changed = False
+        for row in rows:
+            if not get_existing_local_audio_path(row.local_audio_path):
+                row.local_audio_path = None
+                changed = True
+        if changed:
+            db.commit()
+    finally:
+        db.close()
+
+
+def _audio_cache_cleanup_loop():
+    while True:
+        try:
+            _cleanup_audio_cache_once()
+        except Exception:
+            logger.exception("Audio cache cleanup failed")
+        time.sleep(86400)
+
+
+@app.on_event("startup")
+def start_background_jobs():
+    if DIGEST_ENABLED and alerts.is_email_configured():
+        thread = threading.Thread(target=_daily_digest_loop, name="daily-digest", daemon=True)
+        thread.start()
+    elif DIGEST_ENABLED:
+        logger.info("Daily digest enabled but email is not configured; set SMTP_* and ALERT_EMAIL_TO")
+
+    threading.Thread(target=_audio_cache_cleanup_loop, name="audio-cache-cleanup", daemon=True).start()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -554,26 +780,239 @@ def update_user(
 
 
 @app.get("/admin/transcripts")
-# Render the transcript list for admin review.
+# Render the transcript list for admin review, with server-side filters and pagination.
 def list_transcripts(request: Request, db: Session = Depends(get_db)):
     if not get_logged_in_admin(request, db):
         return RedirectResponse(url="/", status_code=303)
 
+    params = request.query_params
+    q = _clean_string(params.get("q"))
+    status_filter = _clean_string(params.get("status"))
+    assigned_filter = _clean_string(params.get("assigned_to"))
+    date_from = _clean_string(params.get("date_from"))
+    date_to = _clean_string(params.get("date_to"))
+    try:
+        page = max(int(params.get("page") or 1), 1)
+    except ValueError:
+        page = 1
+    try:
+        per_page = min(max(int(params.get("per_page") or 50), 10), 200)
+    except ValueError:
+        per_page = 50
+
+    query = db.query(models.TranscriptResponse)
+    if q:
+        like = f"%{q}%"
+        query = query.filter(
+            or_(
+                models.TranscriptResponse.client_name.ilike(like),
+                models.TranscriptResponse.client_number.ilike(like),
+                models.TranscriptResponse.caller_number.ilike(like),
+                models.TranscriptResponse.from_name.ilike(like),
+                models.TranscriptResponse.recordingID.ilike(like),
+                models.TranscriptResponse.owner_id.ilike(like),
+            )
+        )
+    if status_filter in {status.value for status in models.TranscriptStatus}:
+        query = query.filter(models.TranscriptResponse.status == status_filter)
+    if assigned_filter == "unassigned":
+        query = query.filter(models.TranscriptResponse.assigned_to.is_(None))
+    elif assigned_filter:
+        query = query.filter(models.TranscriptResponse.assigned_to == assigned_filter)
+    parsed_from = _parse_iso_datetime(date_from)
+    if parsed_from:
+        query = query.filter(models.TranscriptResponse.start_time >= parsed_from)
+    parsed_to = _parse_iso_datetime(date_to)
+    if parsed_to:
+        query = query.filter(models.TranscriptResponse.start_time < parsed_to + timedelta(days=1))
+
+    total_filtered = query.count()
+    pages = max(math.ceil(total_filtered / per_page), 1)
+    page = min(page, pages)
     transcripts = (
-        db.query(models.TranscriptResponse)
-        .order_by(
+        query.order_by(
             models.TranscriptResponse.start_time.desc().nullslast(),
             desc(models.TranscriptResponse.created_at),
         )
+        .offset((page - 1) * per_page)
+        .limit(per_page)
         .all()
     )
+
+    total_all = db.query(func.count(models.TranscriptResponse.id)).scalar() or 0
+    approved_count = (
+        db.query(func.count(models.TranscriptResponse.id))
+        .filter(models.TranscriptResponse.status == models.TranscriptStatus.approved.value)
+        .scalar()
+    ) or 0
+    pending_count = total_all - approved_count
+
     users = db.query(models.UserToken.user_id).distinct().all()
     user_ids = sorted([u.user_id for u in users])
+
+    filter_params = {
+        "q": q or "",
+        "status": status_filter or "",
+        "assigned_to": assigned_filter or "",
+        "date_from": date_from or "",
+        "date_to": date_to or "",
+        "per_page": per_page,
+    }
+    base_query_string = "&".join(
+        f"{key}={value}" for key, value in filter_params.items() if value not in ("", None)
+    )
+
     return templates.TemplateResponse(request, "transcripts.html", {
         "request": request,
         "transcripts": transcripts,
         "user_ids": user_ids,
+        "page": page,
+        "pages": pages,
+        "per_page": per_page,
+        "total_filtered": total_filtered,
+        "total_all": total_all,
+        "approved_count": approved_count,
+        "pending_count": pending_count,
+        "filters": filter_params,
+        "base_query_string": base_query_string,
+        "row_offset": (page - 1) * per_page,
     })
+
+
+@app.get("/admin/analytics")
+# Render call analytics: volume, sentiment, red flags, and per-line breakdowns.
+def analytics_page(request: Request, db: Session = Depends(get_db)):
+    if not get_logged_in_admin(request, db):
+        return RedirectResponse(url="/", status_code=303)
+
+    try:
+        days = min(max(int(request.query_params.get("days") or 30), 7), 365)
+    except ValueError:
+        days = 30
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+
+    rows = (
+        db.query(models.TranscriptResponse)
+        .filter(
+            or_(
+                models.TranscriptResponse.start_time >= cutoff,
+                models.TranscriptResponse.start_time.is_(None),
+            ),
+            models.TranscriptResponse.created_at >= cutoff,
+        )
+        .all()
+    )
+
+    daily_counts: dict[str, int] = {}
+    sentiment_counts: dict[str, int] = {}
+    reason_counts: dict[str, int] = {}
+    owner_counts: dict[str, int] = {}
+    flagged_count = 0
+    follow_up_count = 0
+    total_seconds = 0
+
+    for row in rows:
+        stamp = row.start_time or row.created_at
+        if stamp:
+            daily_counts[stamp.strftime("%Y-%m-%d")] = daily_counts.get(stamp.strftime("%Y-%m-%d"), 0) + 1
+        sentiment = (_clean_string(row.customer_sentiment) or "Unknown").capitalize()
+        sentiment_counts[sentiment] = sentiment_counts.get(sentiment, 0) + 1
+        reason = _clean_string(row.reason_for_call) or "Unknown"
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        owner = _clean_string(row.owner_id) or "Unknown"
+        owner_counts[owner] = owner_counts.get(owner, 0) + 1
+        if _has_meaningful_value(row.eo_red_flags):
+            flagged_count += 1
+        if row.follow_up_needed:
+            follow_up_count += 1
+        if row.usage_sec:
+            total_seconds += row.usage_sec
+
+    daily_series = sorted(daily_counts.items())
+    max_daily = max(daily_counts.values(), default=1)
+
+    def _sorted_counts(counts: dict[str, int], limit: int = 10):
+        ordered = sorted(counts.items(), key=lambda item: item[1], reverse=True)[:limit]
+        peak = max((count for _, count in ordered), default=1)
+        return [(label, count, round(count * 100 / peak)) for label, count in ordered]
+
+    return templates.TemplateResponse(request, "analytics.html", {
+        "request": request,
+        "days": days,
+        "total_calls": len(rows),
+        "flagged_count": flagged_count,
+        "follow_up_count": follow_up_count,
+        "total_minutes": round(total_seconds / 60),
+        "daily_series": [(day, count, round(count * 100 / max_daily)) for day, count in daily_series],
+        "sentiment_counts": _sorted_counts(sentiment_counts),
+        "reason_counts": _sorted_counts(reason_counts),
+        "owner_counts": _sorted_counts(owner_counts),
+    })
+
+
+@app.get("/admin/admins")
+# Render the admin account management page.
+def admins_page(request: Request, db: Session = Depends(get_db)):
+    current_admin = get_logged_in_admin(request, db)
+    if not current_admin:
+        return RedirectResponse(url="/", status_code=303)
+
+    admins = db.query(models.Admin).order_by(models.Admin.username).all()
+    return templates.TemplateResponse(request, "admins.html", {
+        "request": request,
+        "admins": admins,
+        "current_admin": current_admin,
+        "error": request.query_params.get("error"),
+        "created": request.query_params.get("created"),
+    })
+
+
+@app.post("/admin/admins/add")
+# Create an additional admin login.
+def add_admin(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    if not get_logged_in_admin(request, db):
+        return RedirectResponse(url="/", status_code=303)
+
+    cleaned_username = _clean_string(username)
+    if not cleaned_username or len(password) < 8:
+        return RedirectResponse(
+            url="/admin/admins?error=Username+required+and+password+must+be+at+least+8+characters",
+            status_code=303,
+        )
+    if db.query(models.Admin).filter(models.Admin.username == cleaned_username).first():
+        return RedirectResponse(url="/admin/admins?error=Username+already+exists", status_code=303)
+
+    db.add(models.Admin(
+        admin_id=str(uuid.uuid4()),
+        username=cleaned_username,
+        password_hash=auth.pwd_context.hash(password),
+    ))
+    db.commit()
+    return RedirectResponse(url="/admin/admins?created=1", status_code=303)
+
+
+@app.post("/admin/admins/{admin_id}/delete")
+# Delete an admin login (cannot delete yourself or the last remaining admin).
+def delete_admin(admin_id: str, request: Request, db: Session = Depends(get_db)):
+    current_admin = get_logged_in_admin(request, db)
+    if not current_admin:
+        return RedirectResponse(url="/", status_code=303)
+
+    if current_admin.admin_id == admin_id:
+        return RedirectResponse(url="/admin/admins?error=You+cannot+delete+your+own+account", status_code=303)
+    if (db.query(func.count(models.Admin.admin_id)).scalar() or 0) <= 1:
+        return RedirectResponse(url="/admin/admins?error=Cannot+delete+the+last+admin", status_code=303)
+
+    target = db.query(models.Admin).filter(models.Admin.admin_id == admin_id).first()
+    if target:
+        db.delete(target)
+        db.commit()
+    return RedirectResponse(url="/admin/admins", status_code=303)
 
 
 @app.post("/admin/transcripts/bulk-delete")
@@ -695,6 +1134,30 @@ def create_transcript(
     db.commit()
     db.refresh(new_transcript)
     _set_latest_webhook_start_time(new_transcript.start_time, data.start_time)
+
+    if RED_FLAG_ALERTS_ENABLED:
+        try:
+            red_flag_reasons = _transcript_red_flag_reasons(data)
+            if red_flag_reasons:
+                _send_red_flag_alert(new_transcript, data, red_flag_reasons)
+        except Exception:
+            logger.exception("Failed to send red-flag alert for transcript %s", new_transcript.id)
+
+    # Auto-create AgencyZoom follow-up tasks for fresh calls only, so backlog
+    # re-sweeps of old calls never spam the CRM.
+    if AUTO_AGENCY_ZOOM_TASKS and new_transcript.follow_up_needed and not new_transcript.agency_zoom_task_ids:
+        call_time = _ensure_utc_datetime(new_transcript.start_time)
+        is_recent = call_time is not None and (
+            datetime.now(timezone.utc) - call_time <= timedelta(days=AUTO_TASK_MAX_AGE_DAYS)
+        )
+        if is_recent and normalize_follow_up_task(new_transcript.follow_up_task):
+            try:
+                created_task_ids = create_agency_zoom_tasks_for_transcript(new_transcript)
+                if created_task_ids:
+                    new_transcript.agency_zoom_task_ids = "\n".join(created_task_ids)
+                    db.commit()
+            except Exception:
+                logger.exception("Failed to auto-create AgencyZoom tasks for transcript %s", new_transcript.id)
 
     data.owner_id = resolved_owner_id
     data.client_number = resolved_client_number
@@ -819,8 +1282,10 @@ def update_status(
 
     if status == models.TranscriptStatus.approved.value and previous_status != models.TranscriptStatus.approved.value:
         if normalized_tasks:
-            created_task_ids = create_agency_zoom_tasks_for_transcript(transcript)
-            transcript.agency_zoom_task_ids = "\n".join(created_task_ids) if created_task_ids else None
+            # Skip creation when tasks were already auto-created at ingest time
+            if not _clean_string(transcript.agency_zoom_task_ids):
+                created_task_ids = create_agency_zoom_tasks_for_transcript(transcript)
+                transcript.agency_zoom_task_ids = "\n".join(created_task_ids) if created_task_ids else None
         else:
             if not _clean_string(transcript.crm_note):
                 return render_template(
