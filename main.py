@@ -667,6 +667,36 @@ def _audio_cache_cleanup_loop():
 
 
 @app.on_event("startup")
+def bootstrap_admin_account():
+    # One-time admin recovery: set ADMIN_BOOTSTRAP_USERNAME and
+    # ADMIN_BOOTSTRAP_PASSWORD in the environment, deploy, log in, then
+    # remove both variables.
+    username = _clean_string(os.getenv("ADMIN_BOOTSTRAP_USERNAME"))
+    password = os.getenv("ADMIN_BOOTSTRAP_PASSWORD") or ""
+    if not username or len(password) < 8:
+        return
+
+    db = SessionLocal()
+    try:
+        admin = db.query(models.Admin).filter(models.Admin.username == username).first()
+        if admin:
+            admin.password_hash = auth.pwd_context.hash(password)
+            logger.info("Bootstrap: reset password for admin '%s'", username)
+        else:
+            db.add(models.Admin(
+                admin_id=str(uuid.uuid4()),
+                username=username,
+                password_hash=auth.pwd_context.hash(password),
+            ))
+            logger.info("Bootstrap: created admin '%s'", username)
+        db.commit()
+    except Exception:
+        logger.exception("Bootstrap admin failed")
+    finally:
+        db.close()
+
+
+@app.on_event("startup")
 def start_background_jobs():
     if DIGEST_ENABLED and alerts.is_email_configured():
         thread = threading.Thread(target=_daily_digest_loop, name="daily-digest", daemon=True)
