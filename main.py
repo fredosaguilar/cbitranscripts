@@ -518,6 +518,46 @@ def start_webhook_scheduler():
     app.state.webhook_thread.start()
 
 
+def _last_ten_digits(value) -> str:
+    digits = re.sub(r"\D", "", str(value or ""))
+    return digits[-10:] if len(digits) >= 10 else ""
+
+
+def _reuse_known_agency_zoom_link(db: Session, transcript) -> bool:
+    """Copy an Agency Zoom link from an earlier call with the same number.
+
+    Linking a caller once should keep every later call from that number
+    attached to the same customer or lead.
+    """
+    digits = _last_ten_digits(transcript.client_number) or _last_ten_digits(transcript.caller_number)
+    if not digits:
+        return False
+
+    candidates = (
+        db.query(models.TranscriptResponse)
+        .filter(models.TranscriptResponse.agency_zoom_customer_id.isnot(None))
+        .filter(models.TranscriptResponse.id != transcript.id)
+        .filter(
+            or_(
+                models.TranscriptResponse.client_number.like(f"%{digits[-7:]}%"),
+                models.TranscriptResponse.caller_number.like(f"%{digits[-7:]}%"),
+            )
+        )
+        .order_by(desc(models.TranscriptResponse.created_at))
+        .limit(25)
+        .all()
+    )
+
+    for candidate in candidates:
+        candidate_digits = _last_ten_digits(candidate.client_number) or _last_ten_digits(candidate.caller_number)
+        if candidate_digits == digits:
+            transcript.agency_zoom_customer_id = candidate.agency_zoom_customer_id
+            transcript.agency_zoom_customer_type = candidate.agency_zoom_customer_type
+            transcript.agency_zoom_customer_name = candidate.agency_zoom_customer_name
+            return True
+    return False
+
+
 _NO_DATA_VALUES = {
     "", "none", "n/a", "na", "no", "-", "not mentioned", "none noted",
     "not applicable", "no data available", "no data available.", "nothing noted",
@@ -1130,25 +1170,64 @@ def agency_zoom_search(id: str, request: Request, db: Session = Depends(get_db))
     if transcript is None:
         raise HTTPException(status_code=404, detail="Transcript not found")
 
-    query = _clean_string(request.query_params.get("q")) or _clean_string(transcript.client_number)
-    if not query:
-        return JSONResponse(content={"query": None, "results": []})
+    explicit_query = _clean_string(request.query_params.get("q"))
+    if explicit_query:
+        attempts = [(explicit_query, "your search")]
+    else:
+        # Widen automatically: phone first, then the names we know for the call
+        attempts = [
+            (_clean_string(transcript.client_number), "client number"),
+            (_clean_string(transcript.caller_number), "caller number"),
+            (_clean_string(transcript.client_name), "client name"),
+            (_clean_string(transcript.from_name), "caller name"),
+        ]
+        attempts = [(value, label) for value, label in attempts if value]
 
-    try:
-        results = search_agency_zoom_customers(query) + search_agency_zoom_leads(query)
-    except Exception as exc:
-        logger.exception("Agency Zoom search failed for transcript %s", id)
-        raise HTTPException(status_code=502, detail=f"Agency Zoom search failed: {exc}") from exc
+    if not attempts:
+        return JSONResponse(content={"query": None, "query_label": None, "results": []})
 
-    seen: set[str] = set()
-    unique_results = []
-    for result in results:
-        key = f"{result.get('type')}:{result.get('id')}"
-        if result.get("id") and key not in seen:
-            seen.add(key)
-            unique_results.append(result)
+    call_digits = _last_ten_digits(transcript.client_number) or _last_ten_digits(transcript.caller_number)
+    used_query = attempts[0][0]
+    used_label = attempts[0][1]
+    unique_results: list[dict] = []
 
-    return JSONResponse(content={"query": query, "results": unique_results})
+    for value, label in attempts:
+        try:
+            found = search_agency_zoom_customers(value) + search_agency_zoom_leads(value)
+        except Exception as exc:
+            logger.exception("Agency Zoom search failed for transcript %s", id)
+            raise HTTPException(status_code=502, detail=f"Agency Zoom search failed: {exc}") from exc
+
+        seen: set[str] = set()
+        unique_results = []
+        for result in found:
+            key = f"{result.get('type')}:{result.get('id')}"
+            if result.get("id") and key not in seen:
+                seen.add(key)
+                # Flag records whose phone matches this call exactly
+                result["exact_phone"] = bool(
+                    call_digits and _last_ten_digits(result.get("phone")) == call_digits
+                )
+                unique_results.append(result)
+
+        if unique_results:
+            used_query, used_label = value, label
+            break
+
+    # Exact phone matches first, then customers before leads, then by name
+    unique_results.sort(
+        key=lambda record: (
+            not record.get("exact_phone"),
+            record.get("type") != "customer",
+            (record.get("name") or "").lower(),
+        )
+    )
+
+    return JSONResponse(content={
+        "query": used_query,
+        "query_label": used_label,
+        "results": unique_results,
+    })
 
 
 @app.post("/api/transcripts/{id}/agencyzoom/link")
@@ -1159,6 +1238,7 @@ def agency_zoom_link(
     customer_id: str = Form(""),
     customer_type: str = Form("customer"),
     customer_name: str = Form(""),
+    apply_to_number: str = Form(""),
     db: Session = Depends(get_db),
 ):
     if not get_logged_in_admin(request, db):
@@ -1169,12 +1249,39 @@ def agency_zoom_link(
         raise HTTPException(status_code=404, detail="Transcript not found")
 
     # An empty customer_id clears the link
-    transcript.agency_zoom_customer_id = _clean_string(customer_id)
-    transcript.agency_zoom_customer_type = _clean_string(customer_type) or "customer"
-    transcript.agency_zoom_customer_name = _clean_string(customer_name)
-    if not transcript.agency_zoom_customer_id:
-        transcript.agency_zoom_customer_type = None
-        transcript.agency_zoom_customer_name = None
+    linked_id = _clean_string(customer_id)
+    linked_type = (_clean_string(customer_type) or "customer") if linked_id else None
+    linked_name = _clean_string(customer_name) if linked_id else None
+
+    transcript.agency_zoom_customer_id = linked_id
+    transcript.agency_zoom_customer_type = linked_type
+    transcript.agency_zoom_customer_name = linked_name
+
+    # Optionally apply the same link to every other call from this number
+    also_updated = 0
+    if apply_to_number.strip().lower() in {"1", "true", "yes", "on"}:
+        digits = _last_ten_digits(transcript.client_number) or _last_ten_digits(transcript.caller_number)
+        if digits:
+            siblings = (
+                db.query(models.TranscriptResponse)
+                .filter(models.TranscriptResponse.id != transcript.id)
+                .filter(
+                    or_(
+                        models.TranscriptResponse.client_number.like(f"%{digits[-7:]}%"),
+                        models.TranscriptResponse.caller_number.like(f"%{digits[-7:]}%"),
+                    )
+                )
+                .all()
+            )
+            for sibling in siblings:
+                sibling_digits = _last_ten_digits(sibling.client_number) or _last_ten_digits(sibling.caller_number)
+                if sibling_digits != digits:
+                    continue
+                sibling.agency_zoom_customer_id = linked_id
+                sibling.agency_zoom_customer_type = linked_type
+                sibling.agency_zoom_customer_name = linked_name
+                also_updated += 1
+
     db.commit()
 
     return JSONResponse(content={
@@ -1183,6 +1290,7 @@ def agency_zoom_link(
         "customer_id": transcript.agency_zoom_customer_id,
         "customer_type": transcript.agency_zoom_customer_type,
         "customer_name": transcript.agency_zoom_customer_name,
+        "also_updated": also_updated,
     })
 
 
@@ -1282,6 +1390,13 @@ def create_transcript(
         missing_information=data.missing_information,
         confidence_score=data.confidence_score,
     )
+
+    # If this caller was matched to an Agency Zoom record on an earlier call,
+    # carry that link forward instead of re-searching.
+    try:
+        _reuse_known_agency_zoom_link(db, new_transcript)
+    except Exception:
+        logger.exception("Could not reuse a previous Agency Zoom link for %s", new_transcript.recordingID)
 
     # Auto-assign to the user registered for this extension (or owner id), so
     # calls land on the right agent's plate without manual triage.

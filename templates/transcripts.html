@@ -186,6 +186,10 @@
     </p>
     <input type="text" id="azModalQuery" placeholder="Phone, name, or email…"
            onkeydown="if (event.key === 'Enter') azModalSearch();">
+    <label style="display:block; margin-top:10px; font-size:0.85rem;">
+        <input type="checkbox" id="azApplyAll" checked>
+        Also link every other call from this number
+    </label>
     <div class="az-actions">
         <button type="button" onclick="azModalSearch()">Search</button>
         <button type="button" onclick="azModalLink('', '', '')">Unlink</button>
@@ -284,13 +288,28 @@
         try {
             const res = await fetch(
                 `/api/transcripts/${azCurrentTranscriptId}/agencyzoom/search?q=${encodeURIComponent(query)}`);
-            if (!res.ok) throw new Error();
+            if (!res.ok) {
+                let detail = '';
+                try { detail = (await res.json()).detail || ''; } catch (e) { /* no body */ }
+                results.textContent = detail || 'Agency Zoom search failed.';
+                return;
+            }
             const data = await res.json();
             results.textContent = '';
             if (!data.results || data.results.length === 0) {
-                results.innerHTML = '<i>No customers or leads found.</i>';
+                results.innerHTML =
+                    '<i>Nothing found by phone, client name, or caller name. Try a different spelling, ' +
+                    'a business name, or an email address.</i>';
                 return;
             }
+
+            const summary = document.createElement('div');
+            summary.style.cssText = 'font-size:0.82rem; opacity:0.8; margin-bottom:6px;';
+            summary.textContent =
+                `${data.results.length} result${data.results.length === 1 ? '' : 's'}` +
+                (data.query_label ? ` matched on ${data.query_label}: "${data.query}"` : '');
+            results.appendChild(summary);
+
             data.results.forEach(record => {
                 const row = document.createElement('div');
                 row.className = 'az-row';
@@ -301,6 +320,12 @@
                 title.textContent = record.name || '(no name)';
                 info.appendChild(title);
                 info.appendChild(document.createTextNode(` — ${record.type} #${record.id}`));
+                if (record.exact_phone) {
+                    const badge = document.createElement('span');
+                    badge.textContent = ' phone matches this call';
+                    badge.style.cssText = 'font-size:0.72rem; color:#15825a; font-weight:600;';
+                    info.appendChild(badge);
+                }
                 info.appendChild(document.createElement('br'));
                 const sub = document.createElement('small');
                 sub.textContent = (record.phone || 'no phone') + (record.email ? ' · ' + record.email : '');
@@ -323,16 +348,23 @@
 
     async function azModalLink(customerId, customerType, customerName) {
         if (!azCurrentTranscriptId) return;
+        const applyAll = document.getElementById('azApplyAll').checked;
         const body = new FormData();
         body.append('customer_id', customerId);
         body.append('customer_type', customerType || 'customer');
         body.append('customer_name', customerName || '');
+        body.append('apply_to_number', applyAll ? 'true' : 'false');
         try {
             const res = await fetch(`/api/transcripts/${azCurrentTranscriptId}/agencyzoom/link`,
                 { method: 'POST', body });
             if (!res.ok) throw new Error();
+            const data = await res.json();
             azUpdateCell(azCurrentTranscriptId, customerId, customerName);
             azClose();
+            if (data.also_updated > 0) {
+                // Other rows changed server-side; refresh so the list matches
+                location.reload();
+            }
         } catch (e) {
             alert('Failed to save the Agency Zoom link. Please try again.');
         }

@@ -288,16 +288,22 @@ def search_agency_zoom_customers(query: Any, jwt_token: Optional[str] = None) ->
     for attempt in attempts:
         if not attempt:
             continue
-        payload = {"phone": attempt} if is_phone else {"searchText": attempt}
-        try:
-            response = requests.post(AGENCY_ZOOM_CUSTOMERS_URL, json=payload, headers=headers, timeout=REQUEST_TIMEOUT)
-            response.raise_for_status()
-            for record in _extract_candidate_records(_parse_response(response)):
-                summary = _candidate_summary(record, "customer")
-                if summary["id"] and summary["id"] not in found:
-                    found[summary["id"]] = summary
-        except Exception:
-            continue
+        # A phone number can be stored under either field, so try both shapes
+        payloads = [{"phone": attempt}, {"searchText": attempt}] if is_phone else [{"searchText": attempt}]
+        for payload in payloads:
+            try:
+                response = requests.post(
+                    AGENCY_ZOOM_CUSTOMERS_URL, json=payload, headers=headers, timeout=REQUEST_TIMEOUT
+                )
+                response.raise_for_status()
+                for record in _extract_candidate_records(_parse_response(response)):
+                    summary = _candidate_summary(record, "customer")
+                    if summary["id"] and summary["id"] not in found:
+                        found[summary["id"]] = summary
+            except Exception:
+                continue
+            if found:
+                break
         if found:
             break
     return list(found.values())
