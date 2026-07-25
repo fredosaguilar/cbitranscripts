@@ -14,7 +14,8 @@ class UserToken(Base):
     
     token_id = Column(String, primary_key=True, default=uuid.uuid4, unique=True, index=True)
     user_id = Column(String, nullable=False, index=True)  # store user id directly as string
-    token = Column(String, nullable=False)
+    email = Column(String, nullable=True)
+    token = Column(String, nullable=True)  # Pushover key; optional when only email is used
     updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 

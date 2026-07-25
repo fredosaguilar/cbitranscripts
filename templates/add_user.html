@@ -20,8 +20,14 @@
             Calls answered on this extension are assigned to this user automatically.
         </small>
 
-        <label>User Token (Pushover key)</label>
-        <input type="text" name="user_token" placeholder="Enter user token" required>
+        <label>Email</label>
+        <input type="email" name="email" placeholder="name@columbiabasininsurance.com">
+        <small style="display:block; margin:-6px 0 12px; opacity:0.8;">
+            Emailed to review each call assigned to this extension.
+        </small>
+
+        <label>User Token (Pushover key, optional)</label>
+        <input type="text" name="user_token" placeholder="Leave blank if not using push notifications">
 
         <button type="submit">Add User</button>
     </form>

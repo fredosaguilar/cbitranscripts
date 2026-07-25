@@ -86,6 +86,9 @@ def on_startup():
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_number VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_name VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS queue_name VARCHAR",
+        "ALTER TABLE users_tokens ADD COLUMN IF NOT EXISTS email VARCHAR",
+        # A user may be email-only, with no Pushover key
+        "ALTER TABLE users_tokens ALTER COLUMN token DROP NOT NULL",
     ]
     with engine.connect() as conn:
         for sql in migrations:
@@ -156,13 +159,18 @@ BUSINESS_DAYS = {
 }
 BUSINESS_TZ = os.getenv("BUSINESS_TZ", "America/Los_Angeles")
 
-# Immediate email alerts for E&O red flags (requires SMTP_* env vars; see alerts.py)
-RED_FLAG_ALERTS_ENABLED = _env_flag("RED_FLAG_ALERTS_ENABLED")
+# Central E&O red-flag alerts and the daily digest are off by default: each
+# agent is emailed about their own calls instead (see ASSIGNMENT_EMAILS_ENABLED).
+RED_FLAG_ALERTS_ENABLED = _env_flag("RED_FLAG_ALERTS_ENABLED", "false")
 RED_FLAG_MIN_CONFIDENCE = int(os.getenv("RED_FLAG_MIN_CONFIDENCE", "40"))
 
-# Daily digest email
-DIGEST_ENABLED = _env_flag("DIGEST_ENABLED")
+DIGEST_ENABLED = _env_flag("DIGEST_ENABLED", "false")
 DIGEST_HOUR = int(os.getenv("DIGEST_HOUR", "8"))
+
+# Email the assigned agent when a call lands on their extension
+ASSIGNMENT_EMAILS_ENABLED = _env_flag("ASSIGNMENT_EMAILS_ENABLED")
+# Optional startup seeding: "101:henry@example.com,102:fred@example.com"
+EXTENSION_EMAIL_MAP = os.getenv("EXTENSION_EMAIL_MAP", "")
 
 # Auto-create AgencyZoom tasks for fresh calls flagged follow_up_needed
 AUTO_AGENCY_ZOOM_TASKS = _env_flag("AUTO_AGENCY_ZOOM_TASKS")
@@ -601,6 +609,68 @@ def _send_red_flag_alert(transcript, data: TranscriptCreate, reasons: list[str])
     )
 
 
+def _send_assignment_email(transcript, user_email: str):
+    """Tell the agent a call landed on their extension and needs review."""
+    link = f"{FRONTEND_BASE_URL}/user/transcripts/{transcript.id}" if FRONTEND_BASE_URL else str(transcript.id)
+    client = _clean_string(transcript.client_name) or _clean_string(transcript.client_number) or "Unknown caller"
+    lines = [
+        f"A call assigned to you is ready for review: {client}",
+        "",
+        f"Client: {client}",
+        f"Number: {_clean_string(transcript.client_number) or 'Unknown'}",
+        f"Reason for call: {_clean_string(transcript.reason_for_call) or 'Not identified'}",
+        f"Call time: {transcript.start_time or 'Unknown'}",
+    ]
+    if transcript.queue_name:
+        lines.append(f"Arrived via: {transcript.queue_name}")
+    follow_up = _clean_string(transcript.follow_up_task)
+    if follow_up:
+        lines += ["", "Follow-up noted on the call:", follow_up]
+    lines += [
+        "",
+        "Please review the transcription and the notes, correct anything the AI got wrong,",
+        "and approve the transcript when it is accurate.",
+        "",
+        f"Open the call: {link}",
+    ]
+
+    alerts.send_email_async(
+        subject=f"Review your call: {client}",
+        body_text="\n".join(lines),
+        to_addresses=[user_email],
+    )
+
+
+def _seed_extension_emails():
+    """Create or update user records from EXTENSION_EMAIL_MAP at startup."""
+    entries = [entry.strip() for entry in EXTENSION_EMAIL_MAP.split(",") if entry.strip()]
+    if not entries:
+        return
+
+    db = SessionLocal()
+    try:
+        for entry in entries:
+            if ":" not in entry:
+                logger.warning("Ignoring malformed EXTENSION_EMAIL_MAP entry: %s", entry)
+                continue
+            extension, email = (part.strip() for part in entry.split(":", 1))
+            if not extension or not email:
+                continue
+            user = db.query(models.UserToken).filter(models.UserToken.user_id == extension).first()
+            if user:
+                if user.email != email:
+                    user.email = email
+                    logger.info("Updated email for extension %s", extension)
+            else:
+                db.add(models.UserToken(token_id=str(uuid.uuid4()), user_id=extension, email=email))
+                logger.info("Registered extension %s for assignment emails", extension)
+        db.commit()
+    except Exception:
+        logger.exception("Failed to seed extension emails")
+    finally:
+        db.close()
+
+
 def _local_tz():
     try:
         return ZoneInfo(BUSINESS_TZ)
@@ -753,6 +823,11 @@ def bootstrap_admin_account():
 
 
 @app.on_event("startup")
+def seed_extension_emails_on_startup():
+    _seed_extension_emails()
+
+
+@app.on_event("startup")
 def start_background_jobs():
     if DIGEST_ENABLED and alerts.is_email_configured():
         thread = threading.Thread(target=_daily_digest_loop, name="daily-digest", daemon=True)
@@ -853,13 +928,19 @@ def add_user_page(request: Request, db: Session = Depends(get_db)):
 def add_user(
     request: Request,
     user_id: str = Form(...),
-    user_token: str = Form(...),
+    email: str = Form(""),
+    user_token: str = Form(""),
     db: Session = Depends(get_db),
 ):
     if not get_logged_in_admin(request, db):
         return RedirectResponse(url="/", status_code=303)
 
-    new_user = models.UserToken(user_id=user_id, token=user_token)
+    new_user = models.UserToken(
+        token_id=str(uuid.uuid4()),
+        user_id=_clean_string(user_id),
+        email=_clean_string(email),
+        token=_clean_string(user_token),
+    )
     db.add(new_user)
     db.commit()
     return RedirectResponse(url="/admin/dashboard", status_code=303)
@@ -886,12 +967,14 @@ def edit_user_page(token_id: str, request: Request, db: Session = Depends(get_db
 # Update an existing notification user token.
 def update_user(
     token_id: str,
-    user_token: str = Form(...),
+    email: str = Form(""),
+    user_token: str = Form(""),
     db: Session = Depends(get_db),
 ):
     user = db.query(models.UserToken).filter(models.UserToken.token_id == token_id).first()
     if user:
-        user.token = user_token
+        user.email = _clean_string(email)
+        user.token = _clean_string(user_token)
         db.commit()
     return RedirectResponse(url="/admin/dashboard?updated=1", status_code=303)
 
@@ -1400,6 +1483,7 @@ def create_transcript(
 
     # Auto-assign to the user registered for this extension (or owner id), so
     # calls land on the right agent's plate without manual triage.
+    assigned_user = None
     if AUTO_ASSIGN_FROM_OWNER and not new_transcript.assigned_to:
         for candidate in (extension_number, resolved_owner_id):
             if not candidate:
@@ -1411,6 +1495,7 @@ def create_transcript(
             )
             if registered_user:
                 new_transcript.assigned_to = registered_user.user_id
+                assigned_user = registered_user
                 break
 
     db.add(new_transcript)
@@ -1442,11 +1527,27 @@ def create_transcript(
             except Exception:
                 logger.exception("Failed to auto-create AgencyZoom tasks for transcript %s", new_transcript.id)
 
+    # Tell the assigned agent their call is ready to review
+    if ASSIGNMENT_EMAILS_ENABLED:
+        recipient = assigned_user or (
+            db.query(models.UserToken)
+            .filter(models.UserToken.user_id == new_transcript.assigned_to)
+            .first()
+            if new_transcript.assigned_to
+            else None
+        )
+        recipient_email = _clean_string(getattr(recipient, "email", None))
+        if recipient_email:
+            try:
+                _send_assignment_email(new_transcript, recipient_email)
+            except Exception:
+                logger.exception("Failed to send assignment email for transcript %s", new_transcript.id)
+
     data.owner_id = resolved_owner_id
     data.client_number = resolved_client_number
     structured_response = _extract_structured_fields(data)
     user_token = db.query(models.UserToken).filter(models.UserToken.user_id == new_transcript.owner_id).first()
-    if user_token:
+    if user_token and _clean_string(user_token.token):
         send_push_notification(str(new_transcript.id), user_token.token, structured_response)
 
     return JSONResponse(content=structured_response, status_code=200)
