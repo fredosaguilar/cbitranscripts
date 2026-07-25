@@ -86,6 +86,9 @@ def on_startup():
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_number VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_name VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS queue_name VARCHAR",
+        "ALTER TABLE users_tokens ADD COLUMN IF NOT EXISTS email VARCHAR",
+        # A user may be email-only, with no Pushover key
+        "ALTER TABLE users_tokens ALTER COLUMN token DROP NOT NULL",
     ]
     with engine.connect() as conn:
         for sql in migrations:
@@ -156,13 +159,18 @@ BUSINESS_DAYS = {
 }
 BUSINESS_TZ = os.getenv("BUSINESS_TZ", "America/Los_Angeles")
 
-# Immediate email alerts for E&O red flags (requires SMTP_* env vars; see alerts.py)
-RED_FLAG_ALERTS_ENABLED = _env_flag("RED_FLAG_ALERTS_ENABLED")
+# Central E&O red-flag alerts and the daily digest are off by default: each
+# agent is emailed about their own calls instead (see ASSIGNMENT_EMAILS_ENABLED).
+RED_FLAG_ALERTS_ENABLED = _env_flag("RED_FLAG_ALERTS_ENABLED", "false")
 RED_FLAG_MIN_CONFIDENCE = int(os.getenv("RED_FLAG_MIN_CONFIDENCE", "40"))
 
-# Daily digest email
-DIGEST_ENABLED = _env_flag("DIGEST_ENABLED")
+DIGEST_ENABLED = _env_flag("DIGEST_ENABLED", "false")
 DIGEST_HOUR = int(os.getenv("DIGEST_HOUR", "8"))
+
+# Email the assigned agent when a call lands on their extension
+ASSIGNMENT_EMAILS_ENABLED = _env_flag("ASSIGNMENT_EMAILS_ENABLED")
+# Optional startup seeding: "101:henry@example.com,102:fred@example.com"
+EXTENSION_EMAIL_MAP = os.getenv("EXTENSION_EMAIL_MAP", "")
 
 # Auto-create AgencyZoom tasks for fresh calls flagged follow_up_needed
 AUTO_AGENCY_ZOOM_TASKS = _env_flag("AUTO_AGENCY_ZOOM_TASKS")
@@ -518,6 +526,46 @@ def start_webhook_scheduler():
     app.state.webhook_thread.start()
 
 
+def _last_ten_digits(value) -> str:
+    digits = re.sub(r"\D", "", str(value or ""))
+    return digits[-10:] if len(digits) >= 10 else ""
+
+
+def _reuse_known_agency_zoom_link(db: Session, transcript) -> bool:
+    """Copy an Agency Zoom link from an earlier call with the same number.
+
+    Linking a caller once should keep every later call from that number
+    attached to the same customer or lead.
+    """
+    digits = _last_ten_digits(transcript.client_number) or _last_ten_digits(transcript.caller_number)
+    if not digits:
+        return False
+
+    candidates = (
+        db.query(models.TranscriptResponse)
+        .filter(models.TranscriptResponse.agency_zoom_customer_id.isnot(None))
+        .filter(models.TranscriptResponse.id != transcript.id)
+        .filter(
+            or_(
+                models.TranscriptResponse.client_number.like(f"%{digits[-7:]}%"),
+                models.TranscriptResponse.caller_number.like(f"%{digits[-7:]}%"),
+            )
+        )
+        .order_by(desc(models.TranscriptResponse.created_at))
+        .limit(25)
+        .all()
+    )
+
+    for candidate in candidates:
+        candidate_digits = _last_ten_digits(candidate.client_number) or _last_ten_digits(candidate.caller_number)
+        if candidate_digits == digits:
+            transcript.agency_zoom_customer_id = candidate.agency_zoom_customer_id
+            transcript.agency_zoom_customer_type = candidate.agency_zoom_customer_type
+            transcript.agency_zoom_customer_name = candidate.agency_zoom_customer_name
+            return True
+    return False
+
+
 _NO_DATA_VALUES = {
     "", "none", "n/a", "na", "no", "-", "not mentioned", "none noted",
     "not applicable", "no data available", "no data available.", "nothing noted",
@@ -559,6 +607,68 @@ def _send_red_flag_alert(transcript, data: TranscriptCreate, reasons: list[str])
         subject=f"E&O ALERT: {data.client_name or data.caller_number or 'Unknown caller'}",
         body_text="\n".join(lines),
     )
+
+
+def _send_assignment_email(transcript, user_email: str):
+    """Tell the agent a call landed on their extension and needs review."""
+    link = f"{FRONTEND_BASE_URL}/user/transcripts/{transcript.id}" if FRONTEND_BASE_URL else str(transcript.id)
+    client = _clean_string(transcript.client_name) or _clean_string(transcript.client_number) or "Unknown caller"
+    lines = [
+        f"A call assigned to you is ready for review: {client}",
+        "",
+        f"Client: {client}",
+        f"Number: {_clean_string(transcript.client_number) or 'Unknown'}",
+        f"Reason for call: {_clean_string(transcript.reason_for_call) or 'Not identified'}",
+        f"Call time: {transcript.start_time or 'Unknown'}",
+    ]
+    if transcript.queue_name:
+        lines.append(f"Arrived via: {transcript.queue_name}")
+    follow_up = _clean_string(transcript.follow_up_task)
+    if follow_up:
+        lines += ["", "Follow-up noted on the call:", follow_up]
+    lines += [
+        "",
+        "Please review the transcription and the notes, correct anything the AI got wrong,",
+        "and approve the transcript when it is accurate.",
+        "",
+        f"Open the call: {link}",
+    ]
+
+    alerts.send_email_async(
+        subject=f"Review your call: {client}",
+        body_text="\n".join(lines),
+        to_addresses=[user_email],
+    )
+
+
+def _seed_extension_emails():
+    """Create or update user records from EXTENSION_EMAIL_MAP at startup."""
+    entries = [entry.strip() for entry in EXTENSION_EMAIL_MAP.split(",") if entry.strip()]
+    if not entries:
+        return
+
+    db = SessionLocal()
+    try:
+        for entry in entries:
+            if ":" not in entry:
+                logger.warning("Ignoring malformed EXTENSION_EMAIL_MAP entry: %s", entry)
+                continue
+            extension, email = (part.strip() for part in entry.split(":", 1))
+            if not extension or not email:
+                continue
+            user = db.query(models.UserToken).filter(models.UserToken.user_id == extension).first()
+            if user:
+                if user.email != email:
+                    user.email = email
+                    logger.info("Updated email for extension %s", extension)
+            else:
+                db.add(models.UserToken(token_id=str(uuid.uuid4()), user_id=extension, email=email))
+                logger.info("Registered extension %s for assignment emails", extension)
+        db.commit()
+    except Exception:
+        logger.exception("Failed to seed extension emails")
+    finally:
+        db.close()
 
 
 def _local_tz():
@@ -713,6 +823,11 @@ def bootstrap_admin_account():
 
 
 @app.on_event("startup")
+def seed_extension_emails_on_startup():
+    _seed_extension_emails()
+
+
+@app.on_event("startup")
 def start_background_jobs():
     if DIGEST_ENABLED and alerts.is_email_configured():
         thread = threading.Thread(target=_daily_digest_loop, name="daily-digest", daemon=True)
@@ -813,13 +928,19 @@ def add_user_page(request: Request, db: Session = Depends(get_db)):
 def add_user(
     request: Request,
     user_id: str = Form(...),
-    user_token: str = Form(...),
+    email: str = Form(""),
+    user_token: str = Form(""),
     db: Session = Depends(get_db),
 ):
     if not get_logged_in_admin(request, db):
         return RedirectResponse(url="/", status_code=303)
 
-    new_user = models.UserToken(user_id=user_id, token=user_token)
+    new_user = models.UserToken(
+        token_id=str(uuid.uuid4()),
+        user_id=_clean_string(user_id),
+        email=_clean_string(email),
+        token=_clean_string(user_token),
+    )
     db.add(new_user)
     db.commit()
     return RedirectResponse(url="/admin/dashboard", status_code=303)
@@ -846,12 +967,14 @@ def edit_user_page(token_id: str, request: Request, db: Session = Depends(get_db
 # Update an existing notification user token.
 def update_user(
     token_id: str,
-    user_token: str = Form(...),
+    email: str = Form(""),
+    user_token: str = Form(""),
     db: Session = Depends(get_db),
 ):
     user = db.query(models.UserToken).filter(models.UserToken.token_id == token_id).first()
     if user:
-        user.token = user_token
+        user.email = _clean_string(email)
+        user.token = _clean_string(user_token)
         db.commit()
     return RedirectResponse(url="/admin/dashboard?updated=1", status_code=303)
 
@@ -1130,25 +1253,64 @@ def agency_zoom_search(id: str, request: Request, db: Session = Depends(get_db))
     if transcript is None:
         raise HTTPException(status_code=404, detail="Transcript not found")
 
-    query = _clean_string(request.query_params.get("q")) or _clean_string(transcript.client_number)
-    if not query:
-        return JSONResponse(content={"query": None, "results": []})
+    explicit_query = _clean_string(request.query_params.get("q"))
+    if explicit_query:
+        attempts = [(explicit_query, "your search")]
+    else:
+        # Widen automatically: phone first, then the names we know for the call
+        attempts = [
+            (_clean_string(transcript.client_number), "client number"),
+            (_clean_string(transcript.caller_number), "caller number"),
+            (_clean_string(transcript.client_name), "client name"),
+            (_clean_string(transcript.from_name), "caller name"),
+        ]
+        attempts = [(value, label) for value, label in attempts if value]
 
-    try:
-        results = search_agency_zoom_customers(query) + search_agency_zoom_leads(query)
-    except Exception as exc:
-        logger.exception("Agency Zoom search failed for transcript %s", id)
-        raise HTTPException(status_code=502, detail=f"Agency Zoom search failed: {exc}") from exc
+    if not attempts:
+        return JSONResponse(content={"query": None, "query_label": None, "results": []})
 
-    seen: set[str] = set()
-    unique_results = []
-    for result in results:
-        key = f"{result.get('type')}:{result.get('id')}"
-        if result.get("id") and key not in seen:
-            seen.add(key)
-            unique_results.append(result)
+    call_digits = _last_ten_digits(transcript.client_number) or _last_ten_digits(transcript.caller_number)
+    used_query = attempts[0][0]
+    used_label = attempts[0][1]
+    unique_results: list[dict] = []
 
-    return JSONResponse(content={"query": query, "results": unique_results})
+    for value, label in attempts:
+        try:
+            found = search_agency_zoom_customers(value) + search_agency_zoom_leads(value)
+        except Exception as exc:
+            logger.exception("Agency Zoom search failed for transcript %s", id)
+            raise HTTPException(status_code=502, detail=f"Agency Zoom search failed: {exc}") from exc
+
+        seen: set[str] = set()
+        unique_results = []
+        for result in found:
+            key = f"{result.get('type')}:{result.get('id')}"
+            if result.get("id") and key not in seen:
+                seen.add(key)
+                # Flag records whose phone matches this call exactly
+                result["exact_phone"] = bool(
+                    call_digits and _last_ten_digits(result.get("phone")) == call_digits
+                )
+                unique_results.append(result)
+
+        if unique_results:
+            used_query, used_label = value, label
+            break
+
+    # Exact phone matches first, then customers before leads, then by name
+    unique_results.sort(
+        key=lambda record: (
+            not record.get("exact_phone"),
+            record.get("type") != "customer",
+            (record.get("name") or "").lower(),
+        )
+    )
+
+    return JSONResponse(content={
+        "query": used_query,
+        "query_label": used_label,
+        "results": unique_results,
+    })
 
 
 @app.post("/api/transcripts/{id}/agencyzoom/link")
@@ -1159,6 +1321,7 @@ def agency_zoom_link(
     customer_id: str = Form(""),
     customer_type: str = Form("customer"),
     customer_name: str = Form(""),
+    apply_to_number: str = Form(""),
     db: Session = Depends(get_db),
 ):
     if not get_logged_in_admin(request, db):
@@ -1169,12 +1332,39 @@ def agency_zoom_link(
         raise HTTPException(status_code=404, detail="Transcript not found")
 
     # An empty customer_id clears the link
-    transcript.agency_zoom_customer_id = _clean_string(customer_id)
-    transcript.agency_zoom_customer_type = _clean_string(customer_type) or "customer"
-    transcript.agency_zoom_customer_name = _clean_string(customer_name)
-    if not transcript.agency_zoom_customer_id:
-        transcript.agency_zoom_customer_type = None
-        transcript.agency_zoom_customer_name = None
+    linked_id = _clean_string(customer_id)
+    linked_type = (_clean_string(customer_type) or "customer") if linked_id else None
+    linked_name = _clean_string(customer_name) if linked_id else None
+
+    transcript.agency_zoom_customer_id = linked_id
+    transcript.agency_zoom_customer_type = linked_type
+    transcript.agency_zoom_customer_name = linked_name
+
+    # Optionally apply the same link to every other call from this number
+    also_updated = 0
+    if apply_to_number.strip().lower() in {"1", "true", "yes", "on"}:
+        digits = _last_ten_digits(transcript.client_number) or _last_ten_digits(transcript.caller_number)
+        if digits:
+            siblings = (
+                db.query(models.TranscriptResponse)
+                .filter(models.TranscriptResponse.id != transcript.id)
+                .filter(
+                    or_(
+                        models.TranscriptResponse.client_number.like(f"%{digits[-7:]}%"),
+                        models.TranscriptResponse.caller_number.like(f"%{digits[-7:]}%"),
+                    )
+                )
+                .all()
+            )
+            for sibling in siblings:
+                sibling_digits = _last_ten_digits(sibling.client_number) or _last_ten_digits(sibling.caller_number)
+                if sibling_digits != digits:
+                    continue
+                sibling.agency_zoom_customer_id = linked_id
+                sibling.agency_zoom_customer_type = linked_type
+                sibling.agency_zoom_customer_name = linked_name
+                also_updated += 1
+
     db.commit()
 
     return JSONResponse(content={
@@ -1183,6 +1373,7 @@ def agency_zoom_link(
         "customer_id": transcript.agency_zoom_customer_id,
         "customer_type": transcript.agency_zoom_customer_type,
         "customer_name": transcript.agency_zoom_customer_name,
+        "also_updated": also_updated,
     })
 
 
@@ -1283,8 +1474,16 @@ def create_transcript(
         confidence_score=data.confidence_score,
     )
 
+    # If this caller was matched to an Agency Zoom record on an earlier call,
+    # carry that link forward instead of re-searching.
+    try:
+        _reuse_known_agency_zoom_link(db, new_transcript)
+    except Exception:
+        logger.exception("Could not reuse a previous Agency Zoom link for %s", new_transcript.recordingID)
+
     # Auto-assign to the user registered for this extension (or owner id), so
     # calls land on the right agent's plate without manual triage.
+    assigned_user = None
     if AUTO_ASSIGN_FROM_OWNER and not new_transcript.assigned_to:
         for candidate in (extension_number, resolved_owner_id):
             if not candidate:
@@ -1296,6 +1495,7 @@ def create_transcript(
             )
             if registered_user:
                 new_transcript.assigned_to = registered_user.user_id
+                assigned_user = registered_user
                 break
 
     db.add(new_transcript)
@@ -1327,11 +1527,27 @@ def create_transcript(
             except Exception:
                 logger.exception("Failed to auto-create AgencyZoom tasks for transcript %s", new_transcript.id)
 
+    # Tell the assigned agent their call is ready to review
+    if ASSIGNMENT_EMAILS_ENABLED:
+        recipient = assigned_user or (
+            db.query(models.UserToken)
+            .filter(models.UserToken.user_id == new_transcript.assigned_to)
+            .first()
+            if new_transcript.assigned_to
+            else None
+        )
+        recipient_email = _clean_string(getattr(recipient, "email", None))
+        if recipient_email:
+            try:
+                _send_assignment_email(new_transcript, recipient_email)
+            except Exception:
+                logger.exception("Failed to send assignment email for transcript %s", new_transcript.id)
+
     data.owner_id = resolved_owner_id
     data.client_number = resolved_client_number
     structured_response = _extract_structured_fields(data)
     user_token = db.query(models.UserToken).filter(models.UserToken.user_id == new_transcript.owner_id).first()
-    if user_token:
+    if user_token and _clean_string(user_token.token):
         send_push_notification(str(new_transcript.id), user_token.token, structured_response)
 
     return JSONResponse(content=structured_response, status_code=200)

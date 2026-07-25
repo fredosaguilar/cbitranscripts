@@ -18,8 +18,12 @@
         <label>User ID</label>
         <input type="text" value="{{ user.user_id }}" readonly>
 
-        <label>User Token</label>
-        <input type="text" name="user_token" value="{{ user.token }}" required>
+        <label>Email</label>
+        <input type="email" name="email" value="{{ user.email or '' }}"
+               placeholder="name@columbiabasininsurance.com">
+
+        <label>User Token (Pushover key, optional)</label>
+        <input type="text" name="user_token" value="{{ user.token or '' }}">
 
         <div class="btn-group">
             <button type="submit">Update</button>

@@ -63,7 +63,8 @@
         <thead>
             <tr>
                 <th>#</th>
-                <th>Owner Id</th>
+                <th>Owner Id (Extension)</th>
+                <th>Email</th>
                 <th>Token</th>
                 <th>Actions</th>
             </tr>
@@ -73,7 +74,8 @@
             <tr>
                 <td>{{ loop.index }}</td>
                 <td>{{ user.user_id }}</td>
-                <td class="token">{{ user.token }}</td>
+                <td>{{ user.email or "—" }}</td>
+                <td class="token">{{ user.token or "—" }}</td>
                 <td class="actions">
                     <a href="/admin/edit-user/{{ user.token_id }}" class="edit-btn">Edit</a>
                     <a href="/admin/delete-user/{{ user.token_id }}" class="delete-btn" onclick="return confirm('Are you sure you want to delete this user?');">Delete</a>
