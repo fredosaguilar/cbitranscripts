@@ -174,6 +174,9 @@ AUDIO_CACHE_RETENTION_DAYS = int(os.getenv("AUDIO_CACHE_RETENTION_DAYS", "90"))
 # agents sharing a phone number are told apart. Set false to keep phone numbers.
 OWNER_ID_FROM_EXTENSION = _env_flag("OWNER_ID_FROM_EXTENSION")
 
+# Assign a new transcript to the user registered under its extension/owner id
+AUTO_ASSIGN_FROM_OWNER = _env_flag("AUTO_ASSIGN_FROM_OWNER")
+
 FRONTEND_BASE_URL = (os.getenv("FRONTEND_BASE_URL") or "").rstrip("/")
 
 logger = logging.getLogger(__name__)
@@ -760,7 +763,38 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         return RedirectResponse(url="/", status_code=303)
 
     users_tokens = db.query(models.UserToken).all()
-    context = {"request": request, "users_tokens": users_tokens}
+    registered_ids = {token.user_id for token in users_tokens}
+
+    # Extensions seen on recent calls, so each one can be mapped to an agent
+    extension_rows = (
+        db.query(
+            models.TranscriptResponse.extension_number,
+            models.TranscriptResponse.extension_name,
+            func.count(models.TranscriptResponse.id).label("call_count"),
+        )
+        .filter(models.TranscriptResponse.extension_number.isnot(None))
+        .group_by(
+            models.TranscriptResponse.extension_number,
+            models.TranscriptResponse.extension_name,
+        )
+        .order_by(desc("call_count"))
+        .all()
+    )
+    seen_extensions = [
+        {
+            "number": row.extension_number,
+            "name": row.extension_name or "",
+            "calls": row.call_count,
+            "registered": row.extension_number in registered_ids,
+        }
+        for row in extension_rows
+    ]
+
+    context = {
+        "request": request,
+        "users_tokens": users_tokens,
+        "seen_extensions": seen_extensions,
+    }
     return templates.TemplateResponse(request, "dashboard.html", context)
 
 
@@ -1246,6 +1280,21 @@ def create_transcript(
         missing_information=data.missing_information,
         confidence_score=data.confidence_score,
     )
+
+    # Auto-assign to the user registered for this extension (or owner id), so
+    # calls land on the right agent's plate without manual triage.
+    if AUTO_ASSIGN_FROM_OWNER and not new_transcript.assigned_to:
+        for candidate in (extension_number, resolved_owner_id):
+            if not candidate:
+                continue
+            registered_user = (
+                db.query(models.UserToken)
+                .filter(models.UserToken.user_id == candidate)
+                .first()
+            )
+            if registered_user:
+                new_transcript.assigned_to = registered_user.user_id
+                break
 
     db.add(new_transcript)
     db.commit()
