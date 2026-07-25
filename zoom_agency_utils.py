@@ -13,6 +13,7 @@ AGENCY_ZOOM_BASE_URL = os.getenv("AGENCY_ZOOM_BASE_URL", "https://api.agencyzoom
 AGENCY_ZOOM_LOGIN_URL = f"{AGENCY_ZOOM_BASE_URL}/v1/api/auth/login"
 AGENCY_ZOOM_TASKS_URL = f"{AGENCY_ZOOM_BASE_URL}/v1/api/tasks"
 AGENCY_ZOOM_CUSTOMERS_URL = f"{AGENCY_ZOOM_BASE_URL}/v1/api/customers"
+AGENCY_ZOOM_LEADS_URL = f"{AGENCY_ZOOM_BASE_URL}/v1/api/leads"
 AGENCY_ZOOM_EMPLOYEES_URL = f"{AGENCY_ZOOM_BASE_URL}/v1/api/employees"
 
 USERNAME = os.getenv("USER_NAME")
@@ -206,6 +207,160 @@ def get_agency_zoom_customer_by_phone(
     return _parse_response(response)
 
 
+# Reduce any phone value to its last ten digits for reliable comparison.
+def _last_ten_digits(value: Any) -> str:
+    digits = re.sub(r"\D", "", str(value or ""))
+    return digits[-10:] if len(digits) >= 10 else digits
+
+
+# Common US phone formats a number might be stored under in Agency Zoom.
+def _phone_variants(phone: Any) -> list[str]:
+    digits = _last_ten_digits(phone)
+    if len(digits) < 10:
+        cleaned = _clean_string(phone)
+        return [cleaned] if cleaned else []
+    return [
+        f"({digits[:3]}) {digits[3:6]}-{digits[6:]}",
+        digits,
+        f"+1{digits}",
+        f"1{digits}",
+        f"{digits[:3]}-{digits[3:6]}-{digits[6:]}",
+    ]
+
+
+# Pull record lists out of the various response shapes Agency Zoom returns.
+def _extract_candidate_records(response_data: Any) -> list[dict[str, Any]]:
+    if isinstance(response_data, list):
+        return [record for record in response_data if isinstance(record, dict)]
+    if isinstance(response_data, dict):
+        for key in ["customers", "leads", "data", "results", "items"]:
+            candidate = response_data.get(key)
+            if isinstance(candidate, list):
+                return [record for record in candidate if isinstance(record, dict)]
+            if isinstance(candidate, dict):
+                nested = _extract_candidate_records(candidate)
+                if nested:
+                    return nested
+        if any(key in response_data for key in ("id", "customerId", "customerID", "leadId", "leadID")):
+            return [response_data]
+    return []
+
+
+# Condense an Agency Zoom customer/lead record into a uniform summary dict.
+def _candidate_summary(record: dict[str, Any], record_type: str) -> dict[str, Any]:
+    first = _clean_string(record.get("firstName") or record.get("firstname"))
+    last = _clean_string(record.get("lastName") or record.get("lastname"))
+    name = (
+        _clean_string(record.get("name"))
+        or " ".join(part for part in [first, last] if part)
+        or _clean_string(record.get("businessName"))
+        or _clean_string(record.get("companyName"))
+    )
+    phone = _clean_string(
+        record.get("phone")
+        or record.get("phoneNumber")
+        or record.get("mobile")
+        or record.get("cellPhone")
+        or record.get("homePhone")
+    )
+    record_id = None
+    for key in ("id", "customerId", "customerID", "leadId", "leadID"):
+        if record.get(key):
+            record_id = str(record[key])
+            break
+    return {
+        "id": record_id,
+        "type": record_type,
+        "name": name,
+        "phone": phone,
+        "email": _clean_string(record.get("email")),
+    }
+
+
+# Search Agency Zoom customers, retrying every common phone format.
+def search_agency_zoom_customers(query: Any, jwt_token: Optional[str] = None) -> list[dict[str, Any]]:
+    token = jwt_token or zomm_agency_login()
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    is_phone = len(_last_ten_digits(query)) >= 10
+    attempts = _phone_variants(query) if is_phone else [_clean_string(query)]
+
+    found: dict[str, dict[str, Any]] = {}
+    for attempt in attempts:
+        if not attempt:
+            continue
+        payload = {"phone": attempt} if is_phone else {"searchText": attempt}
+        try:
+            response = requests.post(AGENCY_ZOOM_CUSTOMERS_URL, json=payload, headers=headers, timeout=REQUEST_TIMEOUT)
+            response.raise_for_status()
+            for record in _extract_candidate_records(_parse_response(response)):
+                summary = _candidate_summary(record, "customer")
+                if summary["id"] and summary["id"] not in found:
+                    found[summary["id"]] = summary
+        except Exception:
+            continue
+        if found:
+            break
+    return list(found.values())
+
+
+# Search Agency Zoom leads, tolerating either search endpoint shape.
+def search_agency_zoom_leads(query: Any, jwt_token: Optional[str] = None) -> list[dict[str, Any]]:
+    token = jwt_token or zomm_agency_login()
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    is_phone = len(_last_ten_digits(query)) >= 10
+    attempts = _phone_variants(query) if is_phone else [_clean_string(query)]
+
+    found: dict[str, dict[str, Any]] = {}
+    for attempt in attempts:
+        if not attempt:
+            continue
+        for method, url, payload in (
+            ("post", f"{AGENCY_ZOOM_LEADS_URL}/search", {"searchText": attempt}),
+            ("get", AGENCY_ZOOM_LEADS_URL, {"searchText": attempt}),
+        ):
+            try:
+                if method == "post":
+                    response = requests.post(url, json=payload, headers=headers, timeout=REQUEST_TIMEOUT)
+                else:
+                    response = requests.get(url, params=payload, headers=headers, timeout=REQUEST_TIMEOUT)
+                if response.status_code == 404:
+                    continue
+                response.raise_for_status()
+                for record in _extract_candidate_records(_parse_response(response)):
+                    summary = _candidate_summary(record, "lead")
+                    if summary["id"] and summary["id"] not in found:
+                        found[summary["id"]] = summary
+            except Exception:
+                continue
+            if found:
+                break
+        if found:
+            break
+    return list(found.values())
+
+
+# Find the best customer-or-lead match for a phone number.
+# Prefers a candidate whose stored phone shares the same last ten digits;
+# accepts a sole candidate otherwise; returns None when ambiguous or absent.
+def find_agency_zoom_match(phone: Any, jwt_token: Optional[str] = None) -> Optional[dict[str, Any]]:
+    digits = _last_ten_digits(phone)
+    if len(digits) < 10:
+        return None
+
+    token = jwt_token or zomm_agency_login()
+    candidates = search_agency_zoom_customers(phone, jwt_token=token)
+    candidates += search_agency_zoom_leads(phone, jwt_token=token)
+    if not candidates:
+        return None
+
+    for candidate in candidates:
+        if candidate["phone"] and _last_ten_digits(candidate["phone"]) == digits:
+            return candidate
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
 # Create a CRM note for an existing Agency Zoom customer.
 def create_agency_zoom_customer_note(
     customer_id: int | str,
@@ -387,16 +542,11 @@ def create_agency_zoom_tasks_for_transcript(transcript: Any) -> list[str]:
     print(f"\n\n\nResolved assignee ID: {assignee_id} for transcript with client number: {getattr(transcript, 'client_number', None)}")
 
 
-    phone = _normalize_phone_number(getattr(transcript, "client_number", None))
-    if phone:
-        try:
-            customer_data = get_agency_zoom_customer_by_phone(phone, jwt_token=jwt_token)
-            customer_id = _extract_agency_zoom_customer_id(customer_data)
-            if customer_id:
-                customer_type = "customer"
-        except Exception:
-            customer_id = None
-            customer_type = None
+    match = resolve_transcript_agency_zoom_match(transcript, jwt_token=jwt_token)
+    if match:
+        customer_id = match.get("id")
+        customer_type = match.get("type") or "customer"
+        customer_name = match.get("name") or customer_name
 
     for task_line in normalized_tasks.splitlines():
         task_title = task_line.strip()
@@ -422,23 +572,44 @@ def create_agency_zoom_tasks_for_transcript(transcript: Any) -> list[str]:
     return created_task_ids
 
 
+# Resolve the Agency Zoom record for a transcript: a manually linked match
+# wins, otherwise fall back to searching every phone number we know for the call.
+def resolve_transcript_agency_zoom_match(transcript: Any, jwt_token: Optional[str] = None) -> Optional[dict[str, Any]]:
+    linked_id = _clean_string(getattr(transcript, "agency_zoom_customer_id", None))
+    if linked_id:
+        return {
+            "id": linked_id,
+            "type": _clean_string(getattr(transcript, "agency_zoom_customer_type", None)) or "customer",
+            "name": _clean_string(getattr(transcript, "agency_zoom_customer_name", None))
+            or _clean_string(getattr(transcript, "client_name", None)),
+            "phone": _clean_string(getattr(transcript, "client_number", None)),
+            "source": "linked",
+        }
+
+    token = jwt_token or zomm_agency_login()
+    for attribute in ("client_number", "caller_number", "to_phoneNumber"):
+        match = find_agency_zoom_match(getattr(transcript, attribute, None), jwt_token=token)
+        if match:
+            match["source"] = f"auto:{attribute}"
+            return match
+    return None
+
+
 # Create an Agency Zoom customer note using the transcript CRM note.
 def create_agency_zoom_customer_note_for_transcript(transcript: Any) -> Dict[str, Any]:
-    phone = _normalize_phone_number(getattr(transcript, "client_number", None))
-    if not phone:
-        raise ValueError("Client number is required to create an Agency Zoom customer note.")
-
     note = _clean_string(getattr(transcript, "crm_note", None))
     if not note:
         raise ValueError("crm_note is required to create an Agency Zoom customer note.")
 
     jwt_token = zomm_agency_login()
-    customer_data = get_agency_zoom_customer_by_phone(phone, jwt_token=jwt_token)
-    customer_id = _extract_agency_zoom_customer_id(customer_data)
-    if not customer_id:
-        raise ValueError("Agency Zoom customer id was not found for the transcript phone number.")
+    match = resolve_transcript_agency_zoom_match(transcript, jwt_token=jwt_token)
+    if not match or not match.get("id"):
+        raise ValueError(
+            "No Agency Zoom customer or lead matched this call. Use \"Find in Agency Zoom\" on the "
+            "transcript page to link the right record, then approve again."
+        )
 
-    return create_agency_zoom_customer_note(customer_id=customer_id, note=note, jwt_token=jwt_token)
+    return create_agency_zoom_customer_note(customer_id=match["id"], note=note, jwt_token=jwt_token)
 
 # Fetch and cache the Agency Zoom employee list.
 def get_agency_zoom_employee_list(jwt_token: Optional[str] = None) -> Dict[str, Any]:

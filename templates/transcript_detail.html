@@ -128,6 +128,22 @@
         <div class="transcription-box">{{ transcript.missing_information or "No data available." }}</div>
     </div>
 
+    <div class="section">
+        <h3 class="section-title">Agency Zoom Match</h3>
+        <div id="azStatus" style="margin-bottom:10px;">Checking…</div>
+
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            <input type="text" id="azQuery" placeholder="Search by phone, name, or email…"
+                   value="{{ transcript.client_number or '' }}" style="flex:1; min-width:240px;">
+            <button type="button" onclick="azSearch()">Search Agency Zoom</button>
+            {% if transcript.agency_zoom_customer_id %}
+            <button type="button" onclick="azLink('', '', '')">Unlink</button>
+            {% endif %}
+        </div>
+
+        <div id="azResults" style="margin-top:12px;"></div>
+    </div>
+
     {% if transcript.transcription_original %}
     <div class="section">
         <h3 class="section-title">Original Language Transcript</h3>
@@ -208,6 +224,85 @@
 <div id="toast" class="toast"></div>
 
 <script>
+    const AZ_TRANSCRIPT_ID = "{{ transcript.id }}";
+
+    async function azLoadStatus() {
+        const box = document.getElementById("azStatus");
+        try {
+            const res = await fetch(`/api/transcripts/${AZ_TRANSCRIPT_ID}/agencyzoom/status`);
+            const data = await res.json();
+            if (data.match && data.match.id) {
+                const m = data.match;
+                const how = m.source === "linked" ? "manually linked" : "matched automatically";
+                box.innerHTML = `<b>Linked:</b> ${m.name || "(no name)"} — ${m.type} #${m.id} <i>(${how})</i>`;
+            } else {
+                box.innerHTML = `<b>No match found.</b> Search below and link the correct customer or lead.`;
+            }
+        } catch (e) {
+            box.textContent = "Could not check Agency Zoom.";
+        }
+    }
+
+    async function azSearch() {
+        const q = document.getElementById("azQuery").value.trim();
+        const results = document.getElementById("azResults");
+        results.textContent = "Searching…";
+        try {
+            const res = await fetch(`/api/transcripts/${AZ_TRANSCRIPT_ID}/agencyzoom/search?q=${encodeURIComponent(q)}`);
+            if (!res.ok) throw new Error();
+            const data = await res.json();
+            results.textContent = "";
+            if (!data.results || data.results.length === 0) {
+                results.innerHTML = "<i>No customers or leads found for that search.</i>";
+                return;
+            }
+            data.results.forEach(r => {
+                const row = document.createElement("div");
+                row.style.cssText = "display:flex; gap:10px; align-items:center; padding:6px 0; border-bottom:1px solid rgba(128,128,128,0.2);";
+
+                const info = document.createElement("div");
+                info.style.flex = "1";
+                const title = document.createElement("b");
+                title.textContent = r.name || "(no name)";
+                info.appendChild(title);
+                info.appendChild(document.createTextNode(` — ${r.type} #${r.id}`));
+                info.appendChild(document.createElement("br"));
+                const sub = document.createElement("small");
+                sub.textContent = (r.phone || "no phone") + (r.email ? " · " + r.email : "");
+                info.appendChild(sub);
+
+                const button = document.createElement("button");
+                button.type = "button";
+                button.textContent = "Link";
+                button.addEventListener("click", () => azLink(r.id, r.type, r.name || ""));
+
+                row.appendChild(info);
+                row.appendChild(button);
+                results.appendChild(row);
+            });
+        } catch (e) {
+            results.textContent = "Agency Zoom search failed.";
+        }
+    }
+
+    async function azLink(customerId, customerType, customerName) {
+        const body = new FormData();
+        body.append("customer_id", customerId);
+        body.append("customer_type", customerType || "customer");
+        body.append("customer_name", customerName || "");
+        try {
+            const res = await fetch(`/api/transcripts/${AZ_TRANSCRIPT_ID}/agencyzoom/link`, { method: "POST", body });
+            if (!res.ok) throw new Error();
+            showToast(customerId ? "Linked to Agency Zoom" : "Agency Zoom link cleared");
+            document.getElementById("azResults").innerHTML = "";
+            azLoadStatus();
+        } catch (e) {
+            showToast("Failed to save Agency Zoom link");
+        }
+    }
+
+    azLoadStatus();
+
     async function updateTranscription() {
         const text = document.getElementById("transcriptionInput").value;
         const reasonForCall = document.getElementById("reasonForCallInput").value;

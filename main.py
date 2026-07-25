@@ -43,6 +43,9 @@ from zoom_agency_utils import (
     create_agency_zoom_customer_note_for_transcript,
     create_agency_zoom_tasks_for_transcript,
     normalize_follow_up_task,
+    resolve_transcript_agency_zoom_match,
+    search_agency_zoom_customers,
+    search_agency_zoom_leads,
 )
 
 models.Base.metadata.create_all(bind=engine)
@@ -77,6 +80,9 @@ def on_startup():
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS missing_information TEXT",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS confidence_score INTEGER",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS transcription_original TEXT",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_id VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_type VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_name VARCHAR",
     ]
     with engine.connect() as conn:
         for sql in migrations:
@@ -1072,6 +1078,72 @@ def assign_transcript(id: str, assigned_to: str = Form(""), db: Session = Depend
     return JSONResponse(content={"status": "ok"})
 
 
+@app.get("/api/transcripts/{id}/agencyzoom/search")
+# Search Agency Zoom customers and leads for a transcript, by phone or name.
+def agency_zoom_search(id: str, request: Request, db: Session = Depends(get_db)):
+    if not get_logged_in_admin(request, db):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    transcript = db.query(models.TranscriptResponse).filter(models.TranscriptResponse.id == id).first()
+    if transcript is None:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+
+    query = _clean_string(request.query_params.get("q")) or _clean_string(transcript.client_number)
+    if not query:
+        return JSONResponse(content={"query": None, "results": []})
+
+    try:
+        results = search_agency_zoom_customers(query) + search_agency_zoom_leads(query)
+    except Exception as exc:
+        logger.exception("Agency Zoom search failed for transcript %s", id)
+        raise HTTPException(status_code=502, detail=f"Agency Zoom search failed: {exc}") from exc
+
+    seen: set[str] = set()
+    unique_results = []
+    for result in results:
+        key = f"{result.get('type')}:{result.get('id')}"
+        if result.get("id") and key not in seen:
+            seen.add(key)
+            unique_results.append(result)
+
+    return JSONResponse(content={"query": query, "results": unique_results})
+
+
+@app.post("/api/transcripts/{id}/agencyzoom/link")
+# Link a transcript to a specific Agency Zoom customer or lead.
+def agency_zoom_link(
+    id: str,
+    request: Request,
+    customer_id: str = Form(""),
+    customer_type: str = Form("customer"),
+    customer_name: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    if not get_logged_in_admin(request, db):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    transcript = db.query(models.TranscriptResponse).filter(models.TranscriptResponse.id == id).first()
+    if transcript is None:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+
+    # An empty customer_id clears the link
+    transcript.agency_zoom_customer_id = _clean_string(customer_id)
+    transcript.agency_zoom_customer_type = _clean_string(customer_type) or "customer"
+    transcript.agency_zoom_customer_name = _clean_string(customer_name)
+    if not transcript.agency_zoom_customer_id:
+        transcript.agency_zoom_customer_type = None
+        transcript.agency_zoom_customer_name = None
+    db.commit()
+
+    return JSONResponse(content={
+        "status": "ok",
+        "linked": bool(transcript.agency_zoom_customer_id),
+        "customer_id": transcript.agency_zoom_customer_id,
+        "customer_type": transcript.agency_zoom_customer_type,
+        "customer_name": transcript.agency_zoom_customer_name,
+    })
+
+
 @app.post("/admin/transcripts/{id}/delete")
 # Delete a transcript record.
 def delete_transcript(id: str, db: Session = Depends(get_db)):
@@ -1235,6 +1307,25 @@ def transcript_detail(id: str, request: Request, db: Session = Depends(get_db)):
         "transcript_detail.html",
         {"transcript": transcript, "error_message": error_message},
     )
+
+
+@app.get("/api/transcripts/{id}/agencyzoom/status")
+# Report whether this transcript resolves to an Agency Zoom customer or lead.
+def agency_zoom_status(id: str, request: Request, db: Session = Depends(get_db)):
+    if not get_logged_in_admin(request, db):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    transcript = db.query(models.TranscriptResponse).filter(models.TranscriptResponse.id == id).first()
+    if transcript is None:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+
+    try:
+        match = resolve_transcript_agency_zoom_match(transcript)
+    except Exception:
+        logger.exception("Agency Zoom match lookup failed for transcript %s", id)
+        return JSONResponse(content={"match": None, "error": "Agency Zoom lookup failed"}, status_code=200)
+
+    return JSONResponse(content={"match": match})
 
 
 @app.get("/api/transcripts/{id}/audio")
