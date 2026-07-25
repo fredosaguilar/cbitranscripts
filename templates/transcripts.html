@@ -4,6 +4,22 @@
 
 {% block extra_css %}
 <link rel="stylesheet" href="/static/css/transcripts.css">
+<style>
+    .az-button { font-size: 0.72rem; padding: 1px 6px; margin-left: 6px; cursor: pointer;
+                 border: 1px solid rgba(128,128,128,0.45); border-radius: 4px; background: transparent; }
+    .az-linked { font-weight: 600; }
+    .az-unlinked { opacity: 0.85; }
+    .az-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 900; }
+    .az-modal { display: none; position: fixed; z-index: 901; top: 50%; left: 50%; transform: translate(-50%,-50%);
+                width: min(560px, 92vw); max-height: 80vh; overflow: auto; padding: 20px;
+                border-radius: 10px; background: #fff; color: #111; box-shadow: 0 12px 40px rgba(0,0,0,0.3); }
+    @media (prefers-color-scheme: dark) { .az-modal { background: #1f2530; color: #f2f4f7; } }
+    .az-modal h3 { margin: 0 0 12px; }
+    .az-modal input[type=text] { width: 100%; padding: 8px; box-sizing: border-box; }
+    .az-row { display: flex; gap: 10px; align-items: center; padding: 8px 0;
+              border-bottom: 1px solid rgba(128,128,128,0.25); }
+    .az-actions { display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end; }
+</style>
 {% endblock %}
 
 {% block content %}
@@ -73,7 +89,6 @@
                 <th>Owner ID</th>
                 <th>Client Name</th>
                 <th>Client Number</th>
-                <th>Recording ID</th>
                 <th>Agency Zoom Task IDs</th>
                 <th>File Link</th>
                 <th>Transcript</th>
@@ -97,9 +112,21 @@
                     </select>
                 </td>
                 <td>{{ item.owner_id }}</td>
-                <td>{{ item.client_name or "-" }}</td>
+                <td class="client-name-cell" id="az-cell-{{ item.id }}"
+                    data-client-name="{{ item.client_name or '-' }}">
+                    {% if item.agency_zoom_customer_name %}
+                    <span class="az-linked" title="Linked Agency Zoom {{ item.agency_zoom_customer_type or 'customer' }}">
+                        {{ item.agency_zoom_customer_name }}
+                    </span>
+                    <button type="button" class="az-button"
+                            onclick="azOpen('{{ item.id }}', '{{ item.client_number or '' }}')">change</button>
+                    {% else %}
+                    <span class="az-unlinked">{{ item.client_name or "-" }}</span>
+                    <button type="button" class="az-button"
+                            onclick="azOpen('{{ item.id }}', '{{ item.client_number or '' }}')">find in AZ</button>
+                    {% endif %}
+                </td>
                 <td>{{ item.client_number or "-" }}</td>
-                <td>{{ item.recordingID or "-" }}</td>
                 <td>{{ (item.agency_zoom_task_ids or "-").replace('\n', ', ') }}</td>
 
                 <td>
@@ -149,6 +176,22 @@
 <div class="empty">No transcripts match these filters.</div>
 {% endif %}
 </section>
+
+<div class="az-overlay" id="azOverlay" onclick="azClose()"></div>
+<div class="az-modal" id="azModal" role="dialog" aria-modal="true" aria-labelledby="azModalTitle">
+    <h3 id="azModalTitle">Find in Agency Zoom</h3>
+    <p style="margin:0 0 10px; font-size:0.85rem; opacity:0.8;">
+        Search customers and leads by phone, name, or email, then link the right record to this call.
+    </p>
+    <input type="text" id="azModalQuery" placeholder="Phone, name, or email…"
+           onkeydown="if (event.key === 'Enter') azModalSearch();">
+    <div class="az-actions">
+        <button type="button" onclick="azModalSearch()">Search</button>
+        <button type="button" onclick="azModalLink('', '', '')">Unlink</button>
+        <button type="button" onclick="azClose()">Close</button>
+    </div>
+    <div id="azModalResults" style="margin-top:12px;"></div>
+</div>
 
 <script>
     function toggleAll(checkbox) {
@@ -210,6 +253,108 @@
         }
     }
 
+    let azCurrentTranscriptId = null;
+
+    function azOpen(transcriptId, phone) {
+        azCurrentTranscriptId = transcriptId;
+        document.getElementById('azModalQuery').value = phone || '';
+        document.getElementById('azModalResults').textContent = '';
+        document.getElementById('azOverlay').style.display = 'block';
+        document.getElementById('azModal').style.display = 'block';
+        document.getElementById('azModalQuery').focus();
+        if (phone) azModalSearch();
+    }
+
+    function azClose() {
+        azCurrentTranscriptId = null;
+        document.getElementById('azOverlay').style.display = 'none';
+        document.getElementById('azModal').style.display = 'none';
+    }
+
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape') azClose();
+    });
+
+    async function azModalSearch() {
+        if (!azCurrentTranscriptId) return;
+        const query = document.getElementById('azModalQuery').value.trim();
+        const results = document.getElementById('azModalResults');
+        results.textContent = 'Searching…';
+        try {
+            const res = await fetch(
+                `/api/transcripts/${azCurrentTranscriptId}/agencyzoom/search?q=${encodeURIComponent(query)}`);
+            if (!res.ok) throw new Error();
+            const data = await res.json();
+            results.textContent = '';
+            if (!data.results || data.results.length === 0) {
+                results.innerHTML = '<i>No customers or leads found.</i>';
+                return;
+            }
+            data.results.forEach(record => {
+                const row = document.createElement('div');
+                row.className = 'az-row';
+
+                const info = document.createElement('div');
+                info.style.flex = '1';
+                const title = document.createElement('b');
+                title.textContent = record.name || '(no name)';
+                info.appendChild(title);
+                info.appendChild(document.createTextNode(` — ${record.type} #${record.id}`));
+                info.appendChild(document.createElement('br'));
+                const sub = document.createElement('small');
+                sub.textContent = (record.phone || 'no phone') + (record.email ? ' · ' + record.email : '');
+                info.appendChild(sub);
+
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.textContent = 'Link';
+                button.addEventListener('click',
+                    () => azModalLink(record.id, record.type, record.name || ''));
+
+                row.appendChild(info);
+                row.appendChild(button);
+                results.appendChild(row);
+            });
+        } catch (e) {
+            results.textContent = 'Agency Zoom search failed.';
+        }
+    }
+
+    async function azModalLink(customerId, customerType, customerName) {
+        if (!azCurrentTranscriptId) return;
+        const body = new FormData();
+        body.append('customer_id', customerId);
+        body.append('customer_type', customerType || 'customer');
+        body.append('customer_name', customerName || '');
+        try {
+            const res = await fetch(`/api/transcripts/${azCurrentTranscriptId}/agencyzoom/link`,
+                { method: 'POST', body });
+            if (!res.ok) throw new Error();
+            azUpdateCell(azCurrentTranscriptId, customerId, customerName);
+            azClose();
+        } catch (e) {
+            alert('Failed to save the Agency Zoom link. Please try again.');
+        }
+    }
+
+    // Repaint the row in place so the list never needs a full reload
+    function azUpdateCell(transcriptId, customerId, customerName) {
+        const cell = document.getElementById(`az-cell-${transcriptId}`);
+        if (!cell) return;
+        const label = cell.querySelector('.az-linked, .az-unlinked');
+        const button = cell.querySelector('.az-button');
+        if (!label || !button) return;
+        if (customerId) {
+            label.className = 'az-linked';
+            label.textContent = customerName || '(no name)';
+            button.textContent = 'change';
+        } else {
+            label.className = 'az-unlinked';
+            label.textContent = cell.dataset.clientName || '-';
+            button.textContent = 'find in AZ';
+        }
+    }
+
     // Auto-refresh so newly processed calls appear without a manual reload.
     // Skipped while the tab is hidden, a search is typed, or rows are selected,
     // so it never interrupts work in progress.
@@ -218,6 +363,7 @@
         if (document.hidden) return;
         if (document.getElementById('searchInput')?.value) return;
         if (document.querySelectorAll('.row-checkbox:checked').length > 0) return;
+        if (azCurrentTranscriptId) return;
         location.reload();
     }, AUTO_REFRESH_MS);
 </script>
