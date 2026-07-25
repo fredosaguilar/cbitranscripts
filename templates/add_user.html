@@ -13,10 +13,14 @@
 <div class="form-container surface">
     <form method="post" action="/admin/add-user">
 
-        <label>User ID</label>
-        <input type="text" name="user_id" placeholder="Enter user ID" required>
+        <label>User ID (RingCentral extension number)</label>
+        <input type="text" name="user_id" placeholder="e.g. 101"
+               value="{{ request.query_params.get('user_id', '') }}" required>
+        <small style="display:block; margin:-6px 0 12px; opacity:0.8;">
+            Calls answered on this extension are assigned to this user automatically.
+        </small>
 
-        <label>User Token</label>
+        <label>User Token (Pushover key)</label>
         <input type="text" name="user_token" placeholder="Enter user token" required>
 
         <button type="submit">Add User</button>

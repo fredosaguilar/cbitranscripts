@@ -58,6 +58,7 @@ def run_safe_migrations():
         # RingCentral extension that actually handled the call on a shared line
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_number VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_name VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS queue_name VARCHAR",
     ]
     try:
         with engine.connect() as conn:

@@ -12,7 +12,49 @@
 <div class="notice success">User updated successfully</div>
 {% endif %}
 
-<h2>User Tokens</h2>
+<h2>Extensions</h2>
+<p style="margin:0 0 12px; font-size:0.9rem; opacity:0.85;">
+    Calls are attributed to the RingCentral extension that answered them. Register a user whose
+    <b>Owner Id</b> is the extension number, and new calls on that extension are assigned to them
+    automatically and send them notifications.
+</p>
+
+{% if seen_extensions and seen_extensions|length > 0 %}
+<div class="table-container">
+    <table>
+        <thead>
+            <tr>
+                <th>Extension</th>
+                <th>Name On RingCentral</th>
+                <th>Calls</th>
+                <th>Mapped To A User?</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for extension in seen_extensions %}
+            <tr>
+                <td>{{ extension.number }}</td>
+                <td>{{ extension.name or "-" }}</td>
+                <td>{{ extension.calls }}</td>
+                <td>
+                    {% if extension.registered %}
+                    Yes
+                    {% else %}
+                    <a href="/admin/add-user?user_id={{ extension.number }}">Add user for this extension</a>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="empty">
+    No extensions recorded yet. They appear here once calls come through with workflow v5 published in n8n.
+</div>
+{% endif %}
+
+<h2 style="margin-top:28px;">User Tokens</h2>
 
 {% if users_tokens and users_tokens|length > 0 %}
 

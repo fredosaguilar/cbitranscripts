@@ -120,6 +120,7 @@
                 <td>
                     {% if item.extension_number %}
                     {{ item.extension_name or "Ext." }}<br><small>ext. {{ item.extension_number }}</small>
+                    {% if item.queue_name %}<br><small>via {{ item.queue_name }}</small>{% endif %}
                     {% else %}
                     {{ item.owner_id }}
                     {% endif %}
