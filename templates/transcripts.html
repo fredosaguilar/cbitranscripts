@@ -182,6 +182,17 @@
             alert('Failed to save assignment. Please try again.');
         }
     }
+
+    // Auto-refresh so newly processed calls appear without a manual reload.
+    // Skipped while the tab is hidden, a search is typed, or rows are selected,
+    // so it never interrupts work in progress.
+    const AUTO_REFRESH_MS = 60000;
+    setInterval(() => {
+        if (document.hidden) return;
+        if (document.getElementById('searchInput')?.value) return;
+        if (document.querySelectorAll('.row-checkbox:checked').length > 0) return;
+        location.reload();
+    }, AUTO_REFRESH_MS);
 </script>
 
 {% endblock %}

@@ -49,6 +49,8 @@ def run_safe_migrations():
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS confidence_score INTEGER",
         # Assignment
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS assigned_to VARCHAR",
+        # Original-language transcript (English translation lives in transcription)
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS transcription_original TEXT",
     ]
     try:
         with engine.connect() as conn:

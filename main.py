@@ -71,6 +71,7 @@ def on_startup():
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agent_statements_liability TEXT",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS missing_information TEXT",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS confidence_score INTEGER",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS transcription_original TEXT",
     ]
     with engine.connect() as conn:
         for sql in migrations:
@@ -657,6 +658,7 @@ def create_transcript(
         file_link=data.file_link,
         owner_id=resolved_owner_id,
         transcription=data.transcription,
+        transcription_original=data.transcription_original,
         client_name=data.client_name,
         client_number=resolved_client_number,
         policy_type=data.policy_type,

@@ -128,6 +128,13 @@
         <div class="transcription-box">{{ transcript.missing_information or "No data available." }}</div>
     </div>
 
+    {% if transcript.transcription_original %}
+    <div class="section">
+        <h3 class="section-title">Original Language Transcript</h3>
+        <div class="transcription-box">{{ transcript.transcription_original }}</div>
+    </div>
+    {% endif %}
+
     <div class="section">
         <h3 class="section-title">Edit</h3>
         <label class="field-label">Transcription</label>
