@@ -33,6 +33,7 @@ class TranscriptCreate(BaseModel):
     file_link: str
     owner_id: str
     transcription: Optional[str] = None
+    transcription_original: Optional[str] = None
     client_name: Optional[str] = None
     client_number: Optional[str] = None
     policy_type: Optional[str] = None
@@ -66,6 +67,7 @@ class TranscriptCreate(BaseModel):
 
     @field_validator(
         "transcription",
+        "transcription_original",
         "client_name",
         "client_number",
         "policy_type",

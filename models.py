@@ -52,6 +52,7 @@ class TranscriptResponse(Base):
     status = Column(Enum(TranscriptStatus), default=TranscriptStatus.pending, nullable=False)
 
     transcription = Column(Text, nullable=True)
+    transcription_original = Column(Text, nullable=True)
 
     client_name = Column(String, nullable=True)
     client_number = Column(String, nullable=True)
