@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Accounts{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="/static/css/dashboard.css">
+{% endblock %}
+
+{% block content %}
+
+<h2>Admin Accounts</h2>
+
+{% if error %}
+<div class="notice" style="background:#fde8e8; color:#9b1c1c; padding:10px 14px; border-radius:6px; margin:12px 0;">{{ error }}</div>
+{% endif %}
+{% if created %}
+<div class="notice success">Admin account created</div>
+{% endif %}
+
+<div class="table-container">
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Username</th>
+                <th>Created</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for admin in admins %}
+            <tr>
+                <td>{{ loop.index }}</td>
+                <td>{{ admin.username }}{% if admin.admin_id == current_admin.admin_id %} <em>(you)</em>{% endif %}</td>
+                <td>{{ admin.created_at or "-" }}</td>
+                <td class="actions">
+                    {% if admin.admin_id != current_admin.admin_id %}
+                    <form method="post" action="/admin/admins/{{ admin.admin_id }}/delete" style="display:inline"
+                          onsubmit="return confirm('Delete admin {{ admin.username }}?');">
+                        <button type="submit" class="delete-btn">Delete</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<h3 style="margin-top:28px;">Add Admin</h3>
+<form method="post" action="/admin/admins/add" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px;">
+    <input type="text" name="username" placeholder="Username" required autocomplete="off">
+    <input type="password" name="password" placeholder="Password (min 8 chars)" required minlength="8" autocomplete="new-password">
+    <button type="submit">Create</button>
+</form>
+
+{% endblock %}
