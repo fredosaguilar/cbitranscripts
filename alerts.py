@@ -16,26 +16,31 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 ALERT_EMAIL_FROM = os.getenv("ALERT_EMAIL_FROM") or SMTP_USER
-ALERT_EMAIL_TO = [
-    address.strip()
-    for address in (os.getenv("ALERT_EMAIL_TO") or "").split(",")
-    if address.strip()
-]
-
-
-def is_email_configured() -> bool:
-    return bool(SMTP_HOST and SMTP_USER and SMTP_PASSWORD and ALERT_EMAIL_TO)
 
 
 def is_smtp_configured() -> bool:
     return bool(SMTP_HOST and SMTP_USER and SMTP_PASSWORD)
 
 
+# Kept for callers that only need to know whether mail can be sent at all
+def is_email_configured() -> bool:
+    return is_smtp_configured()
+
+
 def send_email(subject: str, body_text: str, body_html: str | None = None,
                to_addresses: list[str] | None = None) -> bool:
-    recipients = [address for address in (to_addresses or ALERT_EMAIL_TO) if address]
-    if not is_smtp_configured() or not recipients:
-        logger.info("Email not configured or no recipients; skipping: %s", subject)
+    """Send to explicitly named recipients only.
+
+    There is deliberately no fallback recipient: every message goes to the
+    person it concerns, so a stray ALERT_EMAIL_TO cannot pull mail into a
+    shared inbox.
+    """
+    recipients = [address.strip() for address in (to_addresses or []) if address and address.strip()]
+    if not is_smtp_configured():
+        logger.info("SMTP not configured; skipping: %s", subject)
+        return False
+    if not recipients:
+        logger.info("No recipient for message; skipping: %s", subject)
         return False
 
     message = MIMEMultipart("alternative")
