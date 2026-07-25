@@ -1,7 +1,8 @@
 import os
 from datetime import datetime, timedelta
+
+import bcrypt
 from jose import jwt, JWTError
-from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 from models import Admin
 
@@ -9,10 +10,21 @@ SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60  # 1 hour
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+
 
 def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+    # A malformed or legacy hash must fail the login, not crash the request
+    try:
+        return bcrypt.checkpw(
+            str(plain_password).encode("utf-8"),
+            str(hashed_password).encode("utf-8"),
+        )
+    except (ValueError, TypeError):
+        return False
+
 
 def authenticate_admin(db: Session, username: str, password: str):
     admin = db.query(Admin).filter(Admin.username == username).first()
@@ -21,6 +33,7 @@ def authenticate_admin(db: Session, username: str, password: str):
     if not verify_password(password, admin.password_hash):
         return False
     return admin
+
 
 def create_access_token(data: dict, expires_delta: timedelta = None):
     to_encode = data.copy()

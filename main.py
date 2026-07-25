@@ -680,13 +680,13 @@ def bootstrap_admin_account():
     try:
         admin = db.query(models.Admin).filter(models.Admin.username == username).first()
         if admin:
-            admin.password_hash = auth.pwd_context.hash(password)
+            admin.password_hash = auth.hash_password(password)
             logger.info("Bootstrap: reset password for admin '%s'", username)
         else:
             db.add(models.Admin(
                 admin_id=str(uuid.uuid4()),
                 username=username,
-                password_hash=auth.pwd_context.hash(password),
+                password_hash=auth.hash_password(password),
             ))
             logger.info("Bootstrap: created admin '%s'", username)
         db.commit()
@@ -1020,7 +1020,7 @@ def add_admin(
     db.add(models.Admin(
         admin_id=str(uuid.uuid4()),
         username=cleaned_username,
-        password_hash=auth.pwd_context.hash(password),
+        password_hash=auth.hash_password(password),
     ))
     db.commit()
     return RedirectResponse(url="/admin/admins?created=1", status_code=303)
