@@ -159,13 +159,9 @@ BUSINESS_DAYS = {
 }
 BUSINESS_TZ = os.getenv("BUSINESS_TZ", "America/Los_Angeles")
 
-# Central E&O red-flag alerts and the daily digest are off by default: each
-# agent is emailed about their own calls instead (see ASSIGNMENT_EMAILS_ENABLED).
-RED_FLAG_ALERTS_ENABLED = _env_flag("RED_FLAG_ALERTS_ENABLED", "false")
+# Every message goes to the agent the call is assigned to. There is no shared
+# recipient and no digest, so nothing can reach a group inbox.
 RED_FLAG_MIN_CONFIDENCE = int(os.getenv("RED_FLAG_MIN_CONFIDENCE", "40"))
-
-DIGEST_ENABLED = _env_flag("DIGEST_ENABLED", "false")
-DIGEST_HOUR = int(os.getenv("DIGEST_HOUR", "8"))
 
 # Email the assigned agent when a call lands on their extension
 ASSIGNMENT_EMAILS_ENABLED = _env_flag("ASSIGNMENT_EMAILS_ENABLED")
@@ -577,36 +573,21 @@ def _has_meaningful_value(value) -> bool:
     return bool(cleaned) and cleaned.strip().lower() not in _NO_DATA_VALUES
 
 
-def _transcript_red_flag_reasons(data: TranscriptCreate) -> list[str]:
+def _transcript_red_flag_reasons(data) -> list[str]:
+    """Warnings worth flagging on a call; accepts a payload or a stored row."""
     reasons = []
-    if _has_meaningful_value(data.eo_red_flags):
-        prefix = "HIGH RISK — " if "high risk" in data.eo_red_flags.lower() else ""
-        reasons.append(f"{prefix}E&O red flags: {data.eo_red_flags[:400]}")
-    if _has_meaningful_value(data.agent_statements_liability):
-        reasons.append(f"Agent statement implying coverage/binding: {data.agent_statements_liability[:400]}")
-    if data.confidence_score is not None and data.confidence_score < RED_FLAG_MIN_CONFIDENCE:
-        reasons.append(f"Low analysis confidence score: {data.confidence_score} (threshold {RED_FLAG_MIN_CONFIDENCE})")
+    red_flags = getattr(data, "eo_red_flags", None)
+    liability = getattr(data, "agent_statements_liability", None)
+    confidence = getattr(data, "confidence_score", None)
+
+    if _has_meaningful_value(red_flags):
+        prefix = "HIGH RISK — " if "high risk" in red_flags.lower() else ""
+        reasons.append(f"{prefix}E&O red flags: {red_flags[:400]}")
+    if _has_meaningful_value(liability):
+        reasons.append(f"Agent statement implying coverage/binding: {liability[:400]}")
+    if confidence is not None and confidence < RED_FLAG_MIN_CONFIDENCE:
+        reasons.append(f"Low analysis confidence score: {confidence} (threshold {RED_FLAG_MIN_CONFIDENCE})")
     return reasons
-
-
-def _send_red_flag_alert(transcript, data: TranscriptCreate, reasons: list[str]):
-    link = f"{FRONTEND_BASE_URL}/user/transcripts/{transcript.id}" if FRONTEND_BASE_URL else f"transcript id {transcript.id}"
-    lines = [
-        "A call was flagged during automated E&O analysis.",
-        "",
-        f"Client: {data.client_name or 'Unknown'}",
-        f"Number: {data.client_number or data.caller_number or 'Unknown'}",
-        f"Reason for call: {data.reason_for_call or 'Unknown'}",
-        f"Call time: {data.start_time or 'Unknown'}",
-        "",
-        "Flags:",
-    ]
-    lines += [f"  - {reason}" for reason in reasons]
-    lines += ["", f"Review: {link}"]
-    alerts.send_email_async(
-        subject=f"E&O ALERT: {data.client_name or data.caller_number or 'Unknown caller'}",
-        body_text="\n".join(lines),
-    )
 
 
 def _send_assignment_email(transcript, user_email: str):
@@ -626,6 +607,10 @@ def _send_assignment_email(transcript, user_email: str):
     follow_up = _clean_string(transcript.follow_up_task)
     if follow_up:
         lines += ["", "Follow-up noted on the call:", follow_up]
+    warnings = _transcript_red_flag_reasons(transcript)
+    if warnings:
+        lines += ["", "Worth a closer look on this call:"] + [f"  - {warning}" for warning in warnings]
+
     lines += [
         "",
         "Please review the transcription and the notes, correct anything the AI got wrong,",
@@ -676,75 +661,6 @@ def _local_tz():
         return ZoneInfo(BUSINESS_TZ)
     except Exception:
         return timezone.utc
-
-
-def _build_daily_digest() -> tuple[str, str] | None:
-    tz = _local_tz()
-    local_now = datetime.now(tz)
-    day_start_local = (local_now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    day_end_local = day_start_local + timedelta(days=1)
-    start_utc = day_start_local.astimezone(timezone.utc).replace(tzinfo=None)
-    end_utc = day_end_local.astimezone(timezone.utc).replace(tzinfo=None)
-
-    db = SessionLocal()
-    try:
-        rows = (
-            db.query(models.TranscriptResponse)
-            .filter(
-                models.TranscriptResponse.created_at >= start_utc,
-                models.TranscriptResponse.created_at < end_utc,
-            )
-            .order_by(models.TranscriptResponse.start_time.desc().nullslast())
-            .all()
-        )
-        unassigned_total = (
-            db.query(func.count(models.TranscriptResponse.id))
-            .filter(models.TranscriptResponse.assigned_to.is_(None))
-            .scalar()
-        ) or 0
-    finally:
-        db.close()
-
-    flagged = [r for r in rows if _has_meaningful_value(r.eo_red_flags)]
-    follow_ups = [r for r in rows if r.follow_up_needed]
-
-    day_label = day_start_local.strftime("%A, %B %d")
-    lines = [
-        f"Daily call digest for {day_label}",
-        "",
-        f"Calls processed: {len(rows)}",
-        f"Follow-ups needed: {len(follow_ups)}",
-        f"E&O red flags: {len(flagged)}",
-        f"Unassigned transcripts (all time): {unassigned_total}",
-    ]
-
-    def _entry(row) -> str:
-        name = row.client_name or row.caller_number or "Unknown"
-        link = f"{FRONTEND_BASE_URL}/user/transcripts/{row.id}" if FRONTEND_BASE_URL else str(row.id)
-        return f"  - {name} ({row.reason_for_call or 'Unknown reason'}) — {link}"
-
-    if flagged:
-        lines += ["", "Red-flagged calls:"] + [_entry(r) for r in flagged[:20]]
-    if follow_ups:
-        lines += ["", "Follow-ups needed:"] + [_entry(r) for r in follow_ups[:20]]
-
-    return f"Daily digest — {day_label}: {len(rows)} calls, {len(flagged)} flagged", "\n".join(lines)
-
-
-def _daily_digest_loop():
-    while True:
-        tz = _local_tz()
-        local_now = datetime.now(tz)
-        next_run = local_now.replace(hour=DIGEST_HOUR, minute=0, second=0, microsecond=0)
-        if next_run <= local_now:
-            next_run += timedelta(days=1)
-        time.sleep(max((next_run - local_now).total_seconds(), 60))
-        try:
-            digest = _build_daily_digest()
-            if digest:
-                alerts.send_email(digest[0], digest[1])
-        except Exception:
-            logger.exception("Failed to send daily digest")
 
 
 def _cleanup_audio_cache_once():
@@ -829,12 +745,6 @@ def seed_extension_emails_on_startup():
 
 @app.on_event("startup")
 def start_background_jobs():
-    if DIGEST_ENABLED and alerts.is_email_configured():
-        thread = threading.Thread(target=_daily_digest_loop, name="daily-digest", daemon=True)
-        thread.start()
-    elif DIGEST_ENABLED:
-        logger.info("Daily digest enabled but email is not configured; set SMTP_* and ALERT_EMAIL_TO")
-
     threading.Thread(target=_audio_cache_cleanup_loop, name="audio-cache-cleanup", daemon=True).start()
 
 
@@ -1567,14 +1477,6 @@ def create_transcript(
     db.commit()
     db.refresh(new_transcript)
     _set_latest_webhook_start_time(new_transcript.start_time, data.start_time)
-
-    if RED_FLAG_ALERTS_ENABLED:
-        try:
-            red_flag_reasons = _transcript_red_flag_reasons(data)
-            if red_flag_reasons:
-                _send_red_flag_alert(new_transcript, data, red_flag_reasons)
-        except Exception:
-            logger.exception("Failed to send red-flag alert for transcript %s", new_transcript.id)
 
     # Auto-create AgencyZoom follow-up tasks for fresh calls only, so backlog
     # re-sweeps of old calls never spam the CRM.
