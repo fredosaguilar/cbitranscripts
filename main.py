@@ -847,6 +847,7 @@ def list_transcripts(request: Request, db: Session = Depends(get_db)):
                 models.TranscriptResponse.from_name.ilike(like),
                 models.TranscriptResponse.recordingID.ilike(like),
                 models.TranscriptResponse.owner_id.ilike(like),
+                models.TranscriptResponse.agency_zoom_customer_name.ilike(like),
             )
         )
     if status_filter in {status.value for status in models.TranscriptStatus}:
