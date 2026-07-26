@@ -359,11 +359,13 @@ def find_agency_zoom_match(phone: Any, jwt_token: Optional[str] = None) -> Optio
     if not candidates:
         return None
 
+    # Only an exact phone match may be linked automatically. Agency Zoom search
+    # can return unrelated records when it does not recognise a filter, and a
+    # sole result is not evidence - a wrong link puts call notes on the wrong
+    # client file. Anything less certain is left for a human to link by hand.
     for candidate in candidates:
         if candidate["phone"] and _last_ten_digits(candidate["phone"]) == digits:
             return candidate
-    if len(candidates) == 1:
-        return candidates[0]
     return None
 
 
