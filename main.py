@@ -360,6 +360,42 @@ def _load_initial_webhook_start_time_raw() -> str | None:
     return _clean_string(webhook_state.start_time_raw) if webhook_state else None
 
 
+def _rewind_webhook_start_time(value: datetime) -> bool:
+    """Move the scheduler cursor back so a call is fetched again.
+
+    _set_latest_webhook_start_time deliberately only moves forward; reprocessing
+    a call is the one case where the cursor must go backwards.
+    """
+    normalized_value = _ensure_utc_datetime(value)
+    if normalized_value is None:
+        return False
+    target = normalized_value - timedelta(seconds=1)
+
+    db = SessionLocal()
+    try:
+        webhook_state = (
+            db.query(models.WebhookState)
+            .filter(models.WebhookState.state_key == WEBHOOK_STATE_KEY)
+            .first()
+        )
+        if webhook_state is None:
+            webhook_state = models.WebhookState(state_key=WEBHOOK_STATE_KEY)
+            db.add(webhook_state)
+        current = _ensure_utc_datetime(webhook_state.start_time)
+        if current is not None and current <= target:
+            return False  # already far enough back
+        webhook_state.start_time = _to_utc_naive(target)
+        webhook_state.start_time_raw = _format_utc_timestamp(target)
+        db.commit()
+    finally:
+        db.close()
+
+    app.state.latest_webhook_start_time = target
+    app.state.latest_webhook_start_time_raw = _format_utc_timestamp(target)
+    logger.info("Rewound scheduler cursor to %s for reprocessing", _format_utc_timestamp(target))
+    return True
+
+
 def _set_latest_webhook_start_time(value: datetime | None, raw_value: str | None = None):
     normalized_value = _ensure_utc_datetime(value)
     if normalized_value is None:
@@ -1351,6 +1387,34 @@ def agency_zoom_link(
         "customer_name": transcript.agency_zoom_customer_name,
         "also_updated": also_updated,
     })
+
+
+@app.post("/admin/transcripts/{id}/reprocess")
+# Delete a transcript and rewind the scheduler so the call is transcribed again.
+def reprocess_transcript(id: str, request: Request, db: Session = Depends(get_db)):
+    if not get_logged_in_admin(request, db):
+        return RedirectResponse(url="/", status_code=303)
+
+    transcript = db.query(models.TranscriptResponse).filter(models.TranscriptResponse.id == id).first()
+    if transcript is None:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+
+    call_time = transcript.start_time
+    if call_time is None:
+        return RedirectResponse(
+            url=f"/user/transcripts/{id}?error=This+call+has+no+start+time,+so+it+cannot+be+reprocessed",
+            status_code=303,
+        )
+
+    delete_local_audio_file(getattr(transcript, "local_audio_path", None))
+    db.delete(transcript)
+    db.commit()
+
+    # With the record gone and the cursor moved back, the next sweep re-fetches
+    # this call; anything newer is skipped by the duplicate check.
+    _rewind_webhook_start_time(call_time)
+
+    return RedirectResponse(url="/admin/transcripts?reprocessing=1", status_code=303)
 
 
 @app.post("/admin/transcripts/{id}/delete")

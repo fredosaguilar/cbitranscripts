@@ -135,6 +135,19 @@
     </div>
 
     <div class="section">
+        <h3 class="section-title">Transcription Problem?</h3>
+        <p style="margin:0 0 10px; font-size:0.9rem; opacity:0.85;">
+            If the transcript missed the conversation or the notes are wrong, run the call again.
+            This deletes the current record and re-transcribes from the original recording on the
+            next sync, which takes a few minutes.
+        </p>
+        <form method="post" action="/admin/transcripts/{{ transcript.id }}/reprocess"
+              onsubmit="return confirm('Delete this transcript and transcribe the call again?');">
+            <button type="submit">Reprocess this call</button>
+        </form>
+    </div>
+
+    <div class="section">
         <h3 class="section-title">Agency Zoom Match</h3>
         <div id="azStatus" style="margin-bottom:10px;">Checking…</div>
 

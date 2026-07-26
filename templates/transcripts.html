@@ -32,6 +32,12 @@
 
 {% block content %}
 
+{% if request.query_params.get("reprocessing") %}
+<div class="notice success" style="margin-bottom:12px;">
+    Call queued for reprocessing. It will reappear here once the next sync transcribes it again.
+</div>
+{% endif %}
+
 <section class="transcript-page">
     <div class="page-header">
         <div>
