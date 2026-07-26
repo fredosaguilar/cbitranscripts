@@ -25,22 +25,77 @@ TRANSCRIBE_TIMEOUT = int(os.getenv("TRANSCRIBE_TIMEOUT", "600"))
 # A complete call is far larger than this; anything smaller is the announcement
 MIN_EXPECTED_AUDIO_BYTES = int(os.getenv("MIN_EXPECTED_AUDIO_BYTES", "40000"))
 
-ENGLISH_PROMPT = (
-    "Recorded phone call for Columbia Basin Insurance, an insurance agency in Washington State. "
-    "Speakers may switch between English and Spanish. Expect insurance vocabulary: policy, premium, "
-    "deductible, coverage, liability, comprehensive, collision, endorsement, declarations page, "
-    "binder, quote, renewal, claim, adjuster, estimate, rental car, bodily injury, property damage, "
-    "uninsured motorist, medical payments, homeowners, umbrella, commercial auto, certificate of "
-    "insurance, VIN, effective date, cancellation, non-renewal, down payment, installment. "
-    "Carriers: Travelers, Progressive, Safeco, Mutual of Enumclaw, Foremost, Nationwide, Allstate, "
-    "State Farm, Kemper, Bristol West."
-)
-SPANISH_PROMPT = (
-    "Llamada telefonica grabada de una agencia de seguros en el estado de Washington. "
-    "Vocabulario: poliza, prima, deducible, cobertura, responsabilidad civil, reclamo, ajustador, "
-    "aseguranza, cotizacion, vencimiento, pago inicial, endoso, cancelacion, carro de renta, danos, "
-    "lesiones corporales, aseguradora, agente, taller."
-)
+# Whisper echoes a long prompt back verbatim when it gives up on a segment, so
+# these stay short: just enough to bias the vocabulary, not enough to become the
+# transcript.
+ENGLISH_PROMPT = "Insurance call: policy, premium, deductible, coverage, claim, adjuster, endorsement, quote."
+SPANISH_PROMPT = "Llamada de seguros: poliza, prima, deducible, cobertura, reclamo, ajustador, endoso, cotizacion."
+
+# Whisper stops early on long low-bitrate phone recordings, returning only the
+# opening announcement. Sending the call in pieces makes each piece a fresh
+# decode, so one bad segment cannot swallow the whole conversation.
+CHUNK_SECONDS = int(os.getenv("TRANSCRIBE_CHUNK_SECONDS", "60"))
+
+_MP3_BITRATES_V2_L3 = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0]
+_MP3_BITRATES_V1_L3 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0]
+_MP3_RATES = {0: [11025, 12000, 8000], 2: [22050, 24000, 16000], 3: [44100, 48000, 32000]}
+
+
+def split_mp3(audio: bytes, chunk_seconds: int = CHUNK_SECONDS) -> list[bytes]:
+    """Cut an MP3 on frame boundaries, without re-encoding.
+
+    Returns the whole file as a single chunk when the frames cannot be parsed,
+    so an unexpected format still gets transcribed rather than dropped.
+    """
+    position = 0
+    if audio[:3] == b"ID3":
+        size = ((audio[6] & 0x7F) << 21) | ((audio[7] & 0x7F) << 14) | ((audio[8] & 0x7F) << 7) | (audio[9] & 0x7F)
+        position = 10 + size
+
+    chunks: list[bytes] = []
+    chunk_start = position
+    elapsed = 0.0
+
+    while position < len(audio) - 4:
+        if audio[position] != 0xFF or (audio[position + 1] & 0xE0) != 0xE0:
+            position += 1
+            continue
+
+        version = (audio[position + 1] >> 3) & 0x03
+        bitrate_index = (audio[position + 2] >> 4) & 0x0F
+        rate_index = (audio[position + 2] >> 2) & 0x03
+        padding = (audio[position + 2] >> 1) & 0x01
+
+        rates = _MP3_RATES.get(version)
+        if rates is None or rate_index > 2:
+            position += 1
+            continue
+        sample_rate = rates[rate_index]
+        table = _MP3_BITRATES_V1_L3 if version == 3 else _MP3_BITRATES_V2_L3
+        bitrate = table[bitrate_index] * 1000
+        if not bitrate or not sample_rate:
+            position += 1
+            continue
+
+        samples_per_frame = 1152 if version == 3 else 576
+        frame_length = int(samples_per_frame / 8 * bitrate / sample_rate) + padding
+        if frame_length < 4:
+            position += 1
+            continue
+
+        position += frame_length
+        elapsed += samples_per_frame / sample_rate
+        if elapsed >= chunk_seconds:
+            chunks.append(audio[chunk_start:position])
+            chunk_start = position
+            elapsed = 0.0
+
+    if chunk_start < len(audio):
+        tail = audio[chunk_start:]
+        if len(tail) > 512:
+            chunks.append(tail)
+
+    return chunks or [audio]
 
 
 def is_configured() -> bool:
@@ -104,11 +159,28 @@ def transcribe_recording(audio_url: str) -> dict:
     if not audio_bytes:
         raise ValueError(f"Downloaded no audio from {audio_url}")
 
-    english = clean_transcript(_whisper("translations", audio, ENGLISH_PROMPT).get("text", ""))
+    chunks = split_mp3(audio)
+    english_parts: list[str] = []
+    original_parts: list[str] = []
+    detected = ""
 
-    original_payload = _whisper("transcriptions", audio, SPANISH_PROMPT, verbose=True)
-    detected = str(original_payload.get("language") or "").lower()
-    original_text = clean_transcript(original_payload.get("text", ""))
+    for index, chunk in enumerate(chunks, start=1):
+        try:
+            english_parts.append(_whisper("translations", chunk, ENGLISH_PROMPT).get("text", "").strip())
+        except Exception:
+            # One unreadable minute must not cost the rest of the call
+            logger.exception("Translation failed for chunk %s/%s of %s", index, len(chunks), audio_url)
+
+        try:
+            payload = _whisper("transcriptions", chunk, SPANISH_PROMPT, verbose=True)
+            original_parts.append(str(payload.get("text", "")).strip())
+            if not detected:
+                detected = str(payload.get("language") or "").lower()
+        except Exception:
+            logger.exception("Transcription failed for chunk %s/%s of %s", index, len(chunks), audio_url)
+
+    english = clean_transcript(" ".join(part for part in english_parts if part))
+    original_text = clean_transcript(" ".join(part for part in original_parts if part))
     spoken_in_english = detected in {"english", "en"}
 
     result = {
@@ -116,12 +188,13 @@ def transcribe_recording(audio_url: str) -> dict:
         "text_original": "" if spoken_in_english else original_text,
         "original_language": detected or "unknown",
         "audio_bytes": audio_bytes,
+        "chunks": len(chunks),
         "short_download": audio_bytes < MIN_EXPECTED_AUDIO_BYTES,
         "word_count": len(english.split()),
     }
     logger.info(
-        "Transcribed %s bytes from %s: %s words%s",
-        audio_bytes, audio_url, result["word_count"],
+        "Transcribed %s bytes from %s in %s chunk(s): %s words%s",
+        audio_bytes, audio_url, len(chunks), result["word_count"],
         " (SHORT DOWNLOAD)" if result["short_download"] else "",
     )
     return result
