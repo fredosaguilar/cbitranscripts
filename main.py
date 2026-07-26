@@ -28,8 +28,10 @@ import models
 from schemas import TranscriptCreate, UpdateTranscriptRequest, FollowUpTaskUpdate
 from send_notification import send_push_notification
 import alerts
+import transcription
 from ringcentral_utils import (
     LOCAL_AUDIO_CACHE_DIR,
+    build_ringcentral_recording_url,
     cache_audio_file,
     delete_local_audio_file,
     fetch_audio_stream,
@@ -1716,6 +1718,46 @@ def create_transcript(
         send_push_notification(str(new_transcript.id), user_token.token, structured_response)
 
     return JSONResponse(content=structured_response, status_code=200)
+
+
+@app.post("/api/transcribe-recording")
+# Download a recording and transcribe it here, rather than in the workflow.
+def transcribe_recording_endpoint(payload: dict, db: Session = Depends(get_db)):
+    recording_id = _clean_string(payload.get("recording_id"))
+    audio_url = _clean_string(payload.get("file_link")) or build_ringcentral_recording_url(recording_id)
+    if not audio_url:
+        raise HTTPException(status_code=400, detail="file_link or recording_id is required")
+
+    if not transcription.is_configured():
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not configured on the server")
+
+    try:
+        result = transcription.transcribe_recording(audio_url)
+    except requests.HTTPError as exc:
+        detail = getattr(exc.response, "text", str(exc))[:400]
+        logger.error("Transcription failed for %s: %s", audio_url, detail)
+        raise HTTPException(status_code=502, detail=f"Transcription failed: {detail}") from exc
+    except Exception as exc:
+        logger.exception("Transcription failed for %s", audio_url)
+        raise HTTPException(status_code=502, detail=f"Transcription failed: {exc}") from exc
+
+    # A download far shorter than a real call means the recording was not fully
+    # served; report it so the workflow can leave the call for a later run
+    # instead of saving the announcement as if it were the conversation.
+    if result["short_download"] or result["word_count"] < 15:
+        logger.warning(
+            "Recording %s produced only %s bytes / %s words; refusing to treat it as a transcript",
+            recording_id or audio_url, result["audio_bytes"], result["word_count"],
+        )
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Recording is not fully available yet "
+                f"({result['audio_bytes']} bytes, {result['word_count']} words transcribed)"
+            ),
+        )
+
+    return JSONResponse(content=result)
 
 
 @app.get("/api/transcripts/check-recording/{recording_id}")
