@@ -34,7 +34,21 @@
 
 {% if request.query_params.get("reprocessing") %}
 <div class="notice success" style="margin-bottom:12px;">
-    Call queued for reprocessing. It will reappear here once the next sync transcribes it again.
+    Call queued for reprocessing. It will reappear here once the next sync transcribes it again,
+    and the sync will keep looking for it until it does.
+</div>
+{% endif %}
+
+{% if request.query_params.get("rescanning") %}
+<div class="notice success" style="margin-bottom:12px;">
+    Rescan started. Calls from that date onward will be fetched again over the next few syncs;
+    calls already saved are skipped automatically.
+</div>
+{% endif %}
+
+{% if request.query_params.get("error") %}
+<div class="notice" style="margin-bottom:12px; background:#fde8e8; color:#9b1c1c; padding:10px 14px; border-radius:6px;">
+    {{ request.query_params.get("error") }}
 </div>
 {% endif %}
 
@@ -90,6 +104,19 @@
     <button type="submit">Filter</button>
     <a href="/admin/transcripts">Clear</a>
 </form>
+
+<details style="margin: 0 0 14px;">
+    <summary style="cursor:pointer; font-size:0.88rem; opacity:0.85;">Missing a call?</summary>
+    <form method="post" action="/admin/rescan"
+          style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px;">
+        <span style="font-size:0.88rem;">Fetch every call again from</span>
+        <input type="date" name="rescan_from" required>
+        <button type="submit">Rescan</button>
+        <span style="font-size:0.82rem; opacity:0.75;">
+            Calls already saved are skipped, so this only fills in what is missing.
+        </span>
+    </form>
+</details>
 
 {% if transcripts and transcripts|length > 0 %}
 
