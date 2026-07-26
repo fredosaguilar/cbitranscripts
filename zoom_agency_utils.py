@@ -287,23 +287,40 @@ def _candidate_summary(record: dict[str, Any], record_type: str) -> dict[str, An
     }
 
 
-# Search Agency Zoom customers, retrying every common phone format.
+# Search Agency Zoom customers. A phone query is retried in every common
+# format; any other query is tried against each field name the API may expect,
+# so a client can be found by name, business name, or email as well.
 def search_agency_zoom_customers(query: Any, jwt_token: Optional[str] = None) -> list[dict[str, Any]]:
     token = jwt_token or zomm_agency_login()
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    is_phone = len(_last_ten_digits(query)) >= 10
-    attempts = _phone_variants(query) if is_phone else [_clean_string(query)]
+    cleaned = _clean_string(query)
+    if not cleaned:
+        return []
+
+    is_phone = len(_last_ten_digits(cleaned)) >= 10
+    attempts = _phone_variants(cleaned) if is_phone else [cleaned]
 
     found: dict[str, dict[str, Any]] = {}
     for attempt in attempts:
         if not attempt:
             continue
-        # A phone number can be stored under either field, so try both shapes
-        payloads = [{"phone": attempt}, {"searchText": attempt}] if is_phone else [{"searchText": attempt}]
+        if is_phone:
+            payloads = [{"phone": attempt}, {"searchText": attempt}, {"search": attempt}]
+        else:
+            payloads = [
+                {"searchText": attempt},
+                {"search": attempt},
+                {"name": attempt},
+                {"keyword": attempt},
+                {"email": attempt} if "@" in attempt else {"businessName": attempt},
+            ]
         for payload in payloads:
             try:
                 response = requests.post(
-                    AGENCY_ZOOM_CUSTOMERS_URL, json=payload, headers=headers, timeout=REQUEST_TIMEOUT
+                    AGENCY_ZOOM_CUSTOMERS_URL,
+                    json={**payload, "pageSize": 50},
+                    headers=headers,
+                    timeout=REQUEST_TIMEOUT,
                 )
                 response.raise_for_status()
                 for record in _extract_candidate_records(_parse_response(response)):
@@ -319,35 +336,47 @@ def search_agency_zoom_customers(query: Any, jwt_token: Optional[str] = None) ->
     return list(found.values())
 
 
-# Search Agency Zoom leads, tolerating either search endpoint shape.
+# Search Agency Zoom leads, tolerating either search endpoint shape and any of
+# the field names the API may accept.
 def search_agency_zoom_leads(query: Any, jwt_token: Optional[str] = None) -> list[dict[str, Any]]:
     token = jwt_token or zomm_agency_login()
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    is_phone = len(_last_ten_digits(query)) >= 10
-    attempts = _phone_variants(query) if is_phone else [_clean_string(query)]
+    cleaned = _clean_string(query)
+    if not cleaned:
+        return []
+
+    is_phone = len(_last_ten_digits(cleaned)) >= 10
+    attempts = _phone_variants(cleaned) if is_phone else [cleaned]
 
     found: dict[str, dict[str, Any]] = {}
     for attempt in attempts:
         if not attempt:
             continue
-        for method, url, payload in (
-            ("post", f"{AGENCY_ZOOM_LEADS_URL}/search", {"searchText": attempt}),
-            ("get", AGENCY_ZOOM_LEADS_URL, {"searchText": attempt}),
-        ):
-            try:
-                if method == "post":
-                    response = requests.post(url, json=payload, headers=headers, timeout=REQUEST_TIMEOUT)
-                else:
-                    response = requests.get(url, params=payload, headers=headers, timeout=REQUEST_TIMEOUT)
-                if response.status_code == 404:
+        field_sets = (
+            [{"phone": attempt}, {"searchText": attempt}]
+            if is_phone
+            else [{"searchText": attempt}, {"search": attempt}, {"name": attempt}]
+        )
+        for fields in field_sets:
+            for method, url in (("post", f"{AGENCY_ZOOM_LEADS_URL}/search"), ("get", AGENCY_ZOOM_LEADS_URL)):
+                try:
+                    if method == "post":
+                        response = requests.post(
+                            url, json={**fields, "pageSize": 50}, headers=headers, timeout=REQUEST_TIMEOUT)
+                    else:
+                        response = requests.get(
+                            url, params=fields, headers=headers, timeout=REQUEST_TIMEOUT)
+                    if response.status_code in (404, 405):
+                        continue
+                    response.raise_for_status()
+                    for record in _extract_candidate_records(_parse_response(response)):
+                        summary = _candidate_summary(record, "lead")
+                        if summary["id"] and summary["id"] not in found:
+                            found[summary["id"]] = summary
+                except Exception:
                     continue
-                response.raise_for_status()
-                for record in _extract_candidate_records(_parse_response(response)):
-                    summary = _candidate_summary(record, "lead")
-                    if summary["id"] and summary["id"] not in found:
-                        found[summary["id"]] = summary
-            except Exception:
-                continue
+                if found:
+                    break
             if found:
                 break
         if found:

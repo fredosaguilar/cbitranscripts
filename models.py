@@ -37,6 +37,21 @@ class WebhookState(Base):
     start_time_raw = Column(String, nullable=True)
     updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+class ReprocessRequest(Base):
+    """A call waiting to be transcribed again.
+
+    While one of these exists the scheduler cursor is held at or before the
+    call's start time, so the call stays inside the fetch window until it has
+    actually been reprocessed.
+    """
+
+    __tablename__ = "reprocess_requests"
+
+    recording_id = Column(String, primary_key=True, index=True)
+    start_time = Column(TIMESTAMP, nullable=True)
+    requested_at = Column(TIMESTAMP, default=datetime.utcnow)
+
+
 # Enum for status
 class TranscriptStatus(str, enum.Enum):
     pending = "pending"

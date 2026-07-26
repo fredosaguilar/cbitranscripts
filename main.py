@@ -88,6 +88,7 @@ def on_startup():
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS queue_name VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS original_language VARCHAR",
         "ALTER TABLE users_tokens ADD COLUMN IF NOT EXISTS email VARCHAR",
+        "CREATE TABLE IF NOT EXISTS reprocess_requests (recording_id VARCHAR PRIMARY KEY, start_time TIMESTAMP, requested_at TIMESTAMP)",
         # A user may be email-only, with no Pushover key
         "ALTER TABLE users_tokens ALTER COLUMN token DROP NOT NULL",
     ]
@@ -150,8 +151,9 @@ def _env_flag(name: str, default: str = "true") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
-# Only trigger the n8n webhook during business hours to conserve n8n executions.
-BUSINESS_HOURS_ENABLED = _env_flag("BUSINESS_HOURS_ENABLED")
+# The pipeline runs around the clock by default. Set BUSINESS_HOURS_ENABLED=true
+# to restrict polling to the window below.
+BUSINESS_HOURS_ENABLED = _env_flag("BUSINESS_HOURS_ENABLED", "false")
 BUSINESS_HOURS_START = int(os.getenv("BUSINESS_HOURS_START", "7"))
 BUSINESS_HOURS_END = int(os.getenv("BUSINESS_HOURS_END", "19"))
 # Monday=0 ... Sunday=6; default Monday-Saturday
@@ -173,6 +175,10 @@ EXTENSION_EMAIL_MAP = os.getenv("EXTENSION_EMAIL_MAP", "")
 # Follow-up tasks reach Agency Zoom only when an agent adds them, so nothing is
 # pushed into the CRM without a person deciding it belongs there.
 AUTO_AGENCY_ZOOM_TASKS = _env_flag("AUTO_AGENCY_ZOOM_TASKS", "false")
+
+# A reprocess request holds the scheduler cursor until the call is transcribed
+# again; abandoned after this long so one bad call cannot hold it forever.
+REPROCESS_HOLD_HOURS = int(os.getenv("REPROCESS_HOLD_HOURS", "24"))
 AUTO_TASK_MAX_AGE_DAYS = int(os.getenv("AUTO_TASK_MAX_AGE_DAYS", "7"))
 
 # Cached audio retention
@@ -379,6 +385,73 @@ def _load_initial_webhook_start_time_raw() -> str | None:
     return _clean_string(webhook_state.start_time_raw) if webhook_state else None
 
 
+
+def _purge_expired_reprocess_requests(db: Session) -> None:
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=REPROCESS_HOLD_HOURS)
+    stale = db.query(models.ReprocessRequest).filter(models.ReprocessRequest.requested_at < cutoff).all()
+    for request in stale:
+        logger.warning("Giving up on reprocessing %s after %s hours", request.recording_id, REPROCESS_HOLD_HOURS)
+        db.delete(request)
+    if stale:
+        db.commit()
+
+
+def _oldest_pending_reprocess_time() -> datetime | None:
+    """Earliest call still waiting to be transcribed again, if any."""
+    db = SessionLocal()
+    try:
+        _purge_expired_reprocess_requests(db)
+        row = (
+            db.query(models.ReprocessRequest)
+            .filter(models.ReprocessRequest.start_time.isnot(None))
+            .order_by(models.ReprocessRequest.start_time.asc())
+            .first()
+        )
+        return _ensure_utc_datetime(row.start_time) if row else None
+    finally:
+        db.close()
+
+
+def _clear_reprocess_request(recording_id: str | None) -> bool:
+    cleaned = _clean_string(recording_id)
+    if not cleaned:
+        return False
+    db = SessionLocal()
+    try:
+        request = (
+            db.query(models.ReprocessRequest)
+            .filter(models.ReprocessRequest.recording_id == cleaned)
+            .first()
+        )
+        if request:
+            db.delete(request)
+            db.commit()
+            logger.info("Reprocessing of %s completed", cleaned)
+            return True
+        return False
+    finally:
+        db.close()
+
+
+
+def _advance_cursor_to_newest_transcript() -> None:
+    """Catch the cursor up after a reprocess hold is released.
+
+    Calls saved while the hold was in place could not move the cursor, so
+    without this the next sweep would refetch everything since the reprocessed
+    call and rely on the duplicate check to discard it.
+    """
+    db = SessionLocal()
+    try:
+        newest = (
+            db.query(func.max(models.TranscriptResponse.start_time)).scalar()
+        )
+    finally:
+        db.close()
+    if newest is not None:
+        _set_latest_webhook_start_time(newest)
+
+
 def _rewind_webhook_start_time(value: datetime) -> bool:
     """Move the scheduler cursor back so a call is fetched again.
 
@@ -434,6 +507,16 @@ def _set_latest_webhook_start_time(value: datetime | None, raw_value: str | None
             current_start_time = None
         else:
             current_start_time = _ensure_utc_datetime(webhook_state.start_time)
+
+        # A call awaiting reprocessing must stay inside the fetch window, so the
+        # cursor is not allowed past it no matter what else has been saved.
+        pending_from = _oldest_pending_reprocess_time()
+        if pending_from is not None and normalized_value >= pending_from:
+            logger.info(
+                "Holding webhook start_time at %s while a call awaits reprocessing",
+                _format_utc_timestamp(pending_from),
+            )
+            return False
 
         # Only move the scheduler cursor forward. Older or equal transcript start
         # times must not overwrite the latest webhook/db state.
@@ -1425,15 +1508,40 @@ def reprocess_transcript(id: str, request: Request, db: Session = Depends(get_db
             status_code=303,
         )
 
+    recording_id = _clean_string(transcript.recordingID)
     delete_local_audio_file(getattr(transcript, "local_audio_path", None))
     db.delete(transcript)
+
+    # Register the request first: while it exists the cursor cannot advance past
+    # this call, so a newer call saving afterwards cannot strand it.
+    if recording_id:
+        db.merge(models.ReprocessRequest(
+            recording_id=recording_id,
+            start_time=_to_utc_naive(call_time),
+            requested_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        ))
     db.commit()
 
-    # With the record gone and the cursor moved back, the next sweep re-fetches
-    # this call; anything newer is skipped by the duplicate check.
     _rewind_webhook_start_time(call_time)
 
     return RedirectResponse(url="/admin/transcripts?reprocessing=1", status_code=303)
+
+
+@app.post("/admin/rescan")
+# Rewind the scheduler so every call since a chosen time is fetched again.
+def rescan_from_date(request: Request, rescan_from: str = Form(""), db: Session = Depends(get_db)):
+    if not get_logged_in_admin(request, db):
+        return RedirectResponse(url="/", status_code=303)
+
+    parsed = _parse_iso_datetime(rescan_from)
+    if parsed is None:
+        return RedirectResponse(
+            url="/admin/transcripts?error=Enter+a+valid+date+to+rescan+from", status_code=303)
+
+    # +1s because the rewind helper subtracts a second
+    _rewind_webhook_start_time(_ensure_utc_datetime(parsed) + timedelta(seconds=1))
+    logger.info("Rescan requested from %s", _format_utc_timestamp(_ensure_utc_datetime(parsed)))
+    return RedirectResponse(url="/admin/transcripts?rescanning=1", status_code=303)
 
 
 @app.post("/admin/transcripts/{id}/delete")
@@ -1496,41 +1604,41 @@ def create_transcript(
     new_transcript = models.TranscriptResponse(
         file_link=data.file_link,
         owner_id=resolved_owner_id,
-        transcription=data.transcription,
-        transcription_original=data.transcription_original,
+        transcription=_blank_if_placeholder(data.transcription),
+        transcription_original=_blank_if_placeholder(data.transcription_original),
         client_name=_blank_if_placeholder(data.client_name),
         client_number=resolved_client_number,
         policy_type=_blank_if_placeholder(data.policy_type),
         reason_for_call=_blank_if_placeholder(data.reason_for_call),
         key_points=_blank_if_placeholder(data.key_points),
-        customer_sentiment=data.customer_sentiment,
+        customer_sentiment=_blank_if_placeholder(data.customer_sentiment),
         follow_up_needed=data.follow_up_needed,
         follow_up_task=_blank_if_placeholder(data.follow_up_task),
         crm_note=_blank_if_placeholder(data.crm_note),
         recordingID=normalized_recording_id,
         caller_number=data.caller_number,
-        from_name=data.from_name,
+        from_name=_blank_if_placeholder(data.from_name),
         extension_number=extension_number,
         extension_name=data.extension_name,
-        queue_name=data.queue_name,
+        queue_name=_blank_if_placeholder(data.queue_name),
         original_language=data.original_language,
-        usage_type=data.usage_type,
+        usage_type=_blank_if_placeholder(data.usage_type),
         usage_sec=data.usage_sec,
         start_time=_parse_iso_datetime(data.start_time),
-        call_type=data.call_type,
+        call_type=_blank_if_placeholder(data.call_type),
         direction=data.direction,
         to_phoneNumber=data.to_phoneNumber,
-        to_name=data.to_name,
-        insured_intent=data.insured_intent,
-        material_risk_facts=data.material_risk_facts,
-        coverage_discussed=data.coverage_discussed,
-        monetary_values=data.monetary_values,
-        options_presented=data.options_presented,
-        client_selection=data.client_selection,
-        agent_recommendation=data.agent_recommendation,
-        eo_red_flags=data.eo_red_flags,
-        agent_statements_liability=data.agent_statements_liability,
-        missing_information=data.missing_information,
+        to_name=_blank_if_placeholder(data.to_name),
+        insured_intent=_blank_if_placeholder(data.insured_intent),
+        material_risk_facts=_blank_if_placeholder(data.material_risk_facts),
+        coverage_discussed=_blank_if_placeholder(data.coverage_discussed),
+        monetary_values=_blank_if_placeholder(data.monetary_values),
+        options_presented=_blank_if_placeholder(data.options_presented),
+        client_selection=_blank_if_placeholder(data.client_selection),
+        agent_recommendation=_blank_if_placeholder(data.agent_recommendation),
+        eo_red_flags=_blank_if_placeholder(data.eo_red_flags),
+        agent_statements_liability=_blank_if_placeholder(data.agent_statements_liability),
+        missing_information=_blank_if_placeholder(data.missing_information),
         confidence_score=data.confidence_score,
     )
 
@@ -1561,7 +1669,12 @@ def create_transcript(
     db.add(new_transcript)
     db.commit()
     db.refresh(new_transcript)
+
+    # Released before moving the cursor, so this call stops holding it back
+    was_reprocess = _clear_reprocess_request(normalized_recording_id)
     _set_latest_webhook_start_time(new_transcript.start_time, data.start_time)
+    if was_reprocess:
+        _advance_cursor_to_newest_transcript()
 
     # Auto-create AgencyZoom follow-up tasks for fresh calls only, so backlog
     # re-sweeps of old calls never spam the CRM.
