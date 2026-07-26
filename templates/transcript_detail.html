@@ -99,42 +99,6 @@
     </div>
 
     <div class="section">
-        <h3 class="section-title">AI Extraction Fields</h3>
-        <p style="margin-bottom: 12px;"><b>Confidence Score:</b> {{ transcript.confidence_score if
-            transcript.confidence_score is not none else "-" }}</p>
-
-        <label class="field-label">Insured Intent</label>
-        <div class="transcription-box">{{ transcript.insured_intent or "No data available." }}</div>
-
-        <label class="field-label">Material Risk Facts</label>
-        <div class="transcription-box">{{ transcript.material_risk_facts or "No data available." }}</div>
-
-        <label class="field-label">Coverage Discussed</label>
-        <div class="transcription-box">{{ transcript.coverage_discussed or "No data available." }}</div>
-
-        <label class="field-label">Monetary Values</label>
-        <div class="transcription-box">{{ transcript.monetary_values or "No data available." }}</div>
-
-        <label class="field-label">Options Presented</label>
-        <div class="transcription-box">{{ transcript.options_presented or "No data available." }}</div>
-
-        <label class="field-label">Client Selection</label>
-        <div class="transcription-box">{{ transcript.client_selection or "No data available." }}</div>
-
-        <label class="field-label">Agent Recommendation</label>
-        <div class="transcription-box">{{ transcript.agent_recommendation or "No data available." }}</div>
-
-        <label class="field-label">E&amp;O Red Flags</label>
-        <div class="transcription-box">{{ transcript.eo_red_flags or "No data available." }}</div>
-
-        <label class="field-label">Agent Statements (Liability)</label>
-        <div class="transcription-box">{{ transcript.agent_statements_liability or "No data available." }}</div>
-
-        <label class="field-label">Missing Information</label>
-        <div class="transcription-box">{{ transcript.missing_information or "No data available." }}</div>
-    </div>
-
-    <div class="section">
         <h3 class="section-title">Transcription Problem?</h3>
         <p style="margin:0 0 10px; font-size:0.9rem; opacity:0.85;">
             If the transcript missed the conversation or the notes are wrong, run the call again.
@@ -190,9 +154,6 @@
 
         <label class="field-label">Reason For Call</label>
         <textarea id="reasonForCallInput" rows="4">{{ transcript.reason_for_call }}</textarea>
-
-        <label class="field-label">Key Points</label>
-        <textarea id="keyPointsInput" rows="4">{{ transcript.key_points }}</textarea>
 
         <label class="field-label">Follow Up Task</label>
         <div id="followUpTaskList" class="follow-up-task-list">
@@ -362,7 +323,6 @@
     async function updateTranscription() {
         const text = document.getElementById("transcriptionInput").value;
         const reasonForCall = document.getElementById("reasonForCallInput").value;
-        const keyPoints = document.getElementById("keyPointsInput").value;
         const crmNote = document.getElementById("crmNoteInput").value;
         const id = "{{ transcript.id }}";
 
@@ -375,7 +335,6 @@
                 body: JSON.stringify({
                     transcription: text,
                     reason_for_call: reasonForCall,
-                    key_points: keyPoints,
                     crm_note: crmNote
                 })
             });

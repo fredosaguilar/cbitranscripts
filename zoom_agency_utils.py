@@ -22,6 +22,14 @@ REQUEST_TIMEOUT = int(os.getenv("AGENCY_ZOOM_TIMEOUT", "30"))
 TOKEN_REFRESH_BUFFER_SECONDS = int(os.getenv("AGENCY_ZOOM_TOKEN_REFRESH_BUFFER_SECONDS", "60"))
 UNKNOWN_VALUE = "Unknown"
 
+# Model placeholders that should read as empty rather than being shown to an agent
+PLACEHOLDER_VALUES = {
+    "not mentioned", "none", "none mentioned", "n/a", "na", "not applicable",
+    "not provided", "not specified", "not discussed", "no follow-up needed",
+    "no follow up needed", "no follow-up required", "no follow-up tasks",
+    "no tasks", "unknown", "no data available", "-",
+}
+
 _cached_jwt_token: Optional[str] = None
 _cached_jwt_expiry: Optional[datetime] = None
 _cached_employee_lookup: Dict[str, Any] = {
@@ -69,6 +77,8 @@ def normalize_follow_up_task(value: Any) -> Optional[str]:
     normalized = normalized.replace("â€¢", "\n").replace("Â·", "\n")
     normalized = normalized.replace(";", "\n")
     lines = [line.strip(" \t-") for line in normalized.splitlines() if line.strip(" \t-")]
+    # "NOT MENTIONED" and friends mean there is no task; show nothing instead
+    lines = [line for line in lines if line.strip().strip(".").lower() not in PLACEHOLDER_VALUES]
     return "\n".join(lines) if lines else None
 
 

@@ -170,7 +170,9 @@ ASSIGNMENT_EMAILS_ENABLED = _env_flag("ASSIGNMENT_EMAILS_ENABLED")
 EXTENSION_EMAIL_MAP = os.getenv("EXTENSION_EMAIL_MAP", "")
 
 # Auto-create AgencyZoom tasks for fresh calls flagged follow_up_needed
-AUTO_AGENCY_ZOOM_TASKS = _env_flag("AUTO_AGENCY_ZOOM_TASKS")
+# Follow-up tasks reach Agency Zoom only when an agent adds them, so nothing is
+# pushed into the CRM without a person deciding it belongs there.
+AUTO_AGENCY_ZOOM_TASKS = _env_flag("AUTO_AGENCY_ZOOM_TASKS", "false")
 AUTO_TASK_MAX_AGE_DAYS = int(os.getenv("AUTO_TASK_MAX_AGE_DAYS", "7"))
 
 # Cached audio retention
@@ -196,6 +198,23 @@ def _clean_string(value):
         return None
     value = str(value).strip()
     return value if value else None
+
+
+# Wording the model uses when a field has no content; store nothing instead so
+# the page shows an empty field rather than "NOT MENTIONED".
+_PLACEHOLDER_TEXT = {
+    "not mentioned", "none", "none mentioned", "n/a", "na", "not applicable",
+    "not provided", "not specified", "not discussed", "no follow-up needed",
+    "no follow up needed", "no follow-up required", "no follow-up tasks",
+    "no tasks", "unknown", "no data available", "-",
+}
+
+
+def _blank_if_placeholder(value):
+    cleaned = _clean_string(value)
+    if cleaned and cleaned.strip().strip(".").lower() in _PLACEHOLDER_TEXT:
+        return None
+    return cleaned
 
 
 # Extract a labeled field value from transcript text lines.
@@ -1479,15 +1498,15 @@ def create_transcript(
         owner_id=resolved_owner_id,
         transcription=data.transcription,
         transcription_original=data.transcription_original,
-        client_name=data.client_name,
+        client_name=_blank_if_placeholder(data.client_name),
         client_number=resolved_client_number,
-        policy_type=data.policy_type,
-        reason_for_call=data.reason_for_call,
-        key_points=data.key_points,
+        policy_type=_blank_if_placeholder(data.policy_type),
+        reason_for_call=_blank_if_placeholder(data.reason_for_call),
+        key_points=_blank_if_placeholder(data.key_points),
         customer_sentiment=data.customer_sentiment,
         follow_up_needed=data.follow_up_needed,
-        follow_up_task=data.follow_up_task,
-        crm_note=data.crm_note,
+        follow_up_task=_blank_if_placeholder(data.follow_up_task),
+        crm_note=_blank_if_placeholder(data.crm_note),
         recordingID=normalized_recording_id,
         caller_number=data.caller_number,
         from_name=data.from_name,
