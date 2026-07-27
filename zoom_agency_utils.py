@@ -16,8 +16,10 @@ AGENCY_ZOOM_CUSTOMERS_URL = f"{AGENCY_ZOOM_BASE_URL}/v1/api/customers"
 AGENCY_ZOOM_LEADS_URL = f"{AGENCY_ZOOM_BASE_URL}/v1/api/leads"
 AGENCY_ZOOM_EMPLOYEES_URL = f"{AGENCY_ZOOM_BASE_URL}/v1/api/employees"
 
-USERNAME = os.getenv("USER_NAME")
-PASSWORD = os.getenv("PASSWORD")
+# Stripped, because a credential pasted into the hosting dashboard easily
+# carries a trailing space or newline, which Agency Zoom rejects as a bad login
+USERNAME = (os.getenv("USER_NAME") or "").strip()
+PASSWORD = (os.getenv("PASSWORD") or "").strip()
 REQUEST_TIMEOUT = int(os.getenv("AGENCY_ZOOM_TIMEOUT", "30"))
 TOKEN_REFRESH_BUFFER_SECONDS = int(os.getenv("AGENCY_ZOOM_TOKEN_REFRESH_BUFFER_SECONDS", "60"))
 UNKNOWN_VALUE = "Unknown"
@@ -123,7 +125,17 @@ def zomm_agency_login() -> str:
         headers={"Content-Type": "application/json"},
         timeout=REQUEST_TIMEOUT,
     )
-    response.raise_for_status()
+
+    # A bare "400 Bad Request" says nothing about what to fix, and Agency Zoom
+    # explains itself in the body, so pass that explanation on.
+    if response.status_code >= 400:
+        detail = (response.text or "").strip()[:300]
+        if response.status_code in (400, 401, 403):
+            raise ValueError(
+                f"Agency Zoom rejected the login for {USERNAME or '(no username set)'} "
+                f"({response.status_code}). Check the USER_NAME and PASSWORD variables. "
+                f"Agency Zoom said: {detail or 'nothing'}")
+        raise ValueError(f"Agency Zoom login failed ({response.status_code}): {detail or 'no detail returned'}")
 
     response_data = response.json()
     jwt_token = response_data.get("jwt")
