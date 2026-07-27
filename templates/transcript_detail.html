@@ -125,8 +125,8 @@
         </div>
 
         <label style="display:block; margin-top:8px; font-size:0.85rem;">
-            <input type="checkbox" id="azApplyAll" checked>
-            Also link every other call from this number
+            <input type="checkbox" id="azApplyAll">
+            Also link every other call from this number (leave off to link only this call)
         </label>
 
         <div id="azResults" style="margin-top:12px;"></div>
@@ -316,15 +316,29 @@
         body.append("apply_to_number", document.getElementById("azApplyAll").checked ? "true" : "false");
         try {
             const res = await fetch(`/api/transcripts/${AZ_TRANSCRIPT_ID}/agencyzoom/link`, { method: "POST", body });
-            if (!res.ok) throw new Error();
+            if (!res.ok) {
+                showToast(await azFailureMessage(res));
+                return;
+            }
+            // Report what the server stored, not what was sent, so the message
+            // is only ever shown for a link that really was saved.
             const data = await res.json();
             const extra = data.also_updated ? ` (and ${data.also_updated} other call${data.also_updated === 1 ? "" : "s"})` : "";
-            showToast((customerId ? "Linked to Agency Zoom" : "Agency Zoom link cleared") + extra);
+            showToast((data.linked ? `Linked to ${data.customer_name || "Agency Zoom"}` : "Agency Zoom link cleared") + extra);
             document.getElementById("azResults").innerHTML = "";
             azLoadStatus();
         } catch (e) {
-            showToast("Failed to save Agency Zoom link");
+            showToast("Could not reach the server to save the Agency Zoom link.");
         }
+    }
+
+    // A refused save has a reason; showing it beats "try again", which repeats
+    // the same failure.
+    async function azFailureMessage(res) {
+        if (res.status === 401) return "Your session expired. Log in again, then link the customer.";
+        let detail = "";
+        try { detail = (await res.json()).detail || ""; } catch (err) { /* no body */ }
+        return detail || `The Agency Zoom link was not saved (error ${res.status}).`;
     }
 
     azLoadStatus();

@@ -220,8 +220,8 @@
     <input type="text" id="azModalQuery" placeholder="Phone, name, or email…"
            onkeydown="if (event.key === 'Enter') azModalSearch();">
     <label style="display:block; margin-top:10px; font-size:0.85rem;">
-        <input type="checkbox" id="azApplyAll" checked>
-        Also link every other call from this number
+        <input type="checkbox" id="azApplyAll">
+        Also link every other call from this number (leave off to link only this call)
     </label>
     <div class="az-actions">
         <button type="button" onclick="azModalSearch()">Search</button>
@@ -297,6 +297,8 @@
         azCurrentTranscriptId = transcriptId;
         document.getElementById('azModalQuery').value = phone || '';
         document.getElementById('azModalResults').textContent = '';
+        // Off every time, so a bulk link is always a deliberate choice
+        document.getElementById('azApplyAll').checked = false;
         document.getElementById('azOverlay').style.display = 'block';
         document.getElementById('azModal').style.display = 'block';
         document.getElementById('azModalQuery').focus();
@@ -390,17 +392,31 @@
         try {
             const res = await fetch(`/api/transcripts/${azCurrentTranscriptId}/agencyzoom/link`,
                 { method: 'POST', body });
-            if (!res.ok) throw new Error();
+            if (!res.ok) {
+                alert(await azFailureMessage(res));
+                return;
+            }
+            // Repaint from what the server stored, so the row can never show a
+            // link that was not saved.
             const data = await res.json();
-            azUpdateCell(azCurrentTranscriptId, customerId, customerName);
+            azUpdateCell(azCurrentTranscriptId, data.customer_id || '', data.customer_name || '');
             azClose();
             if (data.also_updated > 0) {
                 // Other rows changed server-side; refresh so the list matches
                 location.reload();
             }
         } catch (e) {
-            alert('Failed to save the Agency Zoom link. Please try again.');
+            alert('Could not reach the server to save the Agency Zoom link.');
         }
+    }
+
+    // A refused save has a reason; showing it beats "try again", which repeats
+    // the same failure.
+    async function azFailureMessage(res) {
+        if (res.status === 401) return 'Your session expired. Log in again, then link the customer.';
+        let detail = '';
+        try { detail = (await res.json()).detail || ''; } catch (err) { /* no body */ }
+        return detail || `The Agency Zoom link was not saved (error ${res.status}).`;
     }
 
     // Repaint the row in place so the list never needs a full reload
