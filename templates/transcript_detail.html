@@ -179,6 +179,14 @@
             <input id="followUpTaskInput" type="text" placeholder="Add follow-up task">
             <button type="button" onclick="addFollowUpTask()">Add Task</button>
         </div>
+        <div style="display:flex; gap:8px; align-items:center; margin-top:8px; flex-wrap:wrap;">
+            <label class="field-label" style="margin:0;">Agency Zoom due date</label>
+            <input type="date" id="dueDateInput" value="{{ transcript.agency_zoom_due_date or '' }}"
+                   onchange="saveDueDate()">
+            <small style="opacity:0.75;">
+                Applied to tasks created for this call when it is approved. Defaults to tomorrow.
+            </small>
+        </div>
 
         <label class="field-label">CRM Note</label>
         <textarea id="crmNoteInput" rows="4">{{ transcript.crm_note }}</textarea>
@@ -260,8 +268,9 @@
             const summary = document.createElement("div");
             summary.style.cssText = "font-size:0.82rem; opacity:0.8; margin-bottom:6px;";
             summary.textContent =
-                `${data.results.length} result${data.results.length === 1 ? "" : "s"}` +
-                (data.query_label ? ` matched on ${data.query_label}: "${data.query}"` : "");
+                `${data.results.length} match${data.results.length === 1 ? "" : "es"}` +
+                (data.query_label ? ` on ${data.query_label}: "${data.query}"` : "") +
+                (data.results.length >= 200 ? " - showing the first 200, refine to narrow" : "");
             results.appendChild(summary);
 
             data.results.forEach(r => {
@@ -349,6 +358,18 @@
 
         } catch (error) {
             showToast("Error updating transcription");
+        }
+    }
+
+    async function saveDueDate() {
+        const body = new FormData();
+        body.append("due_date", document.getElementById("dueDateInput").value);
+        try {
+            const res = await fetch(`/api/transcripts/${AZ_TRANSCRIPT_ID}/due-date`, { method: "POST", body });
+            if (!res.ok) throw new Error();
+            showToast("Due date saved");
+        } catch (e) {
+            showToast("Could not save the due date");
         }
     }
 

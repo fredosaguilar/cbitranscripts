@@ -82,6 +82,7 @@ class TranscriptResponse(Base):
     agency_zoom_customer_id = Column(String, nullable=True)
     agency_zoom_customer_type = Column(String, nullable=True)
     agency_zoom_customer_name = Column(String, nullable=True)
+    agency_zoom_due_date = Column(String, nullable=True)
     crm_note = Column(Text, nullable=True)
     recordingID = Column(String, nullable=True)
     local_audio_path = Column(String, nullable=True)

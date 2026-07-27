@@ -85,6 +85,7 @@ def on_startup():
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_id VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_type VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_name VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_due_date VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_number VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_name VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS queue_name VARCHAR",
@@ -1491,6 +1492,21 @@ def agency_zoom_link(
         "customer_name": transcript.agency_zoom_customer_name,
         "also_updated": also_updated,
     })
+
+
+@app.post("/api/transcripts/{id}/due-date")
+# Set the due date used when this call's follow-up tasks reach Agency Zoom.
+def set_due_date(id: str, request: Request, due_date: str = Form(""), db: Session = Depends(get_db)):
+    if not get_logged_in_admin(request, db):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    transcript = db.query(models.TranscriptResponse).filter(models.TranscriptResponse.id == id).first()
+    if transcript is None:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+
+    transcript.agency_zoom_due_date = _clean_string(due_date)
+    db.commit()
+    return JSONResponse(content={"status": "ok", "due_date": transcript.agency_zoom_due_date})
 
 
 @app.post("/admin/transcripts/{id}/reprocess")
