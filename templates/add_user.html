@@ -26,6 +26,20 @@
             Emailed to review each call assigned to this extension.
         </small>
 
+
+        <label>Agency Zoom user</label>
+        <select name="agency_zoom_employee_id">
+            <option value="">— match automatically by email —</option>
+            {% for employee in employees %}
+            <option value="{{ employee.id }}" {% if false %}selected{% endif %}>
+                {{ employee.name }}{% if employee.email %} ({{ employee.email }}){% endif %}
+            </option>
+            {% endfor %}
+        </select>
+        <small style="display:block; margin:-6px 0 12px; opacity:0.8;">
+            Notes and tasks for this agent's calls are attributed to this Agency Zoom user.
+        </small>
+
         <label>User Token (Pushover key, optional)</label>
         <input type="text" name="user_token" placeholder="Leave blank if not using push notifications">
 

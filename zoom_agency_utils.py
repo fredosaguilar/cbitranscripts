@@ -426,6 +426,7 @@ def create_agency_zoom_customer_note(
     customer_id: int | str,
     note: str,
     jwt_token: Optional[str] = None,
+    author_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     normalized_customer_id = _clean_string(customer_id)
     normalized_note = _clean_string(note)
@@ -436,9 +437,15 @@ def create_agency_zoom_customer_note(
         raise ValueError("Note is required to create an Agency Zoom customer note.")
 
     token = jwt_token or zomm_agency_login()
+    payload: Dict[str, Any] = {"note": normalized_note}
+    if _clean_int(author_id):
+        # Harmless if Agency Zoom ignores these; useful if it honours either
+        payload["userId"] = _clean_int(author_id)
+        payload["employeeId"] = _clean_int(author_id)
+
     response = requests.post(
         f"{AGENCY_ZOOM_CUSTOMERS_URL}/{normalized_customer_id}/notes",
-        json={"note": normalized_note},
+        json=payload,
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
@@ -574,8 +581,53 @@ def get_cached_agency_zoom_employee_lookup() -> Dict[str, Any]:
     return {}
 
 
+
+# List Agency Zoom employees so each app user can be mapped to one.
+def list_agency_zoom_employees(jwt_token: Optional[str] = None) -> list[dict[str, Any]]:
+    token = jwt_token or zomm_agency_login()
+    try:
+        response = requests.get(
+            AGENCY_ZOOM_EMPLOYEES_URL,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        employees = _extract_employee_records(_parse_response(response))
+    except Exception:
+        return []
+
+    listed = []
+    for employee in employees:
+        first = _clean_string(employee.get("firstname")) or _clean_string(employee.get("firstName"))
+        last = _clean_string(employee.get("lastname")) or _clean_string(employee.get("lastName"))
+        name = " ".join(part for part in [first, last] if part) or _clean_string(employee.get("name"))
+        identifier = _clean_string(employee.get("id"))
+        if identifier:
+            listed.append({
+                "id": identifier,
+                "name": name or f"Employee {identifier}",
+                "email": _clean_string(employee.get("email")),
+            })
+    return sorted(listed, key=lambda item: item["name"].lower())
+
+
+# Find the Agency Zoom employee whose email matches an app user's email.
+def find_agency_zoom_employee_by_email(email: Any, jwt_token: Optional[str] = None) -> Optional[dict[str, Any]]:
+    needle = (_clean_string(email) or "").lower()
+    if not needle:
+        return None
+    for employee in list_agency_zoom_employees(jwt_token=jwt_token):
+        if (employee.get("email") or "").lower() == needle:
+            return employee
+    return None
+
+
 # Create one Agency Zoom task for each follow-up line on a transcript.
-def create_agency_zoom_tasks_for_transcript(transcript: Any) -> list[str]:
+def create_agency_zoom_tasks_for_transcript(
+    transcript: Any,
+    assignee_id: Optional[str] = None,
+    agent_name: Optional[str] = None,
+) -> list[str]:
     normalized_tasks = normalize_follow_up_task(getattr(transcript, "follow_up_task", None))
     if not normalized_tasks:
         return []
@@ -595,6 +647,7 @@ def create_agency_zoom_tasks_for_transcript(transcript: Any) -> list[str]:
             f"CRM Note: {_clean_string(getattr(transcript, 'crm_note', None)) or UNKNOWN_VALUE}",
             f"Recording ID: {_clean_string(getattr(transcript, 'recordingID', None)) or UNKNOWN_VALUE}",
             f"Transcript ID: {getattr(transcript, 'id', UNKNOWN_VALUE)}",
+            f"Handled by: {_clean_string(agent_name) or UNKNOWN_VALUE}",
         ]
     )
 
@@ -603,8 +656,10 @@ def create_agency_zoom_tasks_for_transcript(transcript: Any) -> list[str]:
     customer_name = _clean_string(getattr(transcript, "client_name", None))
     customer_id: Optional[str] = None
     customer_type: Optional[str] = None
-    assignee_id = resolve_agency_zoom_assignee_id(transcript, jwt_token=jwt_token)
-    print(f"\n\n\nResolved assignee ID: {assignee_id} for transcript with client number: {getattr(transcript, 'client_number', None)}")
+    # The agent the transcript is assigned to owns the task; fall back to the
+    # older name and phone matching only when no mapping exists.
+    resolved_assignee = _clean_int(assignee_id) or resolve_agency_zoom_assignee_id(
+        transcript, jwt_token=jwt_token)
 
 
     match = resolve_transcript_agency_zoom_match(transcript, jwt_token=jwt_token)
@@ -627,7 +682,7 @@ def create_agency_zoom_tasks_for_transcript(transcript: Any) -> list[str]:
             customer_name=customer_name,
             customer_id=customer_id,
             customer_type=customer_type,
-            assignee_id=assignee_id,
+            assignee_id=resolved_assignee,
             jwt_token=jwt_token,
         )
         task_id = _extract_agency_zoom_task_id(response_data)
@@ -661,7 +716,11 @@ def resolve_transcript_agency_zoom_match(transcript: Any, jwt_token: Optional[st
 
 
 # Create an Agency Zoom customer note using the transcript CRM note.
-def create_agency_zoom_customer_note_for_transcript(transcript: Any) -> Dict[str, Any]:
+def create_agency_zoom_customer_note_for_transcript(
+    transcript: Any,
+    agent_name: Optional[str] = None,
+    employee_id: Optional[str] = None,
+) -> Dict[str, Any]:
     note = _clean_string(getattr(transcript, "crm_note", None))
     if not note:
         raise ValueError("crm_note is required to create an Agency Zoom customer note.")
@@ -674,7 +733,14 @@ def create_agency_zoom_customer_note_for_transcript(transcript: Any) -> Dict[str
             "transcript page to link the right record, then approve again."
         )
 
-    return create_agency_zoom_customer_note(customer_id=match["id"], note=note, jwt_token=jwt_token)
+    # The API posts notes as the integration user, so the agent is named in the
+    # note itself and passed as an author id where the API accepts one.
+    author = _clean_string(agent_name)
+    if author:
+        note = f"{note}\n\nCall handled by {author}."
+
+    return create_agency_zoom_customer_note(
+        customer_id=match["id"], note=note, jwt_token=jwt_token, author_id=employee_id)
 
 # Fetch and cache the Agency Zoom employee list.
 def get_agency_zoom_employee_list(jwt_token: Optional[str] = None) -> Dict[str, Any]:
