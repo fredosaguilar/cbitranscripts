@@ -97,6 +97,7 @@ def on_startup():
         "ALTER TABLE users_tokens ADD COLUMN IF NOT EXISTS agency_zoom_employee_id VARCHAR",
         "ALTER TABLE users_tokens ADD COLUMN IF NOT EXISTS agency_zoom_employee_name VARCHAR",
         "CREATE TABLE IF NOT EXISTS reprocess_requests (recording_id VARCHAR PRIMARY KEY, start_time TIMESTAMP, requested_at TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS transcription_attempts (recording_id VARCHAR PRIMARY KEY, attempts INTEGER DEFAULT 0, last_error TEXT, updated_at TIMESTAMP)",
         # A user may be email-only, with no Pushover key
         "ALTER TABLE users_tokens ALTER COLUMN token DROP NOT NULL",
     ]
@@ -191,6 +192,10 @@ AUTO_TASK_MAX_AGE_DAYS = int(os.getenv("AUTO_TASK_MAX_AGE_DAYS", "7"))
 
 # Cached audio retention
 AUDIO_CACHE_RETENTION_DAYS = int(os.getenv("AUDIO_CACHE_RETENTION_DAYS", "90"))
+
+# How many times to refuse a poor transcript before accepting it, so one
+# unintelligible recording cannot be retried on every sync forever.
+MAX_TRANSCRIBE_ATTEMPTS = int(os.getenv("MAX_TRANSCRIBE_ATTEMPTS", "3"))
 
 # Use the RingCentral extension as owner_id when the workflow reports one, so
 # agents sharing a phone number are told apart. Set false to keep phone numbers.
@@ -1548,6 +1553,7 @@ def reprocess_transcript(id: str, request: Request, db: Session = Depends(get_db
         )
 
     recording_id = _clean_string(transcript.recordingID)
+    _clear_transcription_attempts(db, recording_id)  # a deliberate retry starts fresh
     delete_local_audio_file(getattr(transcript, "local_audio_path", None))
     db.delete(transcript)
 
@@ -1790,6 +1796,34 @@ def create_transcript(
     return JSONResponse(content=structured_response, status_code=200)
 
 
+
+def _record_transcription_attempt(db: Session, recording_id: Optional[str], result: dict) -> int:
+    """Count a poor transcription result, returning the attempt number."""
+    cleaned = _clean_string(recording_id)
+    if not cleaned:
+        return 1
+    row = db.query(models.TranscriptionAttempt).filter_by(recording_id=cleaned).first()
+    if row is None:
+        row = models.TranscriptionAttempt(recording_id=cleaned, attempts=0)
+        db.add(row)
+    row.attempts = (row.attempts or 0) + 1
+    row.last_error = (
+        f"{result['audio_bytes']} bytes, {result['audio_seconds']}s, {result['word_count']} words"
+    )
+    db.commit()
+    return row.attempts
+
+
+def _clear_transcription_attempts(db: Session, recording_id: Optional[str]) -> None:
+    cleaned = _clean_string(recording_id)
+    if not cleaned:
+        return
+    row = db.query(models.TranscriptionAttempt).filter_by(recording_id=cleaned).first()
+    if row is not None:
+        db.delete(row)
+        db.commit()
+
+
 @app.post("/api/transcribe-recording")
 # Download a recording and transcribe it here, rather than in the workflow.
 def transcribe_recording_endpoint(payload: dict, db: Session = Depends(get_db)):
@@ -1815,18 +1849,43 @@ def transcribe_recording_endpoint(payload: dict, db: Session = Depends(get_db)):
     # served; report it so the workflow can leave the call for a later run
     # instead of saving the announcement as if it were the conversation.
     if result["short_download"] or result["word_count"] < 15:
-        logger.warning(
-            "Recording %s produced only %s bytes / %s words; refusing to treat it as a transcript",
-            recording_id or audio_url, result["audio_bytes"], result["word_count"],
-        )
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"Recording is not fully available yet "
-                f"({result['audio_bytes']} bytes, {result['word_count']} words transcribed)"
-            ),
-        )
+        attempts = _record_transcription_attempt(db, recording_id, result)
+        if attempts < MAX_TRANSCRIBE_ATTEMPTS:
+            logger.warning(
+                "Recording %s produced only %s bytes (%ss) / %s words; attempt %s of %s, will retry",
+                recording_id or audio_url, result["audio_bytes"], result["audio_seconds"],
+                result["word_count"], attempts, MAX_TRANSCRIBE_ATTEMPTS,
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Recording is not fully available yet "
+                    f"({result['audio_bytes']} bytes, {result['audio_seconds']}s, "
+                    f"{result['word_count']} words transcribed)"
+                ),
+            )
 
+        # Out of attempts: accept what there is so the call is visible and the
+        # sync can move on. The agent can listen and reprocess if it matters.
+        logger.warning(
+            "Recording %s still yields only %s words after %s attempts; accepting it so the "
+            "sync can continue", recording_id or audio_url, result["word_count"], attempts,
+        )
+        result["low_quality"] = True
+        # The counter deliberately stays: clearing it here would send the next
+        # sync back to attempt one and restart the loop.
+        result["text"] = (
+            (result["text"] or "").strip()
+            + f"\n\n[Automatic transcription captured only {result['word_count']} words from "
+              f"{result['audio_seconds']}s of audio. Listen to the recording and use Reprocess "
+              f"if the conversation is missing.]"
+        ).strip()
+
+        return JSONResponse(content=result)
+
+    # A good transcript clears the history, so a recording that recovers later
+    # is treated as healthy again.
+    _clear_transcription_attempts(db, recording_id)
     return JSONResponse(content=result)
 
 

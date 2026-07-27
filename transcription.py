@@ -41,20 +41,13 @@ _MP3_BITRATES_V1_L3 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 2
 _MP3_RATES = {0: [11025, 12000, 8000], 2: [22050, 24000, 16000], 3: [44100, 48000, 32000]}
 
 
-def split_mp3(audio: bytes, chunk_seconds: int = CHUNK_SECONDS) -> list[bytes]:
-    """Cut an MP3 on frame boundaries, without re-encoding.
 
-    Returns the whole file as a single chunk when the frames cannot be parsed,
-    so an unexpected format still gets transcribed rather than dropped.
-    """
+def _iter_mp3_frames(audio: bytes, with_offsets: bool = False):
+    """Yield each MP3 frame, skipping any ID3 header."""
     position = 0
     if audio[:3] == b"ID3":
         size = ((audio[6] & 0x7F) << 21) | ((audio[7] & 0x7F) << 14) | ((audio[8] & 0x7F) << 7) | (audio[9] & 0x7F)
         position = 10 + size
-
-    chunks: list[bytes] = []
-    chunk_start = position
-    elapsed = 0.0
 
     while position < len(audio) - 4:
         if audio[position] != 0xFF or (audio[position + 1] & 0xE0) != 0xE0:
@@ -83,14 +76,41 @@ def split_mp3(audio: bytes, chunk_seconds: int = CHUNK_SECONDS) -> list[bytes]:
             position += 1
             continue
 
+        if with_offsets:
+            yield position, samples_per_frame, sample_rate, frame_length
+        else:
+            yield position, samples_per_frame, sample_rate
         position += frame_length
+
+
+def mp3_duration_seconds(audio: bytes) -> float:
+    """Duration from the MP3 frame headers, for spotting a short download."""
+    total = 0.0
+    for _, samples_per_frame, sample_rate in _iter_mp3_frames(audio):
+        total += samples_per_frame / sample_rate
+    return total
+
+
+def split_mp3(audio: bytes, chunk_seconds: int = CHUNK_SECONDS) -> list[bytes]:
+    """Cut an MP3 on frame boundaries, without re-encoding.
+
+    Returns the whole file as a single chunk when the frames cannot be parsed,
+    so an unexpected format still gets transcribed rather than dropped.
+    """
+    chunks: list[bytes] = []
+    chunk_start = None
+    elapsed = 0.0
+
+    for offset, samples_per_frame, sample_rate, frame_length in _iter_mp3_frames(audio, with_offsets=True):
+        if chunk_start is None:
+            chunk_start = offset
         elapsed += samples_per_frame / sample_rate
         if elapsed >= chunk_seconds:
-            chunks.append(audio[chunk_start:position])
-            chunk_start = position
+            chunks.append(audio[chunk_start:offset + frame_length])
+            chunk_start = offset + frame_length
             elapsed = 0.0
 
-    if chunk_start < len(audio):
+    if chunk_start is not None and chunk_start < len(audio):
         tail = audio[chunk_start:]
         if len(tail) > 512:
             chunks.append(tail)
@@ -183,7 +203,9 @@ def transcribe_recording(audio_url: str) -> dict:
     original_text = clean_transcript(" ".join(part for part in original_parts if part))
     spoken_in_english = detected in {"english", "en"}
 
+    audio_seconds = mp3_duration_seconds(audio)
     result = {
+        "audio_seconds": round(audio_seconds, 1),
         "text": english,
         "text_original": "" if spoken_in_english else original_text,
         "original_language": detected or "unknown",
@@ -193,8 +215,8 @@ def transcribe_recording(audio_url: str) -> dict:
         "word_count": len(english.split()),
     }
     logger.info(
-        "Transcribed %s bytes from %s in %s chunk(s): %s words%s",
-        audio_bytes, audio_url, len(chunks), result["word_count"],
+        "Transcribed %s bytes (%.0fs of audio) from %s in %s chunk(s): %s words%s",
+        audio_bytes, audio_seconds, audio_url, len(chunks), result["word_count"],
         " (SHORT DOWNLOAD)" if result["short_download"] else "",
     )
     return result
