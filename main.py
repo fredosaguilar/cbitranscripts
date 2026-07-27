@@ -968,10 +968,29 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         for row in extension_rows
     ]
 
+    # When calls stop appearing the cause is almost always one of these three,
+    # and none of them were visible anywhere before.
+    cursor_state = (
+        db.query(models.WebhookState)
+        .filter(models.WebhookState.state_key == WEBHOOK_STATE_KEY)
+        .first()
+    )
+    newest_call = db.query(func.max(models.TranscriptResponse.start_time)).scalar()
+    sync_status = {
+        "cursor": _clean_string(getattr(cursor_state, "start_time_raw", None))
+        or _format_utc_timestamp(_ensure_utc_datetime(getattr(cursor_state, "start_time", None))),
+        "newest_call": newest_call,
+        "pending_reprocess": db.query(models.ReprocessRequest).order_by(
+            models.ReprocessRequest.start_time.asc()).all(),
+        "stuck_recordings": db.query(models.TranscriptionAttempt).order_by(
+            desc(models.TranscriptionAttempt.updated_at)).limit(10).all(),
+    }
+
     context = {
         "request": request,
         "users_tokens": users_tokens,
         "seen_extensions": seen_extensions,
+        "sync_status": sync_status,
     }
     return templates.TemplateResponse(request, "dashboard.html", context)
 
