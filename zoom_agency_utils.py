@@ -583,8 +583,15 @@ def get_cached_agency_zoom_employee_lookup() -> Dict[str, Any]:
 
 
 # List Agency Zoom employees so each app user can be mapped to one.
-def list_agency_zoom_employees(jwt_token: Optional[str] = None) -> list[dict[str, Any]]:
-    token = jwt_token or zomm_agency_login()
+def list_agency_zoom_employees_with_error(
+    jwt_token: Optional[str] = None,
+) -> tuple[list[dict[str, Any]], Optional[str]]:
+    """Employees plus the reason the list is empty, so the UI can explain itself."""
+    try:
+        token = jwt_token or zomm_agency_login()
+    except Exception as exc:
+        return [], f"Could not sign in to Agency Zoom: {exc}"
+
     try:
         response = requests.get(
             AGENCY_ZOOM_EMPLOYEES_URL,
@@ -592,9 +599,12 @@ def list_agency_zoom_employees(jwt_token: Optional[str] = None) -> list[dict[str
             timeout=REQUEST_TIMEOUT,
         )
         response.raise_for_status()
-        employees = _extract_employee_records(_parse_response(response))
-    except Exception:
-        return []
+        payload = _parse_response(response)
+        employees = _extract_employee_records(payload)
+        if not employees:
+            return [], f"Agency Zoom returned no employees ({str(payload)[:160]})"
+    except Exception as exc:
+        return [], f"Agency Zoom employee lookup failed: {exc}"
 
     listed = []
     for employee in employees:
@@ -608,7 +618,12 @@ def list_agency_zoom_employees(jwt_token: Optional[str] = None) -> list[dict[str
                 "name": name or f"Employee {identifier}",
                 "email": _clean_string(employee.get("email")),
             })
-    return sorted(listed, key=lambda item: item["name"].lower())
+    return sorted(listed, key=lambda item: item["name"].lower()), None
+
+
+def list_agency_zoom_employees(jwt_token: Optional[str] = None) -> list[dict[str, Any]]:
+    employees, _ = list_agency_zoom_employees_with_error(jwt_token=jwt_token)
+    return employees
 
 
 # Find the Agency Zoom employee whose email matches an app user's email.
