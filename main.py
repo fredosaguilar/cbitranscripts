@@ -45,6 +45,7 @@ from zoom_agency_utils import (
     create_agency_zoom_customer_note_for_transcript,
     find_agency_zoom_employee_by_email,
     list_agency_zoom_employees,
+    list_agency_zoom_employees_with_error,
     create_agency_zoom_tasks_for_transcript,
     normalize_follow_up_task,
     resolve_transcript_agency_zoom_match,
@@ -976,12 +977,9 @@ def add_user_page(request: Request, db: Session = Depends(get_db)):
     if not get_logged_in_admin(request, db):
         return RedirectResponse(url="/", status_code=303)
 
-    try:
-        employees = list_agency_zoom_employees()
-    except Exception:
-        employees = []
+    employees, employee_error = list_agency_zoom_employees_with_error()
     return templates.TemplateResponse(request, "add_user.html", {
-        "request": request, "employees": employees})
+        "request": request, "employees": employees, "employee_error": employee_error})
 
 
 @app.post("/admin/add-user")
@@ -992,11 +990,13 @@ def add_user(
     email: str = Form(""),
     user_token: str = Form(""),
     agency_zoom_employee_id: str = Form(""),
+    agency_zoom_employee_id_manual: str = Form(""),
     db: Session = Depends(get_db),
 ):
     if not get_logged_in_admin(request, db):
         return RedirectResponse(url="/", status_code=303)
 
+    agency_zoom_employee_id = _clean_string(agency_zoom_employee_id_manual) or agency_zoom_employee_id
     new_user = models.UserToken(
         token_id=str(uuid.uuid4()),
         user_id=_clean_string(user_id),
@@ -1023,12 +1023,10 @@ def delete_user(token_id: str, db: Session = Depends(get_db)):
 # Render the edit page for a stored user token.
 def edit_user_page(token_id: str, request: Request, db: Session = Depends(get_db)):
     user = db.query(models.UserToken).filter(models.UserToken.token_id == token_id).first()
-    try:
-        employees = list_agency_zoom_employees()
-    except Exception:
-        employees = []
+    employees, employee_error = list_agency_zoom_employees_with_error()
     return templates.TemplateResponse(request, "edit_user.html", {
-        "request": request, "user": user, "employees": employees})
+        "request": request, "user": user, "employees": employees,
+        "employee_error": employee_error})
 
 
 @app.post("/admin/edit-user/{token_id}")
@@ -1038,10 +1036,12 @@ def update_user(
     email: str = Form(""),
     user_token: str = Form(""),
     agency_zoom_employee_id: str = Form(""),
+    agency_zoom_employee_id_manual: str = Form(""),
     db: Session = Depends(get_db),
 ):
     user = db.query(models.UserToken).filter(models.UserToken.token_id == token_id).first()
     if user:
+        agency_zoom_employee_id = _clean_string(agency_zoom_employee_id_manual) or agency_zoom_employee_id
         user.email = _clean_string(email)
         user.token = _clean_string(user_token)
         chosen = _clean_string(agency_zoom_employee_id)

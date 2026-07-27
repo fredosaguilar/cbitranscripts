@@ -28,14 +28,23 @@
 
 
         <label>Agency Zoom user</label>
+        {% if employees %}
         <select name="agency_zoom_employee_id">
             <option value="">— match automatically by email —</option>
             {% for employee in employees %}
-            <option value="{{ employee.id }}" {% if false %}selected{% endif %}>
+            <option value="{{ employee.id }}">
                 {{ employee.name }}{% if employee.email %} ({{ employee.email }}){% endif %}
             </option>
             {% endfor %}
         </select>
+        {% else %}
+        <div style="font-size:0.85rem; color:#9b1c1c; margin-bottom:6px;">
+            The Agency Zoom user list could not be loaded{% if employee_error %}: {{ employee_error }}{% endif %}.
+            Enter the user id below instead.
+        </div>
+        {% endif %}
+        <input type="text" name="agency_zoom_employee_id_manual"
+               placeholder="Or type the Agency Zoom user id, e.g. 8803">
         <small style="display:block; margin:-6px 0 12px; opacity:0.8;">
             Notes and tasks for this agent's calls are attributed to this Agency Zoom user.
         </small>
