@@ -287,101 +287,114 @@ def _candidate_summary(record: dict[str, Any], record_type: str) -> dict[str, An
     }
 
 
-# Search Agency Zoom customers. A phone query is retried in every common
-# format; any other query is tried against each field name the API may expect,
-# so a client can be found by name, business name, or email as well.
-def search_agency_zoom_customers(query: Any, jwt_token: Optional[str] = None) -> list[dict[str, Any]]:
-    token = jwt_token or zomm_agency_login()
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    cleaned = _clean_string(query)
-    if not cleaned:
-        return []
+# Agency Zoom's search ignores the query text and returns the first page of
+# everything, so the whole directory is paged in, cached briefly, and filtered
+# here. That is what lets a search for "Garcia" actually return the Garcias.
+_directory_cache: Dict[str, Any] = {"customers": None, "leads": None, "fetched_at": None}
+DIRECTORY_CACHE_SECONDS = int(os.getenv("AGENCY_ZOOM_CACHE_SECONDS", "600"))
+DIRECTORY_PAGE_SIZE = int(os.getenv("AGENCY_ZOOM_PAGE_SIZE", "100"))
+DIRECTORY_MAX_PAGES = int(os.getenv("AGENCY_ZOOM_MAX_PAGES", "60"))
 
-    is_phone = len(_last_ten_digits(cleaned)) >= 10
-    attempts = _phone_variants(cleaned) if is_phone else [cleaned]
 
+def _fetch_all_pages(url: str, record_type: str, jwt_token: str) -> list[dict[str, Any]]:
+    """Page through a listing endpoint until it stops returning new records."""
+    headers = {"Authorization": f"Bearer {jwt_token}", "Content-Type": "application/json"}
     found: dict[str, dict[str, Any]] = {}
-    for attempt in attempts:
-        if not attempt:
-            continue
-        if is_phone:
-            payloads = [{"phone": attempt}, {"searchText": attempt}, {"search": attempt}]
-        else:
-            payloads = [
-                {"searchText": attempt},
-                {"search": attempt},
-                {"name": attempt},
-                {"keyword": attempt},
-                {"email": attempt} if "@" in attempt else {"businessName": attempt},
-            ]
-        for payload in payloads:
+
+    for page in range(1, DIRECTORY_MAX_PAGES + 1):
+        added = 0
+        for payload in ({"page": page, "pageSize": DIRECTORY_PAGE_SIZE},
+                        {"pageIndex": page, "pageSize": DIRECTORY_PAGE_SIZE}):
             try:
-                response = requests.post(
-                    AGENCY_ZOOM_CUSTOMERS_URL,
-                    json={**payload, "pageSize": 50},
-                    headers=headers,
-                    timeout=REQUEST_TIMEOUT,
-                )
+                response = requests.post(url, json=payload, headers=headers, timeout=REQUEST_TIMEOUT)
+                if response.status_code in (404, 405):
+                    continue
                 response.raise_for_status()
-                for record in _extract_candidate_records(_parse_response(response)):
-                    summary = _candidate_summary(record, "customer")
-                    if summary["id"] and summary["id"] not in found:
-                        found[summary["id"]] = summary
+                records = _extract_candidate_records(_parse_response(response))
             except Exception:
                 continue
-            if found:
+            for record in records:
+                summary = _candidate_summary(record, record_type)
+                if summary["id"] and summary["id"] not in found:
+                    found[summary["id"]] = summary
+                    added += 1
+            if records:
                 break
-        if found:
+        if not added:
             break
+
     return list(found.values())
 
 
-# Search Agency Zoom leads, tolerating either search endpoint shape and any of
-# the field names the API may accept.
-def search_agency_zoom_leads(query: Any, jwt_token: Optional[str] = None) -> list[dict[str, Any]]:
+def _load_directory(jwt_token: Optional[str] = None) -> Dict[str, list[dict[str, Any]]]:
+    now = datetime.now(timezone.utc)
+    fetched_at = _directory_cache.get("fetched_at")
+    if (
+        _directory_cache.get("customers") is not None
+        and fetched_at is not None
+        and (now - fetched_at).total_seconds() < DIRECTORY_CACHE_SECONDS
+    ):
+        return {"customers": _directory_cache["customers"], "leads": _directory_cache["leads"]}
+
     token = jwt_token or zomm_agency_login()
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    customers = _fetch_all_pages(AGENCY_ZOOM_CUSTOMERS_URL, "customer", token)
+    leads = _fetch_all_pages(f"{AGENCY_ZOOM_LEADS_URL}/search", "lead", token)
+    _directory_cache.update({"customers": customers, "leads": leads, "fetched_at": now})
+    return {"customers": customers, "leads": leads}
+
+
+def clear_agency_zoom_directory_cache() -> None:
+    _directory_cache.update({"customers": None, "leads": None, "fetched_at": None})
+
+
+def _matches(record: dict[str, Any], query: str) -> bool:
+    digits = _last_ten_digits(query)
+    if len(digits) >= 10:
+        return _last_ten_digits(record.get("phone")) == digits
+    needle = query.strip().lower()
+    haystack = " ".join(
+        str(record.get(field) or "") for field in ("name", "email", "phone")
+    ).lower()
+    # every word must appear, so "maria garcia" does not match every Maria
+    return all(word in haystack for word in needle.split())
+
+
+def search_agency_zoom_customers(query: Any, jwt_token: Optional[str] = None) -> list[dict[str, Any]]:
     cleaned = _clean_string(query)
     if not cleaned:
         return []
+    token = jwt_token or zomm_agency_login()
 
-    is_phone = len(_last_ten_digits(cleaned)) >= 10
-    attempts = _phone_variants(cleaned) if is_phone else [cleaned]
+    # An exact phone lookup is cheap and authoritative, so try it first
+    if len(_last_ten_digits(cleaned)) >= 10:
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        for attempt in _phone_variants(cleaned):
+            try:
+                response = requests.post(
+                    AGENCY_ZOOM_CUSTOMERS_URL, json={"phone": attempt}, headers=headers, timeout=REQUEST_TIMEOUT)
+                response.raise_for_status()
+                exact = [
+                    summary for summary in
+                    (_candidate_summary(record, "customer")
+                     for record in _extract_candidate_records(_parse_response(response)))
+                    if summary["id"] and _matches(summary, cleaned)
+                ]
+                if exact:
+                    return exact
+            except Exception:
+                continue
 
-    found: dict[str, dict[str, Any]] = {}
-    for attempt in attempts:
-        if not attempt:
-            continue
-        field_sets = (
-            [{"phone": attempt}, {"searchText": attempt}]
-            if is_phone
-            else [{"searchText": attempt}, {"search": attempt}, {"name": attempt}]
-        )
-        for fields in field_sets:
-            for method, url in (("post", f"{AGENCY_ZOOM_LEADS_URL}/search"), ("get", AGENCY_ZOOM_LEADS_URL)):
-                try:
-                    if method == "post":
-                        response = requests.post(
-                            url, json={**fields, "pageSize": 50}, headers=headers, timeout=REQUEST_TIMEOUT)
-                    else:
-                        response = requests.get(
-                            url, params=fields, headers=headers, timeout=REQUEST_TIMEOUT)
-                    if response.status_code in (404, 405):
-                        continue
-                    response.raise_for_status()
-                    for record in _extract_candidate_records(_parse_response(response)):
-                        summary = _candidate_summary(record, "lead")
-                        if summary["id"] and summary["id"] not in found:
-                            found[summary["id"]] = summary
-                except Exception:
-                    continue
-                if found:
-                    break
-            if found:
-                break
-        if found:
-            break
-    return list(found.values())
+    directory = _load_directory(token)
+    return [record for record in directory["customers"] if _matches(record, cleaned)]
+
+
+# Leads are filtered from the same cached directory.
+def search_agency_zoom_leads(query: Any, jwt_token: Optional[str] = None) -> list[dict[str, Any]]:
+    cleaned = _clean_string(query)
+    if not cleaned:
+        return []
+    directory = _load_directory(jwt_token)
+    return [record for record in directory["leads"] if _matches(record, cleaned)]
 
 
 # Find the best customer-or-lead match for a phone number.
@@ -413,6 +426,7 @@ def create_agency_zoom_customer_note(
     customer_id: int | str,
     note: str,
     jwt_token: Optional[str] = None,
+    author_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     normalized_customer_id = _clean_string(customer_id)
     normalized_note = _clean_string(note)
@@ -423,9 +437,15 @@ def create_agency_zoom_customer_note(
         raise ValueError("Note is required to create an Agency Zoom customer note.")
 
     token = jwt_token or zomm_agency_login()
+    payload: Dict[str, Any] = {"note": normalized_note}
+    if _clean_int(author_id):
+        # Harmless if Agency Zoom ignores these; useful if it honours either
+        payload["userId"] = _clean_int(author_id)
+        payload["employeeId"] = _clean_int(author_id)
+
     response = requests.post(
         f"{AGENCY_ZOOM_CUSTOMERS_URL}/{normalized_customer_id}/notes",
-        json={"note": normalized_note},
+        json=payload,
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
@@ -561,13 +581,63 @@ def get_cached_agency_zoom_employee_lookup() -> Dict[str, Any]:
     return {}
 
 
+
+# List Agency Zoom employees so each app user can be mapped to one.
+def list_agency_zoom_employees(jwt_token: Optional[str] = None) -> list[dict[str, Any]]:
+    token = jwt_token or zomm_agency_login()
+    try:
+        response = requests.get(
+            AGENCY_ZOOM_EMPLOYEES_URL,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        employees = _extract_employee_records(_parse_response(response))
+    except Exception:
+        return []
+
+    listed = []
+    for employee in employees:
+        first = _clean_string(employee.get("firstname")) or _clean_string(employee.get("firstName"))
+        last = _clean_string(employee.get("lastname")) or _clean_string(employee.get("lastName"))
+        name = " ".join(part for part in [first, last] if part) or _clean_string(employee.get("name"))
+        identifier = _clean_string(employee.get("id"))
+        if identifier:
+            listed.append({
+                "id": identifier,
+                "name": name or f"Employee {identifier}",
+                "email": _clean_string(employee.get("email")),
+            })
+    return sorted(listed, key=lambda item: item["name"].lower())
+
+
+# Find the Agency Zoom employee whose email matches an app user's email.
+def find_agency_zoom_employee_by_email(email: Any, jwt_token: Optional[str] = None) -> Optional[dict[str, Any]]:
+    needle = (_clean_string(email) or "").lower()
+    if not needle:
+        return None
+    for employee in list_agency_zoom_employees(jwt_token=jwt_token):
+        if (employee.get("email") or "").lower() == needle:
+            return employee
+    return None
+
+
 # Create one Agency Zoom task for each follow-up line on a transcript.
-def create_agency_zoom_tasks_for_transcript(transcript: Any) -> list[str]:
+def create_agency_zoom_tasks_for_transcript(
+    transcript: Any,
+    assignee_id: Optional[str] = None,
+    agent_name: Optional[str] = None,
+) -> list[str]:
     normalized_tasks = normalize_follow_up_task(getattr(transcript, "follow_up_task", None))
     if not normalized_tasks:
         return []
 
-    due_datetime = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+    chosen_due = _clean_string(getattr(transcript, "agency_zoom_due_date", None))
+    if chosen_due:
+        # a date from the form arrives as YYYY-MM-DD; Agency Zoom wants a time too
+        due_datetime = chosen_due if " " in chosen_due else f"{chosen_due} 09:00:00"
+    else:
+        due_datetime = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
     comments = "\n".join(
         [
             f"Client Name: {_clean_string(getattr(transcript, 'client_name', None)) or UNKNOWN_VALUE}",
@@ -577,6 +647,7 @@ def create_agency_zoom_tasks_for_transcript(transcript: Any) -> list[str]:
             f"CRM Note: {_clean_string(getattr(transcript, 'crm_note', None)) or UNKNOWN_VALUE}",
             f"Recording ID: {_clean_string(getattr(transcript, 'recordingID', None)) or UNKNOWN_VALUE}",
             f"Transcript ID: {getattr(transcript, 'id', UNKNOWN_VALUE)}",
+            f"Handled by: {_clean_string(agent_name) or UNKNOWN_VALUE}",
         ]
     )
 
@@ -585,8 +656,10 @@ def create_agency_zoom_tasks_for_transcript(transcript: Any) -> list[str]:
     customer_name = _clean_string(getattr(transcript, "client_name", None))
     customer_id: Optional[str] = None
     customer_type: Optional[str] = None
-    assignee_id = resolve_agency_zoom_assignee_id(transcript, jwt_token=jwt_token)
-    print(f"\n\n\nResolved assignee ID: {assignee_id} for transcript with client number: {getattr(transcript, 'client_number', None)}")
+    # The agent the transcript is assigned to owns the task; fall back to the
+    # older name and phone matching only when no mapping exists.
+    resolved_assignee = _clean_int(assignee_id) or resolve_agency_zoom_assignee_id(
+        transcript, jwt_token=jwt_token)
 
 
     match = resolve_transcript_agency_zoom_match(transcript, jwt_token=jwt_token)
@@ -609,7 +682,7 @@ def create_agency_zoom_tasks_for_transcript(transcript: Any) -> list[str]:
             customer_name=customer_name,
             customer_id=customer_id,
             customer_type=customer_type,
-            assignee_id=assignee_id,
+            assignee_id=resolved_assignee,
             jwt_token=jwt_token,
         )
         task_id = _extract_agency_zoom_task_id(response_data)
@@ -643,7 +716,11 @@ def resolve_transcript_agency_zoom_match(transcript: Any, jwt_token: Optional[st
 
 
 # Create an Agency Zoom customer note using the transcript CRM note.
-def create_agency_zoom_customer_note_for_transcript(transcript: Any) -> Dict[str, Any]:
+def create_agency_zoom_customer_note_for_transcript(
+    transcript: Any,
+    agent_name: Optional[str] = None,
+    employee_id: Optional[str] = None,
+) -> Dict[str, Any]:
     note = _clean_string(getattr(transcript, "crm_note", None))
     if not note:
         raise ValueError("crm_note is required to create an Agency Zoom customer note.")
@@ -656,7 +733,14 @@ def create_agency_zoom_customer_note_for_transcript(transcript: Any) -> Dict[str
             "transcript page to link the right record, then approve again."
         )
 
-    return create_agency_zoom_customer_note(customer_id=match["id"], note=note, jwt_token=jwt_token)
+    # The API posts notes as the integration user, so the agent is named in the
+    # note itself and passed as an author id where the API accepts one.
+    author = _clean_string(agent_name)
+    if author:
+        note = f"{note}\n\nCall handled by {author}."
+
+    return create_agency_zoom_customer_note(
+        customer_id=match["id"], note=note, jwt_token=jwt_token, author_id=employee_id)
 
 # Fetch and cache the Agency Zoom employee list.
 def get_agency_zoom_employee_list(jwt_token: Optional[str] = None) -> Dict[str, Any]:

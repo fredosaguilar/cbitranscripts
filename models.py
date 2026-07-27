@@ -16,6 +16,8 @@ class UserToken(Base):
     user_id = Column(String, nullable=False, index=True)  # store user id directly as string
     email = Column(String, nullable=True)
     token = Column(String, nullable=True)  # Pushover key; optional when only email is used
+    agency_zoom_employee_id = Column(String, nullable=True)
+    agency_zoom_employee_name = Column(String, nullable=True)
     updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -82,6 +84,7 @@ class TranscriptResponse(Base):
     agency_zoom_customer_id = Column(String, nullable=True)
     agency_zoom_customer_type = Column(String, nullable=True)
     agency_zoom_customer_name = Column(String, nullable=True)
+    agency_zoom_due_date = Column(String, nullable=True)
     crm_note = Column(Text, nullable=True)
     recordingID = Column(String, nullable=True)
     local_audio_path = Column(String, nullable=True)

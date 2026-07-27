@@ -55,6 +55,7 @@ def run_safe_migrations():
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_id VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_type VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_name VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_due_date VARCHAR",
         # RingCentral extension that actually handled the call on a shared line
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_number VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_name VARCHAR",
@@ -62,6 +63,8 @@ def run_safe_migrations():
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS original_language VARCHAR",
         # Per-user email for call assignment notifications
         "ALTER TABLE users_tokens ADD COLUMN IF NOT EXISTS email VARCHAR",
+        "ALTER TABLE users_tokens ADD COLUMN IF NOT EXISTS agency_zoom_employee_id VARCHAR",
+        "ALTER TABLE users_tokens ADD COLUMN IF NOT EXISTS agency_zoom_employee_name VARCHAR",
         "ALTER TABLE users_tokens ALTER COLUMN token DROP NOT NULL",
     ]
     try:

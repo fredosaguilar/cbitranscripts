@@ -88,6 +88,7 @@
                 <th>#</th>
                 <th>Owner Id (Extension)</th>
                 <th>Email</th>
+                <th>Agency Zoom User</th>
                 <th>Token</th>
                 <th>Actions</th>
             </tr>
@@ -98,6 +99,7 @@
                 <td>{{ loop.index }}</td>
                 <td>{{ user.user_id }}</td>
                 <td>{{ user.email or "—" }}</td>
+                <td>{{ user.agency_zoom_employee_name or user.agency_zoom_employee_id or "—" }}</td>
                 <td class="token">{{ user.token or "—" }}</td>
                 <td class="actions">
                     <a href="/admin/edit-user/{{ user.token_id }}" class="edit-btn">Edit</a>

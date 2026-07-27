@@ -43,6 +43,8 @@ from ringcentral_utils import (
 )
 from zoom_agency_utils import (
     create_agency_zoom_customer_note_for_transcript,
+    find_agency_zoom_employee_by_email,
+    list_agency_zoom_employees,
     create_agency_zoom_tasks_for_transcript,
     normalize_follow_up_task,
     resolve_transcript_agency_zoom_match,
@@ -85,11 +87,14 @@ def on_startup():
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_id VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_type VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_name VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_due_date VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_number VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_name VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS queue_name VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS original_language VARCHAR",
         "ALTER TABLE users_tokens ADD COLUMN IF NOT EXISTS email VARCHAR",
+        "ALTER TABLE users_tokens ADD COLUMN IF NOT EXISTS agency_zoom_employee_id VARCHAR",
+        "ALTER TABLE users_tokens ADD COLUMN IF NOT EXISTS agency_zoom_employee_name VARCHAR",
         "CREATE TABLE IF NOT EXISTS reprocess_requests (recording_id VARCHAR PRIMARY KEY, start_time TIMESTAMP, requested_at TIMESTAMP)",
         # A user may be email-only, with no Pushover key
         "ALTER TABLE users_tokens ALTER COLUMN token DROP NOT NULL",
@@ -971,7 +976,12 @@ def add_user_page(request: Request, db: Session = Depends(get_db)):
     if not get_logged_in_admin(request, db):
         return RedirectResponse(url="/", status_code=303)
 
-    return templates.TemplateResponse(request, "add_user.html", {"request": request})
+    try:
+        employees = list_agency_zoom_employees()
+    except Exception:
+        employees = []
+    return templates.TemplateResponse(request, "add_user.html", {
+        "request": request, "employees": employees})
 
 
 @app.post("/admin/add-user")
@@ -981,6 +991,7 @@ def add_user(
     user_id: str = Form(...),
     email: str = Form(""),
     user_token: str = Form(""),
+    agency_zoom_employee_id: str = Form(""),
     db: Session = Depends(get_db),
 ):
     if not get_logged_in_admin(request, db):
@@ -991,6 +1002,7 @@ def add_user(
         user_id=_clean_string(user_id),
         email=_clean_string(email),
         token=_clean_string(user_token),
+        agency_zoom_employee_id=_clean_string(agency_zoom_employee_id),
     )
     db.add(new_user)
     db.commit()
@@ -1011,7 +1023,12 @@ def delete_user(token_id: str, db: Session = Depends(get_db)):
 # Render the edit page for a stored user token.
 def edit_user_page(token_id: str, request: Request, db: Session = Depends(get_db)):
     user = db.query(models.UserToken).filter(models.UserToken.token_id == token_id).first()
-    return templates.TemplateResponse(request, "edit_user.html", {"request": request, "user": user})
+    try:
+        employees = list_agency_zoom_employees()
+    except Exception:
+        employees = []
+    return templates.TemplateResponse(request, "edit_user.html", {
+        "request": request, "user": user, "employees": employees})
 
 
 @app.post("/admin/edit-user/{token_id}")
@@ -1020,12 +1037,17 @@ def update_user(
     token_id: str,
     email: str = Form(""),
     user_token: str = Form(""),
+    agency_zoom_employee_id: str = Form(""),
     db: Session = Depends(get_db),
 ):
     user = db.query(models.UserToken).filter(models.UserToken.token_id == token_id).first()
     if user:
         user.email = _clean_string(email)
         user.token = _clean_string(user_token)
+        chosen = _clean_string(agency_zoom_employee_id)
+        if chosen != user.agency_zoom_employee_id:
+            user.agency_zoom_employee_id = chosen
+            user.agency_zoom_employee_name = None  # re-resolved from the employee list below
         db.commit()
     return RedirectResponse(url="/admin/dashboard?updated=1", status_code=303)
 
@@ -1493,6 +1515,21 @@ def agency_zoom_link(
     })
 
 
+@app.post("/api/transcripts/{id}/due-date")
+# Set the due date used when this call's follow-up tasks reach Agency Zoom.
+def set_due_date(id: str, request: Request, due_date: str = Form(""), db: Session = Depends(get_db)):
+    if not get_logged_in_admin(request, db):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    transcript = db.query(models.TranscriptResponse).filter(models.TranscriptResponse.id == id).first()
+    if transcript is None:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+
+    transcript.agency_zoom_due_date = _clean_string(due_date)
+    db.commit()
+    return JSONResponse(content={"status": "ok", "due_date": transcript.agency_zoom_due_date})
+
+
 @app.post("/admin/transcripts/{id}/reprocess")
 # Delete a transcript and rewind the scheduler so the call is transcribed again.
 def reprocess_transcript(id: str, request: Request, db: Session = Depends(get_db)):
@@ -1557,6 +1594,37 @@ def delete_transcript(id: str, db: Session = Depends(get_db)):
         db.commit()
 
     return RedirectResponse(url="/admin/transcripts", status_code=303)
+
+
+
+def _assigned_agency_zoom_agent(db: Session, transcript) -> tuple[Optional[str], Optional[str]]:
+    """Return the Agency Zoom employee id and name for the assigned agent."""
+    assignee = _clean_string(getattr(transcript, "assigned_to", None)) or _clean_string(
+        getattr(transcript, "extension_number", None))
+    if not assignee:
+        return None, None
+
+    user = db.query(models.UserToken).filter(models.UserToken.user_id == assignee).first()
+    if user is None:
+        return None, None
+
+    employee_id = _clean_string(user.agency_zoom_employee_id)
+    employee_name = _clean_string(user.agency_zoom_employee_name)
+
+    # First time through, match the app user to an Agency Zoom employee by email
+    if not employee_id and _clean_string(user.email):
+        try:
+            employee = find_agency_zoom_employee_by_email(user.email)
+        except Exception:
+            logger.exception("Could not look up an Agency Zoom employee for %s", user.email)
+            employee = None
+        if employee:
+            user.agency_zoom_employee_id = employee_id = employee["id"]
+            user.agency_zoom_employee_name = employee_name = employee["name"]
+            db.commit()
+            logger.info("Mapped user %s to Agency Zoom employee %s", assignee, employee["id"])
+
+    return employee_id, employee_name
 
 
 @app.post("/api/transcripts")
@@ -1687,7 +1755,9 @@ def create_transcript(
         )
         if is_recent and normalize_follow_up_task(new_transcript.follow_up_task):
             try:
-                created_task_ids = create_agency_zoom_tasks_for_transcript(new_transcript)
+                employee_id, agent_name = _assigned_agency_zoom_agent(db, new_transcript)
+                created_task_ids = create_agency_zoom_tasks_for_transcript(
+                    new_transcript, assignee_id=employee_id, agent_name=agent_name)
                 if created_task_ids:
                     new_transcript.agency_zoom_task_ids = "\n".join(created_task_ids)
                     db.commit()
@@ -1894,7 +1964,9 @@ def update_status(
         if normalized_tasks:
             # Skip creation when tasks were already auto-created at ingest time
             if not _clean_string(transcript.agency_zoom_task_ids):
-                created_task_ids = create_agency_zoom_tasks_for_transcript(transcript)
+                employee_id, agent_name = _assigned_agency_zoom_agent(db, transcript)
+                created_task_ids = create_agency_zoom_tasks_for_transcript(
+                    transcript, assignee_id=employee_id, agent_name=agent_name)
                 transcript.agency_zoom_task_ids = "\n".join(created_task_ids) if created_task_ids else None
         else:
             if not _clean_string(transcript.crm_note):
@@ -1907,7 +1979,9 @@ def update_status(
                     },
                     status_code=400,
                 )
-            create_agency_zoom_customer_note_for_transcript(transcript)
+            employee_id, agent_name = _assigned_agency_zoom_agent(db, transcript)
+            create_agency_zoom_customer_note_for_transcript(
+                transcript, agent_name=agent_name, employee_id=employee_id)
             transcript.agency_zoom_task_ids = None
 
     transcript.status = status
