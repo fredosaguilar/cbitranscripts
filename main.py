@@ -987,6 +987,19 @@ def add_user_page(request: Request, db: Session = Depends(get_db)):
         "request": request, "employees": employees, "employee_error": employee_error})
 
 
+def _agency_zoom_employee_name(employee_id: str) -> Optional[str]:
+    """Name for a hand-entered Agency Zoom user id, so the dashboard reads well."""
+    if not employee_id:
+        return None
+    try:
+        for employee in list_agency_zoom_employees():
+            if employee.get("id") == employee_id:
+                return employee.get("name")
+    except Exception:
+        logger.exception("Could not name Agency Zoom employee %s", employee_id)
+    return None
+
+
 @app.post("/admin/add-user")
 # Save a new notification user token.
 def add_user(
@@ -1001,13 +1014,14 @@ def add_user(
     if not get_logged_in_admin(request, db):
         return RedirectResponse(url="/", status_code=303)
 
-    agency_zoom_employee_id = _clean_string(agency_zoom_employee_id_manual) or agency_zoom_employee_id
+    chosen = _clean_string(agency_zoom_employee_id_manual) or _clean_string(agency_zoom_employee_id)
     new_user = models.UserToken(
         token_id=str(uuid.uuid4()),
         user_id=_clean_string(user_id),
         email=_clean_string(email),
         token=_clean_string(user_token),
-        agency_zoom_employee_id=_clean_string(agency_zoom_employee_id),
+        agency_zoom_employee_id=chosen,
+        agency_zoom_employee_name=_agency_zoom_employee_name(chosen),
     )
     db.add(new_user)
     db.commit()
@@ -1046,13 +1060,14 @@ def update_user(
 ):
     user = db.query(models.UserToken).filter(models.UserToken.token_id == token_id).first()
     if user:
-        agency_zoom_employee_id = _clean_string(agency_zoom_employee_id_manual) or agency_zoom_employee_id
         user.email = _clean_string(email)
         user.token = _clean_string(user_token)
-        chosen = _clean_string(agency_zoom_employee_id)
+        # A typed id wins, so the mapping is editable even when the picker
+        # cannot load; the picker writes into that same field in the browser.
+        chosen = _clean_string(agency_zoom_employee_id_manual) or _clean_string(agency_zoom_employee_id)
         if chosen != user.agency_zoom_employee_id:
             user.agency_zoom_employee_id = chosen
-            user.agency_zoom_employee_name = None  # re-resolved from the employee list below
+            user.agency_zoom_employee_name = _agency_zoom_employee_name(chosen)
         db.commit()
     return RedirectResponse(url="/admin/dashboard?updated=1", status_code=303)
 
