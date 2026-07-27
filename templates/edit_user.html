@@ -25,7 +25,7 @@
 
         <label>Agency Zoom user</label>
         {% if employees %}
-        <select name="agency_zoom_employee_id">
+        <select name="agency_zoom_employee_id" onchange="document.getElementById('az-id').value = this.value;">
             <option value="">— match automatically by email —</option>
             {% for employee in employees %}
             <option value="{{ employee.id }}" {% if employee.id == user.agency_zoom_employee_id %}selected{% endif %}>
@@ -39,11 +39,13 @@
             Enter the user id below instead.
         </div>
         {% endif %}
-        <input type="text" name="agency_zoom_employee_id_manual"
+        <input type="text" id="az-id" name="agency_zoom_employee_id_manual"
                value="{{ user.agency_zoom_employee_id or '' }}"
-               placeholder="Or type the Agency Zoom user id, e.g. 8803">
+               placeholder="Agency Zoom user id, e.g. 8803">
         <small style="display:block; margin:-6px 0 12px; opacity:0.8;">
             Notes and tasks for this agent's calls are attributed to this Agency Zoom user.
+            Pick one above or type the id here; whatever is in this box is what gets
+            saved, and an empty box means match by email.
         </small>
 
         <label>User Token (Pushover key, optional)</label>
