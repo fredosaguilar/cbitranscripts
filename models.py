@@ -54,6 +54,21 @@ class ReprocessRequest(Base):
     requested_at = Column(TIMESTAMP, default=datetime.utcnow)
 
 
+class TranscriptionAttempt(Base):
+    """How many times a recording has failed to transcribe.
+
+    After enough attempts the poor transcript is accepted so the pipeline can
+    move on, rather than retrying the same recording on every sync forever.
+    """
+
+    __tablename__ = "transcription_attempts"
+
+    recording_id = Column(String, primary_key=True, index=True)
+    attempts = Column(Integer, default=0)
+    last_error = Column(Text, nullable=True)
+    updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 # Enum for status
 class TranscriptStatus(str, enum.Enum):
     pending = "pending"
