@@ -1,5 +1,6 @@
-# Manual deploy, for when the GitHub Action is not being used.
+# Deploy the current master branch to Railway from this machine.
 # Usage:  powershell -ExecutionPolicy Bypass -File deploy.ps1
+# Requires the Railway CLI, signed in once with:  railway login
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $target = "C:\cbi-deploy"
