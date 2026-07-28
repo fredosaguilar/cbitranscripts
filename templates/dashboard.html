@@ -12,7 +12,65 @@
 <div class="notice success">User updated successfully</div>
 {% endif %}
 
-<h2>Extensions</h2>
+{% if request.query_params.get("deleted") %}
+<div class="notice success">
+    Deleted the user for extension {{ request.query_params.get("deleted") }}. They stay deleted —
+    calls on that extension are no longer assigned or emailed to anyone.
+</div>
+{% endif %}
+
+{% if request.query_params.get("error") %}
+<div class="notice">{{ request.query_params.get("error") }}</div>
+{% endif %}
+
+<h2>Call Sync</h2>
+<p style="margin:0 0 12px; font-size:0.9rem; opacity:0.85;">
+    Calls are fetched from RingCentral starting at the position below, which moves forward as calls
+    are saved. If calls have stopped appearing, this is where to look first.
+</p>
+<div class="table-container">
+    <table>
+        <tbody>
+            <tr>
+                <th style="width:230px;">Fetching calls from</th>
+                <td>{{ sync_status.cursor or "the beginning (nothing synced yet)" }}</td>
+            </tr>
+            <tr>
+                <th>Newest call saved</th>
+                <td>{{ sync_status.newest_call or "none yet" }}</td>
+            </tr>
+            <tr>
+                <th>Waiting to reprocess</th>
+                <td>
+                    {% if sync_status.pending_reprocess %}
+                    {% for item in sync_status.pending_reprocess %}
+                    {{ item.recording_id }} (requested {{ item.requested_at }})<br>
+                    {% endfor %}
+                    <small>The sync stays at or before these calls until they are transcribed again,
+                        so newer calls wait behind them.</small>
+                    {% else %}
+                    Nothing
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <th>Recordings failing to transcribe</th>
+                <td>
+                    {% if sync_status.stuck_recordings %}
+                    {% for item in sync_status.stuck_recordings %}
+                    {{ item.recording_id }} — {{ item.attempts }} attempt(s), last result:
+                    {{ item.last_error or "unknown" }}<br>
+                    {% endfor %}
+                    {% else %}
+                    None
+                    {% endif %}
+                </td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<h2 style="margin-top:28px;">Extensions</h2>
 <p style="margin:0 0 12px; font-size:0.9rem; opacity:0.85;">
     Calls are attributed to the RingCentral extension that answered them. Register a user whose
     <b>Owner Id</b> is the extension number, and new calls on that extension are assigned to them

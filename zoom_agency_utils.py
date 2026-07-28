@@ -665,18 +665,20 @@ def create_agency_zoom_tasks_for_transcript(
         due_datetime = chosen_due if " " in chosen_due else f"{chosen_due} 09:00:00"
     else:
         due_datetime = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
-    comments = "\n".join(
-        [
-            f"Client Name: {_clean_string(getattr(transcript, 'client_name', None)) or UNKNOWN_VALUE}",
-            f"Client Number: {_clean_string(getattr(transcript, 'client_number', None)) or UNKNOWN_VALUE}",
-            f"Policy Type: {_clean_string(getattr(transcript, 'policy_type', None)) or UNKNOWN_VALUE}",
-            f"Reason For Call: {_clean_string(getattr(transcript, 'reason_for_call', None)) or UNKNOWN_VALUE}",
-            f"CRM Note: {_clean_string(getattr(transcript, 'crm_note', None)) or UNKNOWN_VALUE}",
-            f"Recording ID: {_clean_string(getattr(transcript, 'recordingID', None)) or UNKNOWN_VALUE}",
-            f"Transcript ID: {getattr(transcript, 'id', UNKNOWN_VALUE)}",
-            f"Handled by: {_clean_string(agent_name) or UNKNOWN_VALUE}",
-        ]
-    )
+    # Enough context to act on the task, and no more. The call write-up belongs
+    # in the customer note; repeating it here made every task read as a copy of
+    # the note rather than a thing to do.
+    comment_lines = [
+        f"Client Name: {_clean_string(getattr(transcript, 'client_name', None)) or UNKNOWN_VALUE}",
+        f"Client Number: {_clean_string(getattr(transcript, 'client_number', None)) or UNKNOWN_VALUE}",
+        f"Policy Type: {_clean_string(getattr(transcript, 'policy_type', None)) or UNKNOWN_VALUE}",
+        f"Reason For Call: {_clean_string(getattr(transcript, 'reason_for_call', None)) or UNKNOWN_VALUE}",
+        f"Handled by: {_clean_string(agent_name) or UNKNOWN_VALUE}",
+        f"Recording ID: {_clean_string(getattr(transcript, 'recordingID', None)) or UNKNOWN_VALUE}",
+        f"Transcript ID: {getattr(transcript, 'id', UNKNOWN_VALUE)}",
+        "The full call write-up is on the customer's notes.",
+    ]
+    comments = "\n".join(comment_lines)
 
     jwt_token = zomm_agency_login()
     created_task_ids: list[str] = []

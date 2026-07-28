@@ -8,6 +8,8 @@ audio size so a short download is visible rather than silently transcribed.
 import logging
 import os
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 from dotenv import load_dotenv
@@ -35,6 +37,12 @@ SPANISH_PROMPT = "Llamada de seguros: poliza, prima, deducible, cobertura, recla
 # opening announcement. Sending the call in pieces makes each piece a fresh
 # decode, so one bad segment cannot swallow the whole conversation.
 CHUNK_SECONDS = int(os.getenv("TRANSCRIBE_CHUNK_SECONDS", "60"))
+
+# One chunk at a time made a long call take minutes, long enough for the caller
+# to give up before the transcript existed, so long calls never appeared at all.
+# The chunks are independent, so they are sent together.
+MAX_PARALLEL_CHUNKS = int(os.getenv("TRANSCRIBE_PARALLEL_CHUNKS", "6"))
+WHISPER_RETRIES = int(os.getenv("TRANSCRIBE_RETRIES", "2"))
 
 _MP3_BITRATES_V2_L3 = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0]
 _MP3_BITRATES_V1_L3 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0]
@@ -158,15 +166,45 @@ def _whisper(endpoint: str, audio: bytes, prompt: str, verbose: bool = False) ->
     if verbose:
         data["response_format"] = "verbose_json"
 
-    response = requests.post(
-        f"{OPENAI_BASE_URL}/audio/{endpoint}",
-        headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-        files=files,
-        data=data,
-        timeout=TRANSCRIBE_TIMEOUT,
-    )
+    # Sending chunks together makes a rate-limit reply likely, and a dropped
+    # chunk is a missing minute of the call, so a refusal is worth retrying.
+    for attempt in range(WHISPER_RETRIES + 1):
+        response = requests.post(
+            f"{OPENAI_BASE_URL}/audio/{endpoint}",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+            files=files,
+            data=data,
+            timeout=TRANSCRIBE_TIMEOUT,
+        )
+        if response.status_code in (429, 500, 502, 503, 504) and attempt < WHISPER_RETRIES:
+            time.sleep(2 ** attempt)
+            continue
+        response.raise_for_status()
+        return response.json()
+
     response.raise_for_status()
     return response.json()
+
+
+def _transcribe_chunk(chunk: bytes, index: int, total: int, want_original: bool) -> tuple[str, str, str]:
+    """Translate one chunk, and transcribe it as spoken when that is wanted."""
+    english, original, language = "", "", ""
+
+    try:
+        english = _whisper("translations", chunk, ENGLISH_PROMPT).get("text", "").strip()
+    except Exception:
+        # One unreadable minute must not cost the rest of the call
+        logger.exception("Translation failed for chunk %s/%s", index, total)
+
+    if want_original:
+        try:
+            payload = _whisper("transcriptions", chunk, SPANISH_PROMPT, verbose=True)
+            original = str(payload.get("text", "")).strip()
+            language = str(payload.get("language") or "").lower()
+        except Exception:
+            logger.exception("Transcription failed for chunk %s/%s", index, total)
+
+    return english, original, language
 
 
 def transcribe_recording(audio_url: str) -> dict:
@@ -179,29 +217,31 @@ def transcribe_recording(audio_url: str) -> dict:
     if not audio_bytes:
         raise ValueError(f"Downloaded no audio from {audio_url}")
 
+    started = time.monotonic()
     chunks = split_mp3(audio)
-    english_parts: list[str] = []
-    original_parts: list[str] = []
-    detected = ""
+    total = len(chunks)
 
-    for index, chunk in enumerate(chunks, start=1):
-        try:
-            english_parts.append(_whisper("translations", chunk, ENGLISH_PROMPT).get("text", "").strip())
-        except Exception:
-            # One unreadable minute must not cost the rest of the call
-            logger.exception("Translation failed for chunk %s/%s of %s", index, len(chunks), audio_url)
+    # The first chunk goes on its own to establish the language. An English call
+    # discards its original-language transcript anyway, so once the language is
+    # known the remaining chunks skip that second pass entirely.
+    first_english, first_original, detected = _transcribe_chunk(chunks[0], 1, total, want_original=True)
+    spoken_in_english = detected in {"english", "en"}
 
-        try:
-            payload = _whisper("transcriptions", chunk, SPANISH_PROMPT, verbose=True)
-            original_parts.append(str(payload.get("text", "")).strip())
-            if not detected:
-                detected = str(payload.get("language") or "").lower()
-        except Exception:
-            logger.exception("Transcription failed for chunk %s/%s of %s", index, len(chunks), audio_url)
+    english_parts = [first_english]
+    original_parts = [first_original]
+
+    if total > 1:
+        with ThreadPoolExecutor(max_workers=max(1, MAX_PARALLEL_CHUNKS)) as pool:
+            results = pool.map(
+                lambda item: _transcribe_chunk(item[1], item[0], total, not spoken_in_english),
+                list(enumerate(chunks[1:], start=2)),
+            )
+            for chunk_english, chunk_original, _ in results:
+                english_parts.append(chunk_english)
+                original_parts.append(chunk_original)
 
     english = clean_transcript(" ".join(part for part in english_parts if part))
     original_text = clean_transcript(" ".join(part for part in original_parts if part))
-    spoken_in_english = detected in {"english", "en"}
 
     audio_seconds = mp3_duration_seconds(audio)
     result = {
@@ -214,9 +254,10 @@ def transcribe_recording(audio_url: str) -> dict:
         "short_download": audio_bytes < MIN_EXPECTED_AUDIO_BYTES,
         "word_count": len(english.split()),
     }
+    result["elapsed_seconds"] = round(time.monotonic() - started, 1)
     logger.info(
-        "Transcribed %s bytes (%.0fs of audio) from %s in %s chunk(s): %s words%s",
-        audio_bytes, audio_seconds, audio_url, len(chunks), result["word_count"],
+        "Transcribed %s bytes (%.0fs of audio) from %s in %s chunk(s) in %ss: %s words%s",
+        audio_bytes, audio_seconds, audio_url, len(chunks), result["elapsed_seconds"], result["word_count"],
         " (SHORT DOWNLOAD)" if result["short_download"] else "",
     )
     return result
