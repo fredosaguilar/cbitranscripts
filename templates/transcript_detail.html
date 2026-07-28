@@ -156,20 +156,20 @@
         <textarea id="reasonForCallInput" rows="4">{{ transcript.reason_for_call }}</textarea>
 
         <label class="field-label">Follow Up Task</label>
+        {# Numbered the same way the server numbers them, so a button always
+           acts on the task it sits next to, whatever the text contains. #}
+        {% set follow_up_tasks = (transcript.follow_up_task or "").splitlines()
+                                 | map("trim") | select | list %}
         <div id="followUpTaskList" class="follow-up-task-list">
-            {% if transcript.follow_up_task %}
-            {% for task in transcript.follow_up_task.splitlines() %}
-            {% if task.strip() %}
-            <div class="follow-up-task-item">
-                <span class="task-text">{{ task.strip() }}</span>
+            {% if follow_up_tasks %}
+            {% for task in follow_up_tasks %}
+            <div class="follow-up-task-item" data-index="{{ loop.index0 }}">
+                <span class="task-text">{{ task }}</span>
                 <div class="task-actions">
-                    <button type="button" class="task-edit"
-                        onclick="editFollowUpTask('{{ task.strip()|e }}')">Edit</button>
-                    <button type="button" class="task-delete"
-                        onclick="deleteFollowUpTask('{{ task.strip()|e }}')">Delete</button>
+                    <button type="button" class="task-edit">Edit</button>
+                    <button type="button" class="task-delete">Delete</button>
                 </div>
             </div>
-            {% endif %}
             {% endfor %}
             {% else %}
             <div class="follow-up-empty">No follow-up tasks yet.</div>
@@ -419,7 +419,24 @@
         }
     }
 
-    async function deleteFollowUpTask(task) {
+    // The buttons carry no task text. An automatically written task is full of
+    // apostrophes, and passing one through an inline handler broke the handler,
+    // so Edit and Delete did nothing at all on exactly those tasks.
+    document.getElementById("followUpTaskList").addEventListener("click", (event) => {
+        const button = event.target.closest("button");
+        const item = button && button.closest(".follow-up-task-item");
+        if (!item) return;
+
+        const index = Number(item.dataset.index);
+        const task = item.querySelector(".task-text").textContent.trim();
+        if (button.classList.contains("task-edit")) {
+            editFollowUpTask(index, task);
+        } else if (button.classList.contains("task-delete")) {
+            deleteFollowUpTask(index, task);
+        }
+    });
+
+    async function sendFollowUpChange(body, failureMessage) {
         const id = "{{ transcript.id }}";
         try {
             const response = await fetch(`/api/transcripts/${id}/follow-up`, {
@@ -427,23 +444,28 @@
                 headers: {
                     "Content-Type": "application/json"
                 },
-                body: JSON.stringify({
-                    action: "delete",
-                    task
-                })
+                body: JSON.stringify(body)
             });
 
             if (!response.ok) {
-                throw new Error("Failed to delete task");
+                let detail = "";
+                try { detail = (await response.json()).detail || ""; } catch (err) { /* no body */ }
+                showToast(detail || failureMessage);
+                return;
             }
 
             window.location.reload();
         } catch (error) {
-            showToast("Error deleting follow-up task");
+            showToast(failureMessage);
         }
     }
 
-    async function editFollowUpTask(task) {
+    async function deleteFollowUpTask(index, task) {
+        if (!confirm(`Delete this follow-up task?\n\n${task}`)) return;
+        await sendFollowUpChange({ action: "delete", index, task }, "Error deleting follow-up task");
+    }
+
+    async function editFollowUpTask(index, task) {
         const newTask = prompt("Edit follow-up task:", task);
         if (newTask === null) {
             return;
@@ -454,28 +476,8 @@
             return;
         }
 
-        const id = "{{ transcript.id }}";
-        try {
-            const response = await fetch(`/api/transcripts/${id}/follow-up`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
-                    action: "edit",
-                    task,
-                    new_task: trimmed
-                })
-            });
-
-            if (!response.ok) {
-                throw new Error("Failed to edit task");
-            }
-
-            window.location.reload();
-        } catch (error) {
-            showToast("Error editing follow-up task");
-        }
+        await sendFollowUpChange(
+            { action: "edit", index, task, new_task: trimmed }, "Error editing follow-up task");
     }
 
     function validateApprovalForm() {
