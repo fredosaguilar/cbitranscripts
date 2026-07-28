@@ -779,13 +779,22 @@ def _send_assignment_email(transcript, user_email: str):
 
 
 def _seed_extension_emails():
-    """Create or update user records from EXTENSION_EMAIL_MAP at startup."""
+    """Create user records from EXTENSION_EMAIL_MAP the first time the app runs.
+
+    Seeding runs only while there are no users at all. Re-seeding on every
+    start would undo deletions: a user removed on the dashboard came back on
+    the next deploy, so deleting never appeared to work. Once any user exists
+    the dashboard is the only thing that decides who is registered.
+    """
     entries = [entry.strip() for entry in EXTENSION_EMAIL_MAP.split(",") if entry.strip()]
     if not entries:
         return
 
     db = SessionLocal()
     try:
+        if db.query(models.UserToken).first() is not None:
+            return
+
         for entry in entries:
             if ":" not in entry:
                 logger.warning("Ignoring malformed EXTENSION_EMAIL_MAP entry: %s", entry)
@@ -793,14 +802,8 @@ def _seed_extension_emails():
             extension, email = (part.strip() for part in entry.split(":", 1))
             if not extension or not email:
                 continue
-            user = db.query(models.UserToken).filter(models.UserToken.user_id == extension).first()
-            if user:
-                if user.email != email:
-                    user.email = email
-                    logger.info("Updated email for extension %s", extension)
-            else:
-                db.add(models.UserToken(token_id=str(uuid.uuid4()), user_id=extension, email=email))
-                logger.info("Registered extension %s for assignment emails", extension)
+            db.add(models.UserToken(token_id=str(uuid.uuid4()), user_id=extension, email=email))
+            logger.info("Registered extension %s for assignment emails", extension)
         db.commit()
     except Exception:
         logger.exception("Failed to seed extension emails")
@@ -1049,12 +1052,20 @@ def add_user(
 
 @app.get("/admin/delete-user/{token_id}")
 # Delete a stored notification user token.
-def delete_user(token_id: str, db: Session = Depends(get_db)):
+def delete_user(token_id: str, request: Request, db: Session = Depends(get_db)):
+    if not get_logged_in_admin(request, db):
+        return RedirectResponse(url="/", status_code=303)
+
     user = db.query(models.UserToken).filter(models.UserToken.token_id == token_id).first()
-    if user:
-        db.delete(user)
-        db.commit()
-    return RedirectResponse(url="/admin/dashboard", status_code=303)
+    if user is None:
+        return RedirectResponse(
+            url="/admin/dashboard?error=That+user+no+longer+exists", status_code=303)
+
+    extension = user.user_id
+    db.delete(user)
+    db.commit()
+    logger.info("Deleted user %s", extension)
+    return RedirectResponse(url=f"/admin/dashboard?deleted={extension}", status_code=303)
 
 
 @app.get("/admin/edit-user/{token_id}", response_class=HTMLResponse)
@@ -2054,28 +2065,41 @@ def update_status(
     normalized_tasks = normalize_follow_up_task(transcript.follow_up_task)
 
     if status == models.TranscriptStatus.approved.value and previous_status != models.TranscriptStatus.approved.value:
-        if normalized_tasks:
+        crm_note = _clean_string(transcript.crm_note)
+        if not crm_note and not normalized_tasks:
+            return render_template(
+                request,
+                "transcript_detail.html",
+                {
+                    "transcript": transcript,
+                    "error_message": "CRM note is required to approve this transcript.",
+                },
+                status_code=400,
+            )
+
+        employee_id, agent_name = _assigned_agency_zoom_agent(db, transcript)
+
+        # The write-up is a note and the follow-ups are tasks. These used to be
+        # alternatives, so a call with any follow-up never had its note posted
+        # at all and the write-up was only ever visible inside the tasks.
+        try:
+            if crm_note:
+                create_agency_zoom_customer_note_for_transcript(
+                    transcript, agent_name=agent_name, employee_id=employee_id)
+
             # Skip creation when tasks were already auto-created at ingest time
-            if not _clean_string(transcript.agency_zoom_task_ids):
-                employee_id, agent_name = _assigned_agency_zoom_agent(db, transcript)
+            if normalized_tasks and not _clean_string(transcript.agency_zoom_task_ids):
                 created_task_ids = create_agency_zoom_tasks_for_transcript(
                     transcript, assignee_id=employee_id, agent_name=agent_name)
                 transcript.agency_zoom_task_ids = "\n".join(created_task_ids) if created_task_ids else None
-        else:
-            if not _clean_string(transcript.crm_note):
-                return render_template(
-                    request,
-                    "transcript_detail.html",
-                    {
-                        "transcript": transcript,
-                        "error_message": "CRM note is required to approve this transcript.",
-                    },
-                    status_code=400,
-                )
-            employee_id, agent_name = _assigned_agency_zoom_agent(db, transcript)
-            create_agency_zoom_customer_note_for_transcript(
-                transcript, agent_name=agent_name, employee_id=employee_id)
-            transcript.agency_zoom_task_ids = None
+        except Exception as exc:
+            logger.exception("Agency Zoom rejected the approval of transcript %s", id)
+            return render_template(
+                request,
+                "transcript_detail.html",
+                {"transcript": transcript, "error_message": f"Agency Zoom could not be updated: {exc}"},
+                status_code=502,
+            )
 
     transcript.status = status
     db.commit()

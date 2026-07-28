@@ -12,6 +12,17 @@
 <div class="notice success">User updated successfully</div>
 {% endif %}
 
+{% if request.query_params.get("deleted") %}
+<div class="notice success">
+    Deleted the user for extension {{ request.query_params.get("deleted") }}. They stay deleted —
+    calls on that extension are no longer assigned or emailed to anyone.
+</div>
+{% endif %}
+
+{% if request.query_params.get("error") %}
+<div class="notice">{{ request.query_params.get("error") }}</div>
+{% endif %}
+
 <h2>Call Sync</h2>
 <p style="margin:0 0 12px; font-size:0.9rem; opacity:0.85;">
     Calls are fetched from RingCentral starting at the position below, which moves forward as calls
