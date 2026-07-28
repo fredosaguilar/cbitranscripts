@@ -3,6 +3,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
+from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
@@ -24,6 +25,11 @@ AGENCY_ZOOM_EMPLOYEES_URL = f"{AGENCY_ZOOM_BASE_URL}/v1/api/employees"
 USERNAME = (os.getenv("USER_NAME") or "").strip()
 PASSWORD = (os.getenv("PASSWORD") or "").strip()
 REQUEST_TIMEOUT = int(os.getenv("AGENCY_ZOOM_TIMEOUT", "30"))
+# Follow-ups are worked in the morning, so a task with no date picked lands at
+# the start of the next business day rather than whenever the call happened.
+TASK_DUE_TIME = os.getenv("AGENCY_ZOOM_TASK_DUE_TIME", "09:00:00")
+TASK_TITLE = os.getenv("AGENCY_ZOOM_TASK_TITLE", "Call follow-up")
+BUSINESS_TZ = os.getenv("BUSINESS_TZ", "America/Los_Angeles")
 TOKEN_REFRESH_BUFFER_SECONDS = int(os.getenv("AGENCY_ZOOM_TOKEN_REFRESH_BUFFER_SECONDS", "60"))
 UNKNOWN_VALUE = "Unknown"
 
@@ -714,6 +720,42 @@ def find_agency_zoom_employee_by_email(email: Any, jwt_token: Optional[str] = No
     return None
 
 
+def _business_tz():
+    """The agency's own timezone, so "tomorrow" is not decided in UTC."""
+    try:
+        return ZoneInfo(BUSINESS_TZ)
+    except Exception:
+        return timezone.utc
+
+
+def _task_due_dates(chosen: Any) -> tuple[str, str]:
+    """Return the due date and the due date-and-time for a task.
+
+    Agency Zoom took a date-and-time in its dueDate field and fell back to
+    today, losing the date the agent picked, so the two fields are now sent in
+    their own formats: dueDate is the day, taskDateTime carries the time.
+    """
+    chosen_date = (_clean_string(chosen) or "").split(" ")[0]
+    time_of_day = TASK_DUE_TIME
+
+    if chosen_date:
+        try:
+            datetime.strptime(chosen_date, "%Y-%m-%d")
+        except ValueError:
+            logger.warning("Ignoring unusable Agency Zoom due date %r", chosen)
+            chosen_date = ""
+        else:
+            # keep a time the agent typed alongside the date
+            rest = (_clean_string(chosen) or "")[len(chosen_date):].strip()
+            if rest:
+                time_of_day = rest
+
+    if not chosen_date:
+        chosen_date = (datetime.now(_business_tz()) + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    return chosen_date, f"{chosen_date} {time_of_day}"
+
+
 # Create one Agency Zoom task for each follow-up line on a transcript.
 def create_agency_zoom_tasks_for_transcript(
     transcript: Any,
@@ -724,16 +766,12 @@ def create_agency_zoom_tasks_for_transcript(
     if not normalized_tasks:
         return []
 
-    chosen_due = _clean_string(getattr(transcript, "agency_zoom_due_date", None))
-    if chosen_due:
-        # a date from the form arrives as YYYY-MM-DD; Agency Zoom wants a time too
-        due_datetime = chosen_due if " " in chosen_due else f"{chosen_due} 09:00:00"
-    else:
-        due_datetime = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+    due_date, due_datetime = _task_due_dates(getattr(transcript, "agency_zoom_due_date", None))
+
     # Enough context to act on the task, and no more. The call write-up belongs
     # in the customer note; repeating it here made every task read as a copy of
     # the note rather than a thing to do.
-    comment_lines = [
+    context_lines = [
         f"Client Name: {_clean_string(getattr(transcript, 'client_name', None)) or UNKNOWN_VALUE}",
         f"Client Number: {_clean_string(getattr(transcript, 'client_number', None)) or UNKNOWN_VALUE}",
         f"Policy Type: {_clean_string(getattr(transcript, 'policy_type', None)) or UNKNOWN_VALUE}",
@@ -743,7 +781,6 @@ def create_agency_zoom_tasks_for_transcript(
         f"Transcript ID: {getattr(transcript, 'id', UNKNOWN_VALUE)}",
         "The full call write-up is on the customer's notes.",
     ]
-    comments = "\n".join(comment_lines)
 
     jwt_token = zomm_agency_login()
     created_task_ids: list[str] = []
@@ -762,17 +799,21 @@ def create_agency_zoom_tasks_for_transcript(
         customer_type = match.get("type") or "customer"
         customer_name = match.get("name") or customer_name
 
+    # A short title with the detail underneath, rather than a whole paragraph
+    # crammed into the title of the task list.
+    title = f"{TASK_TITLE}: {customer_name}" if customer_name else TASK_TITLE
+
     for task_line in normalized_tasks.splitlines():
-        task_title = task_line.strip()
-        if not task_title:
+        task_text = task_line.strip()
+        if not task_text:
             continue
 
         response_data = create_agency_zoom_task(
-            title=task_title,
-            due_date=due_datetime,
+            title=title,
+            due_date=due_date,
             task_datetime=due_datetime,
-            comments=comments,
-            time_specific=False,
+            comments="\n".join([task_text, ""] + context_lines),
+            time_specific=True,
             customer_name=customer_name,
             customer_id=customer_id,
             customer_type=customer_type,
