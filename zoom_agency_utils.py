@@ -213,18 +213,62 @@ def create_agency_zoom_task(
     payload.update({key: value for key, value in optional_fields.items() if value not in (None, "", [])})
 
     logger.info("Creating Agency Zoom task: %s", payload)
+    return _post_task_payload(payload, token)
 
-    response = requests.post(
-        AGENCY_ZOOM_TASKS_URL,
-        json=payload,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-        timeout=REQUEST_TIMEOUT,
-    )
-    _raise_for_agency_zoom(response, f"create the task \"{title}\"")
-    return _parse_response(response)
+
+# Optional parts of a task, dropped one group at a time when the API refuses
+# the whole thing. The task itself is worth more than the extras attached to it.
+_TASK_FALLBACKS = [
+    ("the assignee", ("assigneeId", "assignees")),
+    ("the customer link", ("customerId", "customerType")),
+    ("the scheduling details", ("taskDateTime", "timeSpecific", "duration")),
+]
+
+
+def _post_task_payload(payload: Dict[str, Any], token: str) -> Dict[str, Any]:
+    """Create the task, narrowing the payload until the API accepts it.
+
+    Agency Zoom answers a payload it dislikes with a 500 and no field name, so
+    a single bad value blocks the whole approval. Retrying without each
+    optional group in turn gets the follow-up created and names, in the log,
+    whichever part the API would not take.
+    """
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    title = payload.get("title")
+    attempt = dict(payload)
+    dropped: list[str] = []
+    first_error: Optional[requests.HTTPError] = None
+
+    for label, keys in [(None, ())] + _TASK_FALLBACKS:
+        if label is not None:
+            if not any(key in attempt for key in keys):
+                continue  # nothing of this kind was being sent anyway
+            for key in keys:
+                attempt.pop(key, None)
+            dropped.append(label)
+
+        response = requests.post(
+            AGENCY_ZOOM_TASKS_URL, json=attempt, headers=headers, timeout=REQUEST_TIMEOUT)
+
+        if response.status_code < 400:
+            if dropped:
+                logger.warning(
+                    "Agency Zoom would not accept %s on task %r; created it without %s",
+                    " or ".join(dropped), title, dropped[-1],
+                )
+            return _parse_response(response)
+
+        try:
+            _raise_for_agency_zoom(response, f"create the task \"{title}\"")
+        except requests.HTTPError as exc:
+            if first_error is None:
+                first_error = exc
+            # Only a server-side refusal is worth narrowing; bad credentials
+            # and missing permissions fail the same way every time.
+            if response.status_code < 500:
+                raise
+
+    raise first_error
 
 
 # Fetch an Agency Zoom customer record by phone number.
