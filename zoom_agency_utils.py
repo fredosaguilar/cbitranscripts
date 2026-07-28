@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -8,6 +9,8 @@ from dotenv import load_dotenv
 from jose import jwt
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 AGENCY_ZOOM_BASE_URL = os.getenv("AGENCY_ZOOM_BASE_URL", "https://api.agencyzoom.com")
 AGENCY_ZOOM_LOGIN_URL = f"{AGENCY_ZOOM_BASE_URL}/v1/api/auth/login"
@@ -147,6 +150,22 @@ def zomm_agency_login() -> str:
     return jwt_token
 
 
+def _raise_for_agency_zoom(response: requests.Response, action: str) -> None:
+    """Fail with what Agency Zoom said, not just the status line.
+
+    "500 Server Error ... /v1/api/tasks" gives nothing to act on; Agency Zoom
+    puts the reason in the body, which raise_for_status throws away.
+    """
+    if response.status_code < 400:
+        return
+
+    detail = (response.text or "").strip()[:400]
+    raise requests.HTTPError(
+        f"Agency Zoom could not {action} ({response.status_code}): {detail or 'no detail returned'}",
+        response=response,
+    )
+
+
 # Convert HTTP responses into JSON data or plain text payloads.
 def _parse_response(response: requests.Response) -> Dict[str, Any]:
     if not response.content:
@@ -183,7 +202,9 @@ def create_agency_zoom_task(
         "comments": _clean_string(comments),
         "timeSpecific": time_specific,
         "customerName": _clean_string(customer_name),
-        "customerId": _clean_string(customer_id),
+        # Numeric ids go as numbers, matching assigneeId; a quoted id is a
+        # likely reason for the API to fail on its own side
+        "customerId": _clean_int(customer_id) or _clean_string(customer_id),
         "customerType": _clean_string(customer_type),
         "duration": duration,
         "assigneeId": _clean_int(assignee_id),
@@ -191,19 +212,63 @@ def create_agency_zoom_task(
     }
     payload.update({key: value for key, value in optional_fields.items() if value not in (None, "", [])})
 
-    print(f"Creating Agency Zoom task with payload: {payload}") 
+    logger.info("Creating Agency Zoom task: %s", payload)
+    return _post_task_payload(payload, token)
 
-    response = requests.post(
-        AGENCY_ZOOM_TASKS_URL,
-        json=payload,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-        timeout=REQUEST_TIMEOUT,
-    )
-    response.raise_for_status()
-    return _parse_response(response)
+
+# Optional parts of a task, dropped one group at a time when the API refuses
+# the whole thing. The task itself is worth more than the extras attached to it.
+_TASK_FALLBACKS = [
+    ("the assignee", ("assigneeId", "assignees")),
+    ("the customer link", ("customerId", "customerType")),
+    ("the scheduling details", ("taskDateTime", "timeSpecific", "duration")),
+]
+
+
+def _post_task_payload(payload: Dict[str, Any], token: str) -> Dict[str, Any]:
+    """Create the task, narrowing the payload until the API accepts it.
+
+    Agency Zoom answers a payload it dislikes with a 500 and no field name, so
+    a single bad value blocks the whole approval. Retrying without each
+    optional group in turn gets the follow-up created and names, in the log,
+    whichever part the API would not take.
+    """
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    title = payload.get("title")
+    attempt = dict(payload)
+    dropped: list[str] = []
+    first_error: Optional[requests.HTTPError] = None
+
+    for label, keys in [(None, ())] + _TASK_FALLBACKS:
+        if label is not None:
+            if not any(key in attempt for key in keys):
+                continue  # nothing of this kind was being sent anyway
+            for key in keys:
+                attempt.pop(key, None)
+            dropped.append(label)
+
+        response = requests.post(
+            AGENCY_ZOOM_TASKS_URL, json=attempt, headers=headers, timeout=REQUEST_TIMEOUT)
+
+        if response.status_code < 400:
+            if dropped:
+                logger.warning(
+                    "Agency Zoom would not accept %s on task %r; created it without %s",
+                    " or ".join(dropped), title, dropped[-1],
+                )
+            return _parse_response(response)
+
+        try:
+            _raise_for_agency_zoom(response, f"create the task \"{title}\"")
+        except requests.HTTPError as exc:
+            if first_error is None:
+                first_error = exc
+            # Only a server-side refusal is worth narrowing; bad credentials
+            # and missing permissions fail the same way every time.
+            if response.status_code < 500:
+                raise
+
+    raise first_error
 
 
 # Fetch an Agency Zoom customer record by phone number.
@@ -464,7 +529,7 @@ def create_agency_zoom_customer_note(
         },
         timeout=REQUEST_TIMEOUT,
     )
-    response.raise_for_status()
+    _raise_for_agency_zoom(response, f"add a note to customer {normalized_customer_id}")
     return _parse_response(response)
 
 

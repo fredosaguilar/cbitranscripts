@@ -89,6 +89,7 @@ def on_startup():
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_type VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_customer_name VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_due_date VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS agency_zoom_note_posted_at TIMESTAMP",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_number VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS extension_name VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS queue_name VARCHAR",
@@ -1082,6 +1083,7 @@ def edit_user_page(token_id: str, request: Request, db: Session = Depends(get_db
 # Update an existing notification user token.
 def update_user(
     token_id: str,
+    user_id: str = Form(""),
     email: str = Form(""),
     user_token: str = Form(""),
     agency_zoom_employee_id: str = Form(""),
@@ -1090,6 +1092,9 @@ def update_user(
 ):
     user = db.query(models.UserToken).filter(models.UserToken.token_id == token_id).first()
     if user:
+        # Editable because a user saved with an email here matches no call at
+        # all, and there was previously no way to correct it
+        user.user_id = _clean_string(user_id) or user.user_id
         user.email = _clean_string(email)
         user.token = _clean_string(user_token)
         # A typed id wins, so the mapping is editable even when the picker
@@ -2082,22 +2087,33 @@ def update_status(
         # The write-up is a note and the follow-ups are tasks. These used to be
         # alternatives, so a call with any follow-up never had its note posted
         # at all and the write-up was only ever visible inside the tasks.
+        #
+        # Each step is committed as it succeeds, so retrying after a refusal
+        # does only what is still missing instead of duplicating what worked.
         try:
-            if crm_note:
+            if crm_note and transcript.agency_zoom_note_posted_at is None:
                 create_agency_zoom_customer_note_for_transcript(
                     transcript, agent_name=agent_name, employee_id=employee_id)
+                transcript.agency_zoom_note_posted_at = datetime.utcnow()
+                db.commit()
 
             # Skip creation when tasks were already auto-created at ingest time
             if normalized_tasks and not _clean_string(transcript.agency_zoom_task_ids):
                 created_task_ids = create_agency_zoom_tasks_for_transcript(
                     transcript, assignee_id=employee_id, agent_name=agent_name)
-                transcript.agency_zoom_task_ids = "\n".join(created_task_ids) if created_task_ids else None
+                if created_task_ids:
+                    transcript.agency_zoom_task_ids = "\n".join(created_task_ids)
+                    db.commit()
         except Exception as exc:
             logger.exception("Agency Zoom rejected the approval of transcript %s", id)
+            posted = "The call note was saved to Agency Zoom. " if transcript.agency_zoom_note_posted_at else ""
             return render_template(
                 request,
                 "transcript_detail.html",
-                {"transcript": transcript, "error_message": f"Agency Zoom could not be updated: {exc}"},
+                {
+                    "transcript": transcript,
+                    "error_message": f"{posted}Agency Zoom could not be updated: {exc}",
+                },
                 status_code=502,
             )
 
