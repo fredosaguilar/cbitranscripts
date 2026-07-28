@@ -1083,6 +1083,7 @@ def edit_user_page(token_id: str, request: Request, db: Session = Depends(get_db
 # Update an existing notification user token.
 def update_user(
     token_id: str,
+    user_id: str = Form(""),
     email: str = Form(""),
     user_token: str = Form(""),
     agency_zoom_employee_id: str = Form(""),
@@ -1091,6 +1092,9 @@ def update_user(
 ):
     user = db.query(models.UserToken).filter(models.UserToken.token_id == token_id).first()
     if user:
+        # Editable because a user saved with an email here matches no call at
+        # all, and there was previously no way to correct it
+        user.user_id = _clean_string(user_id) or user.user_id
         user.email = _clean_string(email)
         user.token = _clean_string(user_token)
         # A typed id wins, so the mapping is editable even when the picker

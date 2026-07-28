@@ -15,8 +15,19 @@
     {% if user %}
     <form method="post" action="/admin/edit-user/{{ user.token_id }}">
 
-        <label>User ID</label>
-        <input type="text" value="{{ user.user_id }}" readonly>
+        <label>User ID (RingCentral extension number)</label>
+        <input type="text" name="user_id" value="{{ user.user_id }}" required>
+        <small style="display:block; margin:-6px 0 12px; opacity:0.8;">
+            This must be the extension number, such as 101 — not an email address. Calls answered on
+            this extension are assigned to this user, and their Agency Zoom notes and tasks are
+            attributed to the Agency Zoom user below.
+        </small>
+        {% if "@" in (user.user_id or "") %}
+        <div style="font-size:0.85rem; color:#9b1c1c; margin:-6px 0 12px;">
+            This is an email address, so no call can match it. Calls carry an extension number, so
+            nothing is being assigned to this user. Replace it with their extension.
+        </div>
+        {% endif %}
 
         <label>Email</label>
         <input type="email" name="email" value="{{ user.email or '' }}"

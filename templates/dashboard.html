@@ -155,7 +155,15 @@
             {% for user in users_tokens %}
             <tr>
                 <td>{{ loop.index }}</td>
-                <td>{{ user.user_id }}</td>
+                <td>
+                    {{ user.user_id }}
+                    {% if "@" in (user.user_id or "") %}
+                    <br><small style="color:#9b1c1c;">
+                        Not an extension, so no call matches this user — nothing is assigned to them.
+                        <a href="/admin/edit-user/{{ user.token_id }}">Set their extension</a>.
+                    </small>
+                    {% endif %}
+                </td>
                 <td>{{ user.email or "—" }}</td>
                 <td>{{ user.agency_zoom_employee_name or user.agency_zoom_employee_id or "—" }}</td>
                 <td class="token">{{ user.token or "—" }}</td>
