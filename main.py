@@ -1346,19 +1346,35 @@ def delete_admin(admin_id: str, request: Request, db: Session = Depends(get_db))
 
 @app.post("/admin/transcripts/bulk-delete")
 # Delete multiple transcript records at once.
-def bulk_delete_transcripts(request: Request, ids: Optional[List[str]] = Form(None), db: Session = Depends(get_db)):
+def bulk_delete_transcripts(
+    request: Request,
+    ids: Optional[List[str]] = Form(None),
+    confirmation: str = Form(""),
+    db: Session = Depends(get_db),
+):
     if not get_logged_in_admin(request, db):
         return RedirectResponse(url="/", status_code=303)
 
+    # Checked server-side as well as in the browser, so deleting a batch of
+    # calls cannot happen without someone typing the word.
+    if _clean_string(confirmation) != "DELETE":
+        return RedirectResponse(
+            url="/admin/transcripts?error=Type+DELETE+to+confirm+deleting+these+calls",
+            status_code=303,
+        )
+
+    deleted = 0
     if ids:
         for id in ids:
             transcript = db.query(models.TranscriptResponse).filter(models.TranscriptResponse.id == id).first()
             if transcript:
                 delete_local_audio_file(getattr(transcript, "local_audio_path", None))
                 db.delete(transcript)
+                deleted += 1
         db.commit()
+        logger.info("Deleted %s transcripts in bulk", deleted)
 
-    return RedirectResponse(url="/admin/transcripts", status_code=303)
+    return RedirectResponse(url=f"/admin/transcripts?deleted={deleted}", status_code=303)
 
 
 @app.post("/admin/transcripts/{id}/assign")
@@ -2160,6 +2176,36 @@ def update_transcription(
     }
 
 
+def _follow_up_task_position(tasks: list[str], data) -> int:
+    """Which task an edit or delete refers to.
+
+    The position sent by the page is trusted first. Matching on text alone used
+    to fail whenever the stored wording differed from the wording on screen by
+    any punctuation, which is why automatically written tasks could not be
+    edited or deleted at all.
+    """
+    if data.index is not None and 0 <= data.index < len(tasks):
+        return data.index
+
+    wanted = (_clean_string(data.task) or "").strip()
+    if wanted:
+        for position, existing in enumerate(tasks):
+            if existing.strip() == wanted:
+                return position
+        # Fall back to comparing the words alone, so a stray bullet or dash on
+        # one side does not hide an otherwise identical task.
+        simplified = _simplify_task_text(wanted)
+        for position, existing in enumerate(tasks):
+            if _simplify_task_text(existing) == simplified:
+                return position
+
+    raise HTTPException(status_code=404, detail="That follow-up task is no longer on this call")
+
+
+def _simplify_task_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
 @app.post("/api/transcripts/{id}/follow-up")
 # Add, edit, or remove follow-up tasks for a transcript.
 def update_follow_up_task(
@@ -2185,19 +2231,13 @@ def update_follow_up_task(
             raise HTTPException(status_code=400, detail="Task is required")
         tasks.append(task)
     elif action == "delete":
-        task = normalize_follow_up_task(data.task)
-        if not task:
-            raise HTTPException(status_code=400, detail="Task is required")
-        tasks = [t for t in tasks if t != task]
+        position = _follow_up_task_position(tasks, data)
+        tasks.pop(position)
     else:
-        task = normalize_follow_up_task(data.task)
         new_task = normalize_follow_up_task(data.new_task)
-        if not task or not new_task:
-            raise HTTPException(status_code=400, detail="Task and new_task are required")
-        for index, existing_task in enumerate(tasks):
-            if existing_task == task:
-                tasks[index] = new_task
-                break
+        if not new_task:
+            raise HTTPException(status_code=400, detail="new_task is required")
+        tasks[_follow_up_task_position(tasks, data)] = new_task
 
     transcript.follow_up_task = "\n".join(tasks) if tasks else None
     db.commit()

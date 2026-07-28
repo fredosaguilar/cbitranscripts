@@ -46,6 +46,12 @@
 </div>
 {% endif %}
 
+{% if request.query_params.get("deleted") %}
+<div class="notice success" style="margin-bottom:12px;">
+    Deleted {{ request.query_params.get("deleted") }} call(s) and their recordings.
+</div>
+{% endif %}
+
 {% if request.query_params.get("error") %}
 <div class="notice" style="margin-bottom:12px; background:#fde8e8; color:#9b1c1c; padding:10px 14px; border-radius:6px;">
     {{ request.query_params.get("error") }}
@@ -252,7 +258,17 @@
     function deleteSelected() {
         const checked = [...document.querySelectorAll('.row-checkbox:checked')];
         if (checked.length === 0) return;
-        if (!confirm(`Delete ${checked.length} transcript(s)? This cannot be undone.`)) return;
+
+        // Typed rather than clicked, because these calls and their recordings
+        // cannot be brought back.
+        const typed = prompt(
+            `This permanently deletes ${checked.length} call${checked.length === 1 ? '' : 's'} ` +
+            `and their recordings. It cannot be undone.\n\nType DELETE to confirm:`);
+        if (typed === null) return;
+        if (typed.trim() !== 'DELETE') {
+            alert('Not deleted. You must type DELETE exactly.');
+            return;
+        }
 
         const form = document.createElement('form');
         form.method = 'POST';
@@ -265,6 +281,12 @@
             input.value = cb.value;
             form.appendChild(input);
         });
+
+        const confirmation = document.createElement('input');
+        confirmation.type = 'hidden';
+        confirmation.name = 'confirmation';
+        confirmation.value = 'DELETE';
+        form.appendChild(confirmation);
 
         document.body.appendChild(form);
         form.submit();

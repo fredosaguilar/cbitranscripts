@@ -140,3 +140,6 @@ class FollowUpTaskUpdate(BaseModel):
     action: str
     task: Optional[str] = None
     new_task: Optional[str] = None
+    # Which task in the list, so editing and deleting do not depend on matching
+    # text that punctuation or reformatting can make unmatchable
+    index: Optional[int] = None
