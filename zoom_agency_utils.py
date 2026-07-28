@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -8,6 +9,8 @@ from dotenv import load_dotenv
 from jose import jwt
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 AGENCY_ZOOM_BASE_URL = os.getenv("AGENCY_ZOOM_BASE_URL", "https://api.agencyzoom.com")
 AGENCY_ZOOM_LOGIN_URL = f"{AGENCY_ZOOM_BASE_URL}/v1/api/auth/login"
@@ -147,6 +150,22 @@ def zomm_agency_login() -> str:
     return jwt_token
 
 
+def _raise_for_agency_zoom(response: requests.Response, action: str) -> None:
+    """Fail with what Agency Zoom said, not just the status line.
+
+    "500 Server Error ... /v1/api/tasks" gives nothing to act on; Agency Zoom
+    puts the reason in the body, which raise_for_status throws away.
+    """
+    if response.status_code < 400:
+        return
+
+    detail = (response.text or "").strip()[:400]
+    raise requests.HTTPError(
+        f"Agency Zoom could not {action} ({response.status_code}): {detail or 'no detail returned'}",
+        response=response,
+    )
+
+
 # Convert HTTP responses into JSON data or plain text payloads.
 def _parse_response(response: requests.Response) -> Dict[str, Any]:
     if not response.content:
@@ -183,7 +202,9 @@ def create_agency_zoom_task(
         "comments": _clean_string(comments),
         "timeSpecific": time_specific,
         "customerName": _clean_string(customer_name),
-        "customerId": _clean_string(customer_id),
+        # Numeric ids go as numbers, matching assigneeId; a quoted id is a
+        # likely reason for the API to fail on its own side
+        "customerId": _clean_int(customer_id) or _clean_string(customer_id),
         "customerType": _clean_string(customer_type),
         "duration": duration,
         "assigneeId": _clean_int(assignee_id),
@@ -191,7 +212,7 @@ def create_agency_zoom_task(
     }
     payload.update({key: value for key, value in optional_fields.items() if value not in (None, "", [])})
 
-    print(f"Creating Agency Zoom task with payload: {payload}") 
+    logger.info("Creating Agency Zoom task: %s", payload)
 
     response = requests.post(
         AGENCY_ZOOM_TASKS_URL,
@@ -202,7 +223,7 @@ def create_agency_zoom_task(
         },
         timeout=REQUEST_TIMEOUT,
     )
-    response.raise_for_status()
+    _raise_for_agency_zoom(response, f"create the task \"{title}\"")
     return _parse_response(response)
 
 
@@ -464,7 +485,7 @@ def create_agency_zoom_customer_note(
         },
         timeout=REQUEST_TIMEOUT,
     )
-    response.raise_for_status()
+    _raise_for_agency_zoom(response, f"add a note to customer {normalized_customer_id}")
     return _parse_response(response)
 
 
