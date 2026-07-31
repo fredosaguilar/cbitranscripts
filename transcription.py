@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-1")
+# Used to put a Spanish call into English. Translating text costs a fraction of
+# sending the audio through Whisper a second time.
+TRANSLATE_MODEL = os.getenv("TRANSLATE_MODEL", "gpt-4.1-mini")
 TRANSCRIBE_TIMEOUT = int(os.getenv("TRANSCRIBE_TIMEOUT", "600"))
 # A complete call is far larger than this; anything smaller is the announcement
 MIN_EXPECTED_AUDIO_BYTES = int(os.getenv("MIN_EXPECTED_AUDIO_BYTES", "40000"))
@@ -186,33 +189,84 @@ def _whisper(endpoint: str, audio: bytes, prompt: str, verbose: bool = False) ->
     return response.json()
 
 
-def _transcribe_chunk(chunk: bytes, index: int, total: int, want_original: bool) -> tuple[str, str, str]:
-    """Translate one chunk, and transcribe it as spoken when that is wanted."""
-    english, original, language = "", "", ""
-
+def _transcribe_chunk(chunk: bytes, index: int, total: int) -> tuple[str, str]:
+    """Transcribe one chunk as spoken, returning its text and its language."""
     try:
-        english = _whisper("translations", chunk, ENGLISH_PROMPT).get("text", "").strip()
+        payload = _whisper("transcriptions", chunk, SPANISH_PROMPT, verbose=True)
+        return str(payload.get("text", "")).strip(), str(payload.get("language") or "").lower()
     except Exception:
         # One unreadable minute must not cost the rest of the call
-        logger.exception("Translation failed for chunk %s/%s", index, total)
+        logger.exception("Transcription failed for chunk %s/%s", index, total)
+        return "", ""
 
-    if want_original:
-        try:
-            payload = _whisper("transcriptions", chunk, SPANISH_PROMPT, verbose=True)
-            original = str(payload.get("text", "")).strip()
-            language = str(payload.get("language") or "").lower()
-        except Exception:
-            logger.exception("Transcription failed for chunk %s/%s", index, total)
 
-    return english, original, language
+def _translate_text(text: str) -> str:
+    """Translate a finished transcript into English with a text model.
+
+    Whisper charges by the minute of audio, so translating by sending the call
+    through it a second time costs as much again as transcribing it. Sending
+    the text instead costs a fraction of a cent, and is the same work.
+    """
+    if not text:
+        return ""
+
+    response = requests.post(
+        f"{OPENAI_BASE_URL}/chat/completions",
+        headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+        json={
+            "model": TRANSLATE_MODEL,
+            "temperature": 0,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Translate the insurance phone call transcript into English. Keep every "
+                        "detail, name, number, and amount exactly as spoken. Do not summarise, "
+                        "explain, or add anything. Reply with the translation only."
+                    ),
+                },
+                {"role": "user", "content": text},
+            ],
+        },
+        timeout=TRANSCRIBE_TIMEOUT,
+    )
+    response.raise_for_status()
+    return (response.json()["choices"][0]["message"]["content"] or "").strip()
+
+
+def _translate_chunks_with_whisper(chunks: list[bytes]) -> str:
+    """Fall back to Whisper's own translation if the text model is unavailable."""
+    parts: list[str] = []
+    with ThreadPoolExecutor(max_workers=max(1, MAX_PARALLEL_CHUNKS)) as pool:
+        for text in pool.map(lambda c: _safe_whisper_translation(c), chunks):
+            parts.append(text)
+    return " ".join(part for part in parts if part)
+
+
+def _safe_whisper_translation(chunk: bytes) -> str:
+    try:
+        return _whisper("translations", chunk, ENGLISH_PROMPT).get("text", "").strip()
+    except Exception:
+        logger.exception("Whisper translation failed for a chunk")
+        return ""
+
+
+def load_recording(audio_url: str) -> tuple[bytes, float]:
+    """Fetch a recording and measure it, before deciding whether to pay to read it."""
+    audio = download_recording(audio_url)
+    return audio, mp3_duration_seconds(audio)
 
 
 def transcribe_recording(audio_url: str) -> dict:
-    """Return the English translation plus the original-language transcript."""
+    audio, audio_seconds = load_recording(audio_url)
+    return transcribe_audio(audio, audio_seconds, audio_url)
+
+
+def transcribe_audio(audio: bytes, audio_seconds: float, audio_url: str = "") -> dict:
+    """Return the English transcript plus the original-language transcript."""
     if not is_configured():
         raise ValueError("OPENAI_API_KEY is not set, so the app cannot transcribe recordings.")
 
-    audio = download_recording(audio_url)
     audio_bytes = len(audio)
     if not audio_bytes:
         raise ValueError(f"Downloaded no audio from {audio_url}")
@@ -221,29 +275,31 @@ def transcribe_recording(audio_url: str) -> dict:
     chunks = split_mp3(audio)
     total = len(chunks)
 
-    # The first chunk goes on its own to establish the language. An English call
-    # discards its original-language transcript anyway, so once the language is
-    # known the remaining chunks skip that second pass entirely.
-    first_english, first_original, detected = _transcribe_chunk(chunks[0], 1, total, want_original=True)
-    spoken_in_english = detected in {"english", "en"}
-
-    english_parts = [first_english]
-    original_parts = [first_original]
-
-    if total > 1:
+    # Every chunk is read once, as spoken. The English version is made from that
+    # text afterwards, so the audio is never sent to Whisper twice.
+    transcribed: list[tuple[str, str]] = []
+    if total == 1:
+        transcribed.append(_transcribe_chunk(chunks[0], 1, total))
+    else:
         with ThreadPoolExecutor(max_workers=max(1, MAX_PARALLEL_CHUNKS)) as pool:
-            results = pool.map(
-                lambda item: _transcribe_chunk(item[1], item[0], total, not spoken_in_english),
-                list(enumerate(chunks[1:], start=2)),
-            )
-            for chunk_english, chunk_original, _ in results:
-                english_parts.append(chunk_english)
-                original_parts.append(chunk_original)
+            transcribed = list(pool.map(
+                lambda item: _transcribe_chunk(item[1], item[0], total),
+                list(enumerate(chunks, start=1)),
+            ))
 
-    english = clean_transcript(" ".join(part for part in english_parts if part))
-    original_text = clean_transcript(" ".join(part for part in original_parts if part))
+    detected = next((language for _, language in transcribed if language), "")
+    spoken_in_english = detected in {"english", "en"}
+    original_text = clean_transcript(" ".join(text for text, _ in transcribed if text))
 
-    audio_seconds = mp3_duration_seconds(audio)
+    if spoken_in_english:
+        english = original_text
+    else:
+        try:
+            english = clean_transcript(_translate_text(original_text))
+        except Exception:
+            logger.exception("Text translation failed for %s; falling back to Whisper", audio_url)
+            english = clean_transcript(_translate_chunks_with_whisper(chunks))
+
     result = {
         "audio_seconds": round(audio_seconds, 1),
         "text": english,
