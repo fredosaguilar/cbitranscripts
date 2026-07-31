@@ -1890,6 +1890,34 @@ def _clear_transcription_attempts(db: Session, recording_id: Optional[str]) -> N
         db.commit()
 
 
+def _existing_transcription(db: Session, recording_id: Optional[str]) -> Optional[dict]:
+    """The transcript already stored for a recording, if there is a usable one."""
+    cleaned = _clean_string(recording_id)
+    if not cleaned:
+        return None
+
+    transcript = (
+        db.query(models.TranscriptResponse)
+        .filter(models.TranscriptResponse.recordingID == cleaned)
+        .first()
+    )
+    text = _clean_string(getattr(transcript, "transcription", None)) if transcript else None
+    if not text:
+        return None
+
+    return {
+        "audio_seconds": transcript.usage_sec or 0,
+        "text": text,
+        "text_original": _clean_string(transcript.transcription_original) or "",
+        "original_language": _clean_string(transcript.original_language) or "unknown",
+        "audio_bytes": 0,
+        "chunks": 0,
+        "short_download": False,
+        "word_count": len(text.split()),
+        "reused": True,
+    }
+
+
 @app.post("/api/transcribe-recording")
 # Download a recording and transcribe it here, rather than in the workflow.
 def transcribe_recording_endpoint(payload: dict, db: Session = Depends(get_db)):
@@ -1901,8 +1929,37 @@ def transcribe_recording_endpoint(payload: dict, db: Session = Depends(get_db)):
     if not transcription.is_configured():
         raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not configured on the server")
 
+    # Already transcribed once. A repeated sync must not pay to read the same
+    # call again; the stored text is what would be produced anyway.
+    existing = _existing_transcription(db, recording_id)
+    if existing is not None:
+        logger.info("Reusing the stored transcript for %s instead of transcribing again", recording_id)
+        return JSONResponse(content=existing)
+
     try:
-        result = transcription.transcribe_recording(audio_url)
+        audio, audio_seconds = transcription.load_recording(audio_url)
+    except Exception as exc:
+        logger.exception("Could not download %s", audio_url)
+        raise HTTPException(status_code=502, detail=f"Could not download the recording: {exc}") from exc
+
+    # A download too small to hold a conversation is refused before any of it is
+    # sent to Whisper, so the retries while a recording is still being written
+    # cost nothing.
+    if len(audio) < transcription.MIN_EXPECTED_AUDIO_BYTES:
+        attempts = _record_transcription_attempt(db, recording_id, {
+            "audio_bytes": len(audio), "audio_seconds": round(audio_seconds, 1), "word_count": 0})
+        if attempts < MAX_TRANSCRIBE_ATTEMPTS:
+            logger.warning(
+                "Recording %s is only %s bytes (%.0fs); attempt %s of %s, not transcribing yet",
+                recording_id or audio_url, len(audio), audio_seconds, attempts, MAX_TRANSCRIBE_ATTEMPTS,
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=f"Recording is not fully available yet ({len(audio)} bytes, {audio_seconds:.0f}s)",
+            )
+
+    try:
+        result = transcription.transcribe_audio(audio, audio_seconds, audio_url)
     except requests.HTTPError as exc:
         detail = getattr(exc.response, "text", str(exc))[:400]
         logger.error("Transcription failed for %s: %s", audio_url, detail)
