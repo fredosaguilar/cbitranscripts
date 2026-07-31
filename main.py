@@ -1313,8 +1313,15 @@ def add_admin(
             url="/admin/admins?error=Username+required+and+password+must+be+at+least+8+characters",
             status_code=303,
         )
-    if db.query(models.Admin).filter(models.Admin.username == cleaned_username).first():
-        return RedirectResponse(url="/admin/admins?error=Username+already+exists", status_code=303)
+    # Compared without case, because logging in ignores case: two accounts
+    # differing only by capitalisation would be one login with two passwords.
+    existing = (
+        db.query(models.Admin)
+        .filter(func.lower(models.Admin.username) == cleaned_username.lower())
+        .first()
+    )
+    if existing:
+        return RedirectResponse(url="/admin/admins?error=That+username+is+already+taken", status_code=303)
 
     db.add(models.Admin(
         admin_id=str(uuid.uuid4()),
@@ -1322,7 +1329,8 @@ def add_admin(
         password_hash=auth.hash_password(password),
     ))
     db.commit()
-    return RedirectResponse(url="/admin/admins?created=1", status_code=303)
+    logger.info("Created admin login '%s'", cleaned_username)
+    return RedirectResponse(url=f"/admin/admins?created={cleaned_username}", status_code=303)
 
 
 @app.post("/admin/admins/{admin_id}/delete")
