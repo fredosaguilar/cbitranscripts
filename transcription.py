@@ -200,15 +200,26 @@ def _transcribe_chunk(chunk: bytes, index: int, total: int) -> tuple[str, str]:
         return "", ""
 
 
-def _translate_text(text: str) -> str:
-    """Translate a finished transcript into English with a text model.
+_LABEL_RULE = (
+    "Put each speaker turn on its own line, prefixed \"Agent:\" or \"Client:\". The agent works "
+    "at the insurance agency; the client is the caller. Keep every detail, name, number, and "
+    "amount exactly as spoken. Do not summarise, explain, or add anything."
+)
 
-    Whisper charges by the minute of audio, so translating by sending the call
-    through it a second time costs as much again as transcribing it. Sending
-    the text instead costs a fraction of a cent, and is the same work.
+
+def _english_transcript(text: str, already_english: bool) -> str:
+    """The English, speaker-labelled transcript, in one text-model call.
+
+    Both the translating and the speaker labelling used to be paid for at
+    output rates elsewhere -- Whisper billed the audio a second time to
+    translate, and the analysis step regenerated the whole transcript to label
+    it. Doing both here, on the text, costs a fraction of a cent for a call.
     """
     if not text:
         return ""
+
+    instruction = _LABEL_RULE if already_english else (
+        "Translate the insurance phone call transcript into English. " + _LABEL_RULE)
 
     response = requests.post(
         f"{OPENAI_BASE_URL}/chat/completions",
@@ -217,14 +228,7 @@ def _translate_text(text: str) -> str:
             "model": TRANSLATE_MODEL,
             "temperature": 0,
             "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "Translate the insurance phone call transcript into English. Keep every "
-                        "detail, name, number, and amount exactly as spoken. Do not summarise, "
-                        "explain, or add anything. Reply with the translation only."
-                    ),
-                },
+                {"role": "system", "content": f"{instruction} Reply with the transcript only."},
                 {"role": "user", "content": text},
             ],
         },
@@ -291,14 +295,14 @@ def transcribe_audio(audio: bytes, audio_seconds: float, audio_url: str = "") ->
     spoken_in_english = detected in {"english", "en"}
     original_text = clean_transcript(" ".join(text for text, _ in transcribed if text))
 
-    if spoken_in_english:
-        english = original_text
-    else:
-        try:
-            english = clean_transcript(_translate_text(original_text))
-        except Exception:
-            logger.exception("Text translation failed for %s; falling back to Whisper", audio_url)
-            english = clean_transcript(_translate_chunks_with_whisper(chunks))
+    try:
+        english = clean_transcript(_english_transcript(original_text, spoken_in_english))
+    except Exception:
+        logger.exception("Could not prepare the English transcript for %s", audio_url)
+        # Never lose a call to save money: fall back to the plain text, and to
+        # Whisper's own translation when the call was not in English.
+        english = original_text if spoken_in_english else clean_transcript(
+            _translate_chunks_with_whisper(chunks))
 
     result = {
         "audio_seconds": round(audio_seconds, 1),
