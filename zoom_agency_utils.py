@@ -553,20 +553,26 @@ def find_agency_zoom_match(phone: Any, jwt_token: Optional[str] = None) -> Optio
     return None
 
 
-# Create a CRM note for an existing Agency Zoom customer.
+# Create a CRM note on an existing Agency Zoom customer or lead.
+# A lead id posted to the customer endpoint is rejected with "Customer does not
+# belong to the current user", so the record type decides the URL.
 def create_agency_zoom_customer_note(
     customer_id: int | str,
     note: str,
     jwt_token: Optional[str] = None,
     author_id: Optional[str] = None,
+    record_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     normalized_customer_id = _clean_string(customer_id)
     normalized_note = _clean_string(note)
 
+    is_lead = (_clean_string(record_type) or "customer").lower() == "lead"
+    label = "lead" if is_lead else "customer"
+
     if not normalized_customer_id:
-        raise ValueError("Customer id is required to create an Agency Zoom customer note.")
+        raise ValueError(f"{label.capitalize()} id is required to create an Agency Zoom note.")
     if not normalized_note:
-        raise ValueError("Note is required to create an Agency Zoom customer note.")
+        raise ValueError(f"Note is required to create an Agency Zoom {label} note.")
 
     token = jwt_token or zomm_agency_login()
     payload: Dict[str, Any] = {"note": normalized_note}
@@ -575,8 +581,9 @@ def create_agency_zoom_customer_note(
         payload["userId"] = _clean_int(author_id)
         payload["employeeId"] = _clean_int(author_id)
 
+    base_url = AGENCY_ZOOM_LEADS_URL if is_lead else AGENCY_ZOOM_CUSTOMERS_URL
     response = requests.post(
-        f"{AGENCY_ZOOM_CUSTOMERS_URL}/{normalized_customer_id}/notes",
+        f"{base_url}/{normalized_customer_id}/notes",
         json=payload,
         headers={
             "Authorization": f"Bearer {token}",
@@ -584,7 +591,7 @@ def create_agency_zoom_customer_note(
         },
         timeout=REQUEST_TIMEOUT,
     )
-    _raise_for_agency_zoom(response, f"add a note to customer {normalized_customer_id}")
+    _raise_for_agency_zoom(response, f"add a note to {label} {normalized_customer_id}")
     return _parse_response(response)
 
 
@@ -924,7 +931,12 @@ def create_agency_zoom_customer_note_for_transcript(
         note = f"{note}\n\nCall handled by {author}."
 
     return create_agency_zoom_customer_note(
-        customer_id=match["id"], note=note, jwt_token=jwt_token, author_id=employee_id)
+        customer_id=match["id"],
+        note=note,
+        jwt_token=jwt_token,
+        author_id=employee_id,
+        record_type=match.get("type"),
+    )
 
 # Fetch and cache the Agency Zoom employee list.
 def get_agency_zoom_employee_list(jwt_token: Optional[str] = None) -> Dict[str, Any]:
