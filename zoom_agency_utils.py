@@ -18,6 +18,9 @@ AGENCY_ZOOM_LOGIN_URL = f"{AGENCY_ZOOM_BASE_URL}/v1/api/auth/login"
 AGENCY_ZOOM_TASKS_URL = f"{AGENCY_ZOOM_BASE_URL}/v1/api/tasks"
 AGENCY_ZOOM_CUSTOMERS_URL = f"{AGENCY_ZOOM_BASE_URL}/v1/api/customers"
 AGENCY_ZOOM_LEADS_URL = f"{AGENCY_ZOOM_BASE_URL}/v1/api/leads"
+# Agency Zoom lists leads at /leads/list. /leads/search is not an endpoint and
+# answers 404, which is why leads never reached the dashboard.
+AGENCY_ZOOM_LEADS_LIST_URL = f"{AGENCY_ZOOM_LEADS_URL}/list"
 AGENCY_ZOOM_EMPLOYEES_URL = f"{AGENCY_ZOOM_BASE_URL}/v1/api/employees"
 
 # Stripped, because a credential pasted into the hosting dashboard easily
@@ -349,13 +352,14 @@ def _candidate_summary(record: dict[str, Any], record_type: str) -> dict[str, An
         or _clean_string(record.get("businessName"))
         or _clean_string(record.get("companyName"))
     )
-    phone = _clean_string(
-        record.get("phone")
-        or record.get("phoneNumber")
-        or record.get("mobile")
-        or record.get("cellPhone")
-        or record.get("homePhone")
-    )
+    # Leads often keep the mobile in secondaryPhone, and a call from that number
+    # has to match the lead just as well as the primary one does.
+    phones: list[str] = []
+    for phone_key in ("phone", "phoneNumber", "mobile", "cellPhone", "homePhone", "secondaryPhone"):
+        candidate_phone = _clean_string(record.get(phone_key))
+        if candidate_phone and candidate_phone not in phones:
+            phones.append(candidate_phone)
+    phone = phones[0] if phones else None
     record_id = None
     for key in ("id", "customerId", "customerID", "leadId", "leadID"):
         if record.get(key):
@@ -366,6 +370,7 @@ def _candidate_summary(record: dict[str, Any], record_type: str) -> dict[str, An
         "type": record_type,
         "name": name,
         "phone": phone,
+        "phones": phones,
         "email": _clean_string(record.get("email")),
     }
 
@@ -380,29 +385,36 @@ DIRECTORY_MAX_PAGES = int(os.getenv("AGENCY_ZOOM_MAX_PAGES", "60"))
 
 
 def _fetch_all_pages(url: str, record_type: str, jwt_token: str) -> list[dict[str, Any]]:
-    """Page through a listing endpoint until it stops returning new records."""
+    """Page through a listing endpoint until it stops returning new records.
+
+    Agency Zoom numbers pages from 0, so a loop starting at 1 quietly drops the
+    first page of the directory.
+    """
     headers = {"Authorization": f"Bearer {jwt_token}", "Content-Type": "application/json"}
     found: dict[str, dict[str, Any]] = {}
 
-    for page in range(1, DIRECTORY_MAX_PAGES + 1):
+    for page in range(DIRECTORY_MAX_PAGES):
+        try:
+            response = requests.post(
+                url,
+                json={"page": page, "pageSize": DIRECTORY_PAGE_SIZE},
+                headers=headers,
+                timeout=REQUEST_TIMEOUT,
+            )
+            _raise_for_agency_zoom(response, f"list {record_type}s (page {page})")
+            records = _extract_candidate_records(_parse_response(response))
+        except Exception as exc:
+            # A wrong URL used to look exactly like an empty directory. Say which
+            # one happened, so the next broken endpoint is not silent for weeks.
+            logger.warning("Agency Zoom %s listing failed on page %s: %s", record_type, page, exc)
+            break
+
         added = 0
-        for payload in ({"page": page, "pageSize": DIRECTORY_PAGE_SIZE},
-                        {"pageIndex": page, "pageSize": DIRECTORY_PAGE_SIZE}):
-            try:
-                response = requests.post(url, json=payload, headers=headers, timeout=REQUEST_TIMEOUT)
-                if response.status_code in (404, 405):
-                    continue
-                response.raise_for_status()
-                records = _extract_candidate_records(_parse_response(response))
-            except Exception:
-                continue
-            for record in records:
-                summary = _candidate_summary(record, record_type)
-                if summary["id"] and summary["id"] not in found:
-                    found[summary["id"]] = summary
-                    added += 1
-            if records:
-                break
+        for record in records:
+            summary = _candidate_summary(record, record_type)
+            if summary["id"] and summary["id"] not in found:
+                found[summary["id"]] = summary
+                added += 1
         if not added:
             break
 
@@ -421,7 +433,7 @@ def _load_directory(jwt_token: Optional[str] = None) -> Dict[str, list[dict[str,
 
     token = jwt_token or zomm_agency_login()
     customers = _fetch_all_pages(AGENCY_ZOOM_CUSTOMERS_URL, "customer", token)
-    leads = _fetch_all_pages(f"{AGENCY_ZOOM_LEADS_URL}/search", "lead", token)
+    leads = _fetch_all_pages(AGENCY_ZOOM_LEADS_LIST_URL, "lead", token)
     _directory_cache.update({"customers": customers, "leads": leads, "fetched_at": now})
     return {"customers": customers, "leads": leads}
 
@@ -430,10 +442,18 @@ def clear_agency_zoom_directory_cache() -> None:
     _directory_cache.update({"customers": None, "leads": None, "fetched_at": None})
 
 
+def _record_phones(record: dict[str, Any]) -> list[str]:
+    phones = record.get("phones")
+    if isinstance(phones, list) and phones:
+        return phones
+    single = record.get("phone")
+    return [single] if single else []
+
+
 def _matches(record: dict[str, Any], query: str) -> bool:
     digits = _last_ten_digits(query)
     if len(digits) >= 10:
-        return _last_ten_digits(record.get("phone")) == digits
+        return any(_last_ten_digits(value) == digits for value in _record_phones(record))
     needle = query.strip().lower()
     haystack = " ".join(
         str(record.get(field) or "") for field in ("name", "email", "phone")
@@ -471,12 +491,41 @@ def search_agency_zoom_customers(query: Any, jwt_token: Optional[str] = None) ->
     return [record for record in directory["customers"] if _matches(record, cleaned)]
 
 
-# Leads are filtered from the same cached directory.
+# Leads are filtered from the same cached directory, with the same authoritative
+# phone shortcut the customer search uses.
 def search_agency_zoom_leads(query: Any, jwt_token: Optional[str] = None) -> list[dict[str, Any]]:
     cleaned = _clean_string(query)
     if not cleaned:
         return []
-    directory = _load_directory(jwt_token)
+    token = jwt_token or zomm_agency_login()
+
+    # customerPhoneList matches exactly on Agency Zoom's side, so a known caller
+    # is found without paging the whole lead list first.
+    if len(_last_ten_digits(cleaned)) >= 10:
+        try:
+            response = requests.post(
+                AGENCY_ZOOM_LEADS_LIST_URL,
+                json={
+                    "customerPhoneList": _phone_variants(cleaned),
+                    "page": 0,
+                    "pageSize": DIRECTORY_PAGE_SIZE,
+                },
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                timeout=REQUEST_TIMEOUT,
+            )
+            _raise_for_agency_zoom(response, "search leads by phone")
+            exact = [
+                summary for summary in
+                (_candidate_summary(record, "lead")
+                 for record in _extract_candidate_records(_parse_response(response)))
+                if summary["id"] and _matches(summary, cleaned)
+            ]
+            if exact:
+                return exact
+        except Exception as exc:
+            logger.warning("Agency Zoom lead phone search failed: %s", exc)
+
+    directory = _load_directory(token)
     return [record for record in directory["leads"] if _matches(record, cleaned)]
 
 
@@ -499,7 +548,7 @@ def find_agency_zoom_match(phone: Any, jwt_token: Optional[str] = None) -> Optio
     # sole result is not evidence - a wrong link puts call notes on the wrong
     # client file. Anything less certain is left for a human to link by hand.
     for candidate in candidates:
-        if candidate["phone"] and _last_ten_digits(candidate["phone"]) == digits:
+        if any(_last_ten_digits(value) == digits for value in _record_phones(candidate)):
             return candidate
     return None
 
