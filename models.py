@@ -69,6 +69,55 @@ class TranscriptionAttempt(Base):
     updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class ClientRecap(Base):
+    """A recap text drafted for a client, and what became of it.
+
+    Rows are never rewritten once sent. The value of a recap in an E&O dispute
+    is being able to show exactly what wording left the office, to what number,
+    and when — so a later edit becomes a new row rather than a correction to
+    the record of what the client actually received.
+    """
+
+    __tablename__ = "client_recaps"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    transcript_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+
+    body = Column(Text, nullable=False)
+    to_number = Column(String, nullable=True)
+    from_number = Column(String, nullable=True)
+
+    # draft | sent | failed
+    status = Column(String, default="draft", nullable=False)
+    # ai | template | manual — how the wording was arrived at
+    source = Column(String, nullable=True)
+    provider = Column(String, nullable=True)
+    provider_message_id = Column(String, nullable=True)
+    provider_status = Column(String, nullable=True)
+    error = Column(Text, nullable=True)
+
+    sent_by = Column(String, nullable=True)
+    sent_at = Column(TIMESTAMP, nullable=True)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SmsOptOut(Base):
+    """A number that has asked not to be texted.
+
+    Checked before every send. Carrier-level STOP handling does not tell this
+    app anything, so an opt-out heard on the phone or seen in the RingCentral
+    inbox is recorded here by hand.
+    """
+
+    __tablename__ = "sms_opt_outs"
+
+    phone_e164 = Column(String, primary_key=True, index=True)
+    note = Column(Text, nullable=True)
+    recorded_by = Column(String, nullable=True)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow)
+
+
 # Enum for status
 class TranscriptStatus(str, enum.Enum):
     pending = "pending"

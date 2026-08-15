@@ -177,3 +177,118 @@ button {
     display: none;
     box-shadow: 0 12px 24px rgba(17, 24, 39, 0.2);
 }
+
+/* ---- Client recap text ---- */
+
+.recap-help {
+    margin: 0 0 12px;
+    font-size: 0.85rem;
+    opacity: 0.8;
+}
+
+.recap-status {
+    font-size: 0.82rem;
+    padding: 8px 12px;
+    border-radius: 10px;
+    background: rgba(30, 158, 106, 0.1);
+    color: #15825a;
+    margin-bottom: 12px;
+}
+
+.recap-status.warn {
+    background: rgba(217, 119, 6, 0.14);
+    color: #b45309;
+}
+
+.recap-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+
+.recap-row input[type="tel"] {
+    flex: 1;
+    min-width: 200px;
+}
+
+.recap-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    font-size: 0.78rem;
+    opacity: 0.75;
+    margin-top: 6px;
+}
+
+.recap-meta .over {
+    color: #b91c1c;
+    opacity: 1;
+    font-weight: 600;
+}
+
+.recap-disclaimer {
+    margin-top: 10px;
+    font-size: 0.78rem;
+    opacity: 0.8;
+    border-left: 3px solid rgba(128, 128, 128, 0.35);
+    padding-left: 10px;
+}
+
+.recap-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+}
+
+.recap-blocked {
+    margin-top: 10px;
+    font-size: 0.82rem;
+    color: #b45309;
+}
+
+.recap-history {
+    margin-top: 18px;
+}
+
+.recap-history h4 {
+    margin: 0 0 8px;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    opacity: 0.7;
+}
+
+.recap-sent {
+    border-left: 3px solid #15825a;
+    padding: 8px 0 8px 12px;
+    margin-bottom: 12px;
+}
+
+.recap-sent.failed {
+    border-left-color: #b91c1c;
+}
+
+.recap-sent-meta {
+    font-size: 0.76rem;
+    opacity: 0.75;
+    margin-bottom: 4px;
+}
+
+.recap-sent-body {
+    font-size: 0.88rem;
+    white-space: pre-wrap;
+}
+
+.recap-sent-error {
+    font-size: 0.78rem;
+    color: #b91c1c;
+    margin-top: 4px;
+}
+
+.recap-blocked.done {
+    color: #15825a;
+}

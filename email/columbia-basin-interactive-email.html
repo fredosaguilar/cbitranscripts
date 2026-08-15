@@ -1,0 +1,504 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="X-UA-Compatible" content="IE=edge" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="x-apple-disable-message-reformatting" />
+<meta name="color-scheme" content="light dark" />
+<meta name="supported-color-schemes" content="light dark" />
+<title>Columbia Basin Insurance &mdash; one local agent for every policy</title>
+<!--[if mso]>
+<noscript><xml><o:OfficeDocumentSettings>
+  <o:PixelsPerInch>96</o:PixelsPerInch>
+  <o:AllowPNG/>
+</o:OfficeDocumentSettings></xml></noscript>
+<![endif]-->
+<style type="text/css">
+  /* ------------------------------------------------------------------
+     Columbia Basin Insurance — interactive email
+     Brand: teal #235A57 / gold #E3B333 / cream #F7F4EC
+     Interactivity degrades safely: see README.md for the fallback logic.
+     ------------------------------------------------------------------ */
+
+  html, body { margin:0 !important; padding:0 !important; height:100% !important; width:100% !important; }
+  * { -ms-text-size-adjust:100%; -webkit-text-size-adjust:100%; }
+  table, td { mso-table-lspace:0pt !important; mso-table-rspace:0pt !important; border-collapse:collapse !important; }
+  img { -ms-interpolation-mode:bicubic; border:0; height:auto; line-height:100%; outline:none; text-decoration:none; }
+  a { text-decoration:none; }
+  #outlook a { padding:0; }
+  .ExternalClass { width:100%; }
+  .ExternalClass, .ExternalClass p, .ExternalClass span,
+  .ExternalClass font, .ExternalClass td, .ExternalClass div { line-height:inherit; }
+
+  /* ---------- 1. Coverage tabs (radio driven) ---------- */
+  /* The toggles live off-screen; their <label>s are the visible tabs. */
+  .switch {
+    position:absolute !important;
+    left:-9999px !important;
+    opacity:0 !important;
+    width:1px !important;
+    height:1px !important;
+    max-height:1px !important;
+    overflow:hidden !important;
+    mso-hide:all;
+  }
+
+  /* Fallback first: every panel is visible, the tab bar is hidden.
+     Clients that strip <input> or ignore :checked stop here and still
+     read all four coverages, stacked, with their own headings. */
+  .tabbar { display:none; }
+  .panel  { display:block; }
+
+  /* Any client that honours :checked flips into real tab behaviour. */
+  .tab:checked ~ .tabbar { display:block; }
+  .tab:checked ~ .panels .panel { display:none; }
+  #tab-auto:checked  ~ .panels #panel-auto  { display:block; }
+  #tab-home:checked  ~ .panels #panel-home  { display:block; }
+  #tab-comm:checked  ~ .panels #panel-comm  { display:block; }
+  #tab-farm:checked  ~ .panels #panel-farm  { display:block; }
+
+  .tab-label {
+    display:inline-block;
+    margin:0 4px 8px 0;
+    padding:10px 16px;
+    border-radius:999px;
+    border:1px solid #D9E2E0;
+    background:#FFFFFF;
+    color:#235A57;
+    font:600 14px/1 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    letter-spacing:.2px;
+    cursor:pointer;
+    -webkit-user-select:none; user-select:none;
+    transition:background-color .18s ease, color .18s ease, border-color .18s ease, transform .18s ease;
+  }
+  .tab-label:hover { background:#F1F6F5; border-color:#235A57; transform:translateY(-1px); }
+  #tab-auto:checked ~ .tabbar label[for="tab-auto"],
+  #tab-home:checked ~ .tabbar label[for="tab-home"],
+  #tab-comm:checked ~ .tabbar label[for="tab-comm"],
+  #tab-farm:checked ~ .tabbar label[for="tab-farm"] {
+    background:#235A57; border-color:#235A57; color:#FFFFFF;
+    box-shadow:0 4px 10px rgba(35,90,87,.24);
+  }
+
+  /* ---------- 2. FAQ accordion (checkbox driven) ---------- */
+  /* #faq-support is checked in the markup, so it doubles as the
+     "this client supports :checked" detector. */
+  .faq-a { display:block; }
+  .faq-mark { display:none; }
+  #faq-support:checked ~ .faq-a { display:none; }
+  #faq-support:checked ~ .faq-q .faq-mark { display:block; }
+  #faq-support:checked ~ .faq-t:checked + .faq-q + .faq-a { display:block; }
+  .faq-t:checked + .faq-q { color:#123F3C; }
+  .faq-t:checked + .faq-q .faq-mark span.plus { display:none; }
+  .faq-t:checked + .faq-q .faq-mark span.minus { display:block; }
+  .faq-mark span.minus { display:none; }
+  .faq-q {
+    display:block;
+    padding:14px 40px 14px 0;
+    position:relative;
+    border-top:1px solid #E7E2D6;
+    color:#235A57;
+    font:600 16px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    cursor:pointer;
+    transition:color .15s ease;
+  }
+  .faq-q:hover { color:#B8891C; }
+  .faq-mark {
+    position:absolute; right:0; top:12px;
+    width:24px; height:24px; line-height:22px; text-align:center;
+    border-radius:50%; background:#F1F6F5; color:#235A57;
+    font:700 16px/22px Arial, sans-serif;
+  }
+  .faq-a {
+    padding:0 0 16px 0;
+    color:#5C6B69;
+    font:400 15px/1.65 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  /* ---------- 3. Hover polish ---------- */
+  .btn-primary { transition:background-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+  .btn-primary:hover { background-color:#C99A21 !important; box-shadow:0 8px 18px rgba(0,0,0,.18); transform:translateY(-1px); }
+  .btn-ghost { transition:background-color .18s ease, color .18s ease; }
+  .btn-ghost:hover { background-color:#FFFFFF !important; color:#123F3C !important; }
+  .tile { transition:transform .18s ease, box-shadow .18s ease; }
+  .tile:hover { transform:translateY(-3px); box-shadow:0 10px 22px rgba(18,63,60,.12); }
+  .link-underline:hover { text-decoration:underline !important; }
+  .social:hover { opacity:.75; }
+
+  /* ---------- 4. Responsive ---------- */
+  @media only screen and (max-width:620px) {
+    .wrap { width:100% !important; }
+    .px { padding-left:22px !important; padding-right:22px !important; }
+    .stack { display:block !important; width:100% !important; max-width:100% !important; }
+    .stack-pad { padding:0 0 14px 0 !important; }
+    .stack-hide { display:none !important; }
+    .stack-mb { display:block !important; width:100% !important; margin:0 0 12px 0 !important; }
+    .center-sm { text-align:center !important; }
+    .h1 { font-size:27px !important; line-height:34px !important; }
+    .h2 { font-size:21px !important; line-height:28px !important; }
+    .btn-primary, .btn-ghost { display:block !important; width:100% !important; box-sizing:border-box; text-align:center !important; }
+    .logo { width:210px !important; }
+    .headshot { margin:0 auto 14px auto !important; float:none !important; }
+    .tab-label { padding:9px 13px; font-size:13px; }
+  }
+
+  /* ---------- 5. Dark mode ---------- */
+  @media (prefers-color-scheme: dark) {
+    .bg-page  { background-color:#0F1917 !important; }
+    .bg-card  { background-color:#152321 !important; }
+    .bg-soft  { background-color:#1B2C2A !important; }
+    .t-ink    { color:#EDF2F1 !important; }
+    .t-muted  { color:#A9BAB7 !important; }
+    .t-teal   { color:#8FD3CB !important; }
+    .rule     { border-color:#2A3C3A !important; }
+    .tab-label { background:#152321 !important; color:#8FD3CB !important; border-color:#2A3C3A !important; }
+    .faq-q    { color:#8FD3CB !important; border-top-color:#2A3C3A !important; }
+    .faq-mark { background:#1B2C2A !important; color:#8FD3CB !important; }
+    .faq-a    { color:#A9BAB7 !important; }
+    .edge     { border-color:#2A3C3A !important; }
+    .img-light { display:none !important; }
+    .img-dark  { display:block !important; max-height:none !important; overflow:visible !important; }
+  }
+  [data-ogsc] .bg-page { background-color:#0F1917 !important; }
+  [data-ogsc] .bg-card { background-color:#152321 !important; }
+  [data-ogsc] .bg-soft { background-color:#1B2C2A !important; }
+  [data-ogsc] .t-ink   { color:#EDF2F1 !important; }
+  [data-ogsc] .t-muted { color:#A9BAB7 !important; }
+  [data-ogsc] .t-teal  { color:#8FD3CB !important; }
+  [data-ogsc] .edge { border-color:#2A3C3A !important; }
+  [data-ogsc] .img-light { display:none !important; }
+  [data-ogsc] .img-dark { display:block !important; max-height:none !important; overflow:visible !important; }
+</style>
+</head>
+
+<body class="bg-page" style="margin:0; padding:0; width:100%; background-color:#F7F4EC;">
+
+<!-- Preheader: shows in the inbox preview, never on the page -->
+<div style="display:none; font-size:1px; line-height:1px; max-height:0; max-width:0; opacity:0; overflow:hidden; mso-hide:all; font-family:sans-serif;">
+  Tap a coverage below and see exactly what we cover &mdash; auto, home, commercial and farm, all from one Quincy office.
+  &#8203;&#847;&zwnj;&nbsp;&#8203;&#847;&zwnj;&nbsp;&#8203;&#847;&zwnj;&nbsp;&#8203;&#847;&zwnj;&nbsp;&#8203;&#847;&zwnj;&nbsp;&#8203;&#847;&zwnj;&nbsp;&#8203;&#847;&zwnj;&nbsp;&#8203;&#847;&zwnj;&nbsp;
+</div>
+
+<table role="presentation" class="bg-page" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#F7F4EC;">
+  <tr>
+    <td align="center" style="padding:0;">
+
+      <!-- View in browser -->
+      <table role="presentation" class="wrap" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px;">
+        <tr>
+          <td class="px" align="center" style="padding:16px 32px 10px 32px; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:12px; line-height:18px; color:#8A8577;">
+            <a href="{{VIEW_IN_BROWSER_URL}}" class="t-muted link-underline" style="color:#8A8577; text-decoration:none;">Having trouble viewing this email? Read it in your browser.</a>
+          </td>
+        </tr>
+      </table>
+
+      <!-- ============ CARD ============ -->
+      <table role="presentation" class="wrap bg-card" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px; background-color:#FFFFFF; border-radius:14px; overflow:hidden; box-shadow:0 2px 10px rgba(18,63,60,.06);">
+
+        <!-- ---------- Header ---------- -->
+        <tr>
+          <td align="center" bgcolor="#235A57" background="" style="background-color:#235A57; background-image:linear-gradient(135deg,#235A57 0%,#123F3C 100%); padding:34px 32px 30px 32px;">
+            <img class="logo" src="{{ASSET_BASE}}/cbi-logo-reversed.png" width="260" alt="Columbia Basin Insurance — Auto, Home, Commercial, Farms" style="display:block; width:260px; max-width:78%; height:auto; margin:0 auto;" />
+            <div style="height:14px; line-height:14px; font-size:14px;">&nbsp;</div>
+            <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:12px; line-height:18px; letter-spacing:2px; text-transform:uppercase; color:#E3B333;">
+              Independent &middot; Local &middot; Quincy, WA
+            </div>
+          </td>
+        </tr>
+
+        <!-- ---------- Hero ---------- -->
+        <tr>
+          <td class="px bg-card" style="padding:36px 40px 8px 40px; background-color:#FFFFFF;">
+            <h1 class="h1 t-ink" style="margin:0 0 14px 0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:31px; line-height:39px; font-weight:700; color:#1B2C2A; letter-spacing:-.3px;">
+              Hi {{FIRST_NAME}} &mdash; one agent, every policy you own.
+            </h1>
+            <p class="t-muted" style="margin:0 0 22px 0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:16px; line-height:26px; color:#5C6B69;">
+              We&rsquo;re an independent agency in Quincy, so we shop your auto, home, business and farm coverage across multiple carriers &mdash; then hand you one plain-English recommendation. No call center. No phone tree. Just a neighbor who answers.
+            </p>
+          </td>
+        </tr>
+
+        <!-- ---------- Primary CTA ---------- -->
+        <tr>
+          <td class="px bg-card" align="left" style="padding:0 40px 34px 40px; background-color:#FFFFFF;">
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td class="stack-mb" bgcolor="#E3B333" style="border-radius:8px;">
+                  <a class="btn-primary" href="mailto:fred@columbiabasininsurance.com?subject=I%27d%20like%20a%20quote&amp;body=Hi%20Fred%2C%0A%0AI%27d%20like%20a%20quote%20on%3A%20%28auto%20%2F%20home%20%2F%20commercial%20%2F%20farm%29%0AMy%20renewal%20date%20is%3A%0ABest%20number%20to%20reach%20me%3A%0A%0AThanks%21"
+                     style="display:inline-block; padding:15px 30px; border-radius:8px; background-color:#E3B333; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:16px; line-height:20px; font-weight:700; color:#1B2C2A; text-decoration:none;">
+                    Get my free quote &rarr;
+                  </a>
+                </td>
+                <td class="stack-hide" style="width:14px;">&nbsp;</td>
+                <td class="stack center-sm" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:15px; line-height:20px;">
+                  <a href="tel:+15097658839" class="t-teal link-underline" style="color:#235A57; font-weight:600; text-decoration:none;">or call 509-765-8839</a>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- ---------- INTERACTIVE: coverage tabs ---------- -->
+        <tr>
+          <td class="px bg-soft" style="padding:32px 40px 34px 40px; background-color:#F7F4EC; border-top:1px solid #EFE9DA; border-bottom:1px solid #EFE9DA;">
+
+            <div class="t-teal" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:12px; line-height:18px; letter-spacing:2px; text-transform:uppercase; color:#B8891C; font-weight:700; margin:0 0 6px 0;">
+              Pick what you need covered
+            </div>
+            <h2 class="h2 t-ink" style="margin:0 0 18px 0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:23px; line-height:30px; font-weight:700; color:#1B2C2A;">
+              Tap a line of coverage
+            </h2>
+
+            <!--[if !mso]><!-- -->
+            <div>
+              <input class="switch tab" type="radio" name="cbi-tabs" id="tab-auto" checked="checked" />
+              <input class="switch tab" type="radio" name="cbi-tabs" id="tab-home" />
+              <input class="switch tab" type="radio" name="cbi-tabs" id="tab-comm" />
+              <input class="switch tab" type="radio" name="cbi-tabs" id="tab-farm" />
+
+              <div class="tabbar" style="margin:0 0 16px 0;">
+                <label class="tab-label" for="tab-auto">Auto</label><label class="tab-label" for="tab-home">Home</label><label class="tab-label" for="tab-comm">Commercial</label><label class="tab-label" for="tab-farm">Farm</label>
+              </div>
+
+              <div class="panels">
+
+                <div class="panel bg-card edge" id="panel-auto" style="background-color:#FFFFFF; border:1px solid #EAE4D6; border-radius:12px; padding:22px 24px; margin:0 0 12px 0;">
+                  <div class="t-ink" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:18px; line-height:24px; font-weight:700; color:#1B2C2A; margin:0 0 8px 0;">Auto</div>
+                  <div class="t-muted" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:15px; line-height:24px; color:#5C6B69;">
+                    Liability limits that actually match what you own, plus the coverages people forget until they need them.
+                    <div style="height:10px; line-height:10px;">&nbsp;</div>
+                    &bull;&nbsp; Full coverage, liability-only and SR-22 filings<br />
+                    &bull;&nbsp; Uninsured/underinsured motorist &mdash; the one that pays when the other driver can&rsquo;t<br />
+                    &bull;&nbsp; Multi-vehicle, teen driver and bundled home/auto discounts
+                  </div>
+                  <div style="height:14px; line-height:14px;">&nbsp;</div>
+                  <a href="mailto:fred@columbiabasininsurance.com?subject=Auto%20quote%20request" class="t-teal link-underline" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:15px; font-weight:700; color:#235A57; text-decoration:none;">Quote my auto &rarr;</a>
+                </div>
+
+                <div class="panel bg-card edge" id="panel-home" style="background-color:#FFFFFF; border:1px solid #EAE4D6; border-radius:12px; padding:22px 24px; margin:0 0 12px 0;">
+                  <div class="t-ink" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:18px; line-height:24px; font-weight:700; color:#1B2C2A; margin:0 0 8px 0;">Home</div>
+                  <div class="t-muted" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:15px; line-height:24px; color:#5C6B69;">
+                    Rebuild costs in the Basin have moved. If your dwelling limit hasn&rsquo;t, we should talk.
+                    <div style="height:10px; line-height:10px;">&nbsp;</div>
+                    &bull;&nbsp; Homeowners, renters, condo and rental-property policies<br />
+                    &bull;&nbsp; Replacement-cost review so you&rsquo;re not underinsured at claim time<br />
+                    &bull;&nbsp; Wildfire, wind and water-damage questions answered straight
+                  </div>
+                  <div style="height:14px; line-height:14px;">&nbsp;</div>
+                  <a href="mailto:fred@columbiabasininsurance.com?subject=Home%20quote%20request" class="t-teal link-underline" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:15px; font-weight:700; color:#235A57; text-decoration:none;">Quote my home &rarr;</a>
+                </div>
+
+                <div class="panel bg-card edge" id="panel-comm" style="background-color:#FFFFFF; border:1px solid #EAE4D6; border-radius:12px; padding:22px 24px; margin:0 0 12px 0;">
+                  <div class="t-ink" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:18px; line-height:24px; font-weight:700; color:#1B2C2A; margin:0 0 8px 0;">Commercial</div>
+                  <div class="t-muted" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:15px; line-height:24px; color:#5C6B69;">
+                    Contractors, shops, trucking and packing operations &mdash; coverage built around how your business actually runs.
+                    <div style="height:10px; line-height:10px;">&nbsp;</div>
+                    &bull;&nbsp; General liability, commercial property and BOP packages<br />
+                    &bull;&nbsp; Commercial auto, tools &amp; equipment, and hired/non-owned<br />
+                    &bull;&nbsp; Same-day certificates of insurance when a job needs one
+                  </div>
+                  <div style="height:14px; line-height:14px;">&nbsp;</div>
+                  <a href="mailto:fred@columbiabasininsurance.com?subject=Commercial%20quote%20request" class="t-teal link-underline" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:15px; font-weight:700; color:#235A57; text-decoration:none;">Quote my business &rarr;</a>
+                </div>
+
+                <div class="panel bg-card edge" id="panel-farm" style="background-color:#FFFFFF; border:1px solid #EAE4D6; border-radius:12px; padding:22px 24px; margin:0 0 12px 0;">
+                  <div class="t-ink" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:18px; line-height:24px; font-weight:700; color:#1B2C2A; margin:0 0 8px 0;">Farm</div>
+                  <div class="t-muted" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:15px; line-height:24px; color:#5C6B69;">
+                    Orchards, row crop, livestock and everything parked in the shop &mdash; written by someone who knows the season you&rsquo;re in.
+                    <div style="height:10px; line-height:10px;">&nbsp;</div>
+                    &bull;&nbsp; Farm dwelling, outbuildings, irrigation and equipment<br />
+                    &bull;&nbsp; Farm liability plus custom-farming and hired-labor exposures<br />
+                    &bull;&nbsp; Reviews timed around harvest, not around a renewal notice
+                  </div>
+                  <div style="height:14px; line-height:14px;">&nbsp;</div>
+                  <a href="mailto:fred@columbiabasininsurance.com?subject=Farm%20quote%20request" class="t-teal link-underline" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:15px; font-weight:700; color:#235A57; text-decoration:none;">Quote my operation &rarr;</a>
+                </div>
+
+              </div>
+            </div>
+            <!--<![endif]-->
+
+            <!--[if mso]>
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr><td style="padding:0 0 12px 0;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#FFFFFF" style="border:1px solid #EAE4D6;">
+                  <tr><td style="padding:20px 22px; font-family:Arial,sans-serif; font-size:15px; line-height:24px; color:#5C6B69;">
+                    <strong style="font-size:18px; color:#1B2C2A;">Auto</strong><br /><br />
+                    Full coverage, liability-only and SR-22 filings &bull; uninsured motorist &bull; multi-vehicle, teen driver and bundling discounts.<br /><br />
+                    <a href="mailto:fred@columbiabasininsurance.com?subject=Auto%20quote%20request" style="color:#235A57; font-weight:bold; text-decoration:none;">Quote my auto &rarr;</a>
+                  </td></tr>
+                </table>
+              </td></tr>
+              <tr><td style="padding:0 0 12px 0;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#FFFFFF" style="border:1px solid #EAE4D6;">
+                  <tr><td style="padding:20px 22px; font-family:Arial,sans-serif; font-size:15px; line-height:24px; color:#5C6B69;">
+                    <strong style="font-size:18px; color:#1B2C2A;">Home</strong><br /><br />
+                    Homeowners, renters, condo and rentals &bull; replacement-cost review &bull; wildfire, wind and water questions answered straight.<br /><br />
+                    <a href="mailto:fred@columbiabasininsurance.com?subject=Home%20quote%20request" style="color:#235A57; font-weight:bold; text-decoration:none;">Quote my home &rarr;</a>
+                  </td></tr>
+                </table>
+              </td></tr>
+              <tr><td style="padding:0 0 12px 0;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#FFFFFF" style="border:1px solid #EAE4D6;">
+                  <tr><td style="padding:20px 22px; font-family:Arial,sans-serif; font-size:15px; line-height:24px; color:#5C6B69;">
+                    <strong style="font-size:18px; color:#1B2C2A;">Commercial</strong><br /><br />
+                    General liability, property and BOP &bull; commercial auto, tools &amp; equipment &bull; same-day certificates of insurance.<br /><br />
+                    <a href="mailto:fred@columbiabasininsurance.com?subject=Commercial%20quote%20request" style="color:#235A57; font-weight:bold; text-decoration:none;">Quote my business &rarr;</a>
+                  </td></tr>
+                </table>
+              </td></tr>
+              <tr><td>
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#FFFFFF" style="border:1px solid #EAE4D6;">
+                  <tr><td style="padding:20px 22px; font-family:Arial,sans-serif; font-size:15px; line-height:24px; color:#5C6B69;">
+                    <strong style="font-size:18px; color:#1B2C2A;">Farm</strong><br /><br />
+                    Farm dwelling, outbuildings, irrigation and equipment &bull; farm liability and hired labor &bull; reviews timed around harvest.<br /><br />
+                    <a href="mailto:fred@columbiabasininsurance.com?subject=Farm%20quote%20request" style="color:#235A57; font-weight:bold; text-decoration:none;">Quote my operation &rarr;</a>
+                  </td></tr>
+                </table>
+              </td></tr>
+            </table>
+            <![endif]-->
+
+          </td>
+        </tr>
+
+        <!-- ---------- Three tiles ---------- -->
+        <tr>
+          <td class="px bg-card" style="padding:34px 40px 10px 40px; background-color:#FFFFFF;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td class="stack tile bg-soft" width="33%" valign="top" style="width:33%; padding:18px 16px; background-color:#F7F4EC; border-radius:10px; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+                  <div class="t-teal" style="font-size:17px; line-height:23px; font-weight:700; color:#235A57;">Multiple carriers</div>
+                  <div class="t-muted" style="font-size:14px; line-height:21px; color:#5C6B69; padding-top:6px;">One conversation, several quotes side by side.</div>
+                </td>
+                <td class="stack" width="12" style="width:12px;">&nbsp;</td>
+                <td class="stack tile bg-soft" width="33%" valign="top" style="width:33%; padding:18px 16px; background-color:#F7F4EC; border-radius:10px; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+                  <div class="t-teal" style="font-size:17px; line-height:23px; font-weight:700; color:#235A57;">Local office</div>
+                  <div class="t-muted" style="font-size:14px; line-height:21px; color:#5C6B69; padding-top:6px;">Downtown Quincy &mdash; stop in with your renewal.</div>
+                </td>
+                <td class="stack" width="12" style="width:12px;">&nbsp;</td>
+                <td class="stack tile bg-soft" width="33%" valign="top" style="width:33%; padding:18px 16px; background-color:#F7F4EC; border-radius:10px; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+                  <div class="t-teal" style="font-size:17px; line-height:23px; font-weight:700; color:#235A57;">Claim support</div>
+                  <div class="t-muted" style="font-size:14px; line-height:21px; color:#5C6B69; padding-top:6px;">A real person on your side when it counts.</div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- ---------- Agent card ---------- -->
+        <tr>
+          <td class="px bg-card" style="padding:30px 40px 6px 40px; background-color:#FFFFFF;">
+            <table role="presentation" class="edge" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #EAE4D6; border-radius:12px;">
+              <tr>
+                <td class="stack" width="150" valign="top" align="center" style="width:150px; padding:22px 8px 10px 22px;">
+                  <img class="headshot" src="{{ASSET_BASE}}/fred-headshot.png" width="130" height="130" alt="Fred Aguilar, Columbia Basin Insurance" style="display:block; width:130px; height:130px; border-radius:50%; margin:0;" />
+                </td>
+                <td class="stack" valign="middle" style="padding:6px 22px 22px 14px; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+                  <div class="t-ink" style="font-size:19px; line-height:25px; font-weight:700; color:#1B2C2A;">Fred Aguilar</div>
+                  <div class="t-muted" style="font-size:13px; line-height:20px; color:#8A8577; letter-spacing:.6px; text-transform:uppercase; padding:2px 0 10px 0;">Columbia Basin Insurance</div>
+                  <div class="t-muted" style="font-size:15px; line-height:25px; color:#5C6B69;">
+                    &#9742;&nbsp; <a href="tel:+15097658839" class="t-teal link-underline" style="color:#235A57; font-weight:600; text-decoration:none;">509-765-8839</a><br />
+                    &#9993;&nbsp; <a href="mailto:fred@columbiabasininsurance.com" class="t-teal link-underline" style="color:#235A57; font-weight:600; text-decoration:none;">fred@columbiabasininsurance.com</a><br />
+                    &#9906;&nbsp; <a href="https://maps.google.com/?q=21+D+St+SW+Suite+A+Quincy+WA+98848" class="t-teal link-underline" style="color:#235A57; font-weight:600; text-decoration:none;">21 D St SW, Suite A, Quincy, WA 98848</a>
+                  </div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- ---------- INTERACTIVE: FAQ accordion ---------- -->
+        <tr>
+          <td class="px bg-card" style="padding:26px 40px 30px 40px; background-color:#FFFFFF;">
+            <h2 class="h2 t-ink" style="margin:0 0 6px 0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:21px; line-height:28px; font-weight:700; color:#1B2C2A;">
+              Questions we get every week
+            </h2>
+
+            <div>
+              <input class="switch" type="checkbox" id="faq-support" checked="checked" />
+
+              <input class="switch faq-t" type="checkbox" id="faq-1" />
+              <label class="faq-q" for="faq-1">Do I have to cancel my current policy to get a quote?<span class="faq-mark"><span class="plus">+</span><span class="minus">&ndash;</span></span></label>
+              <div class="faq-a">No. Send us your current declarations page and we&rsquo;ll price the same coverage against several carriers. Nothing changes until you say so, and we time the switch so you&rsquo;re never uncovered for a day.</div>
+
+              <input class="switch faq-t" type="checkbox" id="faq-2" />
+              <label class="faq-q" for="faq-2">How long does a quote take?<span class="faq-mark"><span class="plus">+</span><span class="minus">&ndash;</span></span></label>
+              <div class="faq-a">Most personal auto and home quotes come back the same business day. Commercial and farm accounts take a little longer because we&rsquo;re building them properly &mdash; usually two to three days.</div>
+
+              <input class="switch faq-t" type="checkbox" id="faq-3" />
+              <label class="faq-q" for="faq-3">Can I keep my auto and home with different companies?<span class="faq-mark"><span class="plus">+</span><span class="minus">&ndash;</span></span></label>
+              <div class="faq-a">You can &mdash; but bundling usually wins on price and it means one deductible conversation when a storm takes out the car and the roof together. We&rsquo;ll show you both numbers and let you choose.</div>
+
+              <input class="switch faq-t" type="checkbox" id="faq-4" />
+              <label class="faq-q" for="faq-4">What do you need from me to start?<span class="faq-mark"><span class="plus">+</span><span class="minus">&ndash;</span></span></label>
+              <div class="faq-a">Your current declarations page, drivers and vehicles, and the address of anything you want covered. A photo of the paperwork texted or emailed over is plenty.</div>
+            </div>
+          </td>
+        </tr>
+
+        <!-- ---------- Closing CTA band ---------- -->
+        <tr>
+          <td align="center" bgcolor="#235A57" style="background-color:#235A57; background-image:linear-gradient(135deg,#235A57 0%,#123F3C 100%); padding:34px 40px;">
+            <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:21px; line-height:29px; font-weight:700; color:#FFFFFF; margin:0 0 8px 0;">
+              Renewal coming up?
+            </div>
+            <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:15px; line-height:24px; color:#CFE3E0; margin:0 0 20px 0;">
+              Send us the declarations page and we&rsquo;ll tell you honestly whether you should move.
+            </div>
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center">
+              <tr>
+                <td class="stack-mb" bgcolor="#E3B333" style="border-radius:8px;">
+                  <a class="btn-primary" href="mailto:fred@columbiabasininsurance.com?subject=Renewal%20review"
+                     style="display:inline-block; padding:15px 30px; border-radius:8px; background-color:#E3B333; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:16px; line-height:20px; font-weight:700; color:#1B2C2A; text-decoration:none;">
+                    Review my renewal
+                  </a>
+                </td>
+                <td class="stack-hide" style="width:12px;">&nbsp;</td>
+                <td class="stack" style="border:1px solid #7FA9A5; border-radius:8px;">
+                  <a class="btn-ghost" href="tel:+15097658839"
+                     style="display:inline-block; padding:14px 26px; border-radius:8px; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:16px; line-height:20px; font-weight:600; color:#FFFFFF; text-decoration:none;">
+                    Call the office
+                  </a>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+      </table>
+      <!-- ============ /CARD ============ -->
+
+      <!-- ---------- Footer ---------- -->
+      <table role="presentation" class="wrap" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px;">
+        <tr>
+          <td class="px" align="center" style="padding:24px 32px 40px 32px; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:12px; line-height:20px; color:#8A8577;">
+            <div class="img-light">
+              <img src="{{ASSET_BASE}}/cbi-logo.png" width="120" alt="Columbia Basin Insurance" style="display:block; width:120px; height:auto; margin:0 auto 12px auto;" />
+            </div>
+            <div class="img-dark" style="display:none; max-height:0; overflow:hidden; mso-hide:all;">
+              <img src="{{ASSET_BASE}}/cbi-logo-reversed.png" width="120" alt="Columbia Basin Insurance" style="display:block; width:120px; height:auto; margin:0 auto 12px auto;" />
+            </div>
+            <div class="t-muted" style="color:#8A8577;">
+              Columbia Basin Insurance &middot; 21 D St SW, Suite A, Quincy, WA 98848<br />
+              <a href="tel:+15097658839" class="t-muted link-underline" style="color:#8A8577; text-decoration:none;">509-765-8839</a> &middot;
+              <a href="mailto:fred@columbiabasininsurance.com" class="t-muted link-underline" style="color:#8A8577; text-decoration:none;">fred@columbiabasininsurance.com</a>
+            </div>
+            <div style="height:10px; line-height:10px;">&nbsp;</div>
+            <div class="t-muted" style="color:#A39D8C;">
+              Licensed in Washington. Coverage descriptions here are summaries only &mdash; your policy language governs.<br />
+              You received this because you&rsquo;re a client or asked us for a quote.
+              <a href="{{UNSUBSCRIBE_URL}}" class="t-muted link-underline" style="color:#A39D8C; text-decoration:underline;">Unsubscribe</a> &middot;
+              <a href="{{PREFERENCES_URL}}" class="t-muted link-underline" style="color:#A39D8C; text-decoration:underline;">Email preferences</a>
+            </div>
+          </td>
+        </tr>
+      </table>
+
+    </td>
+  </tr>
+</table>
+
+</body>
+</html>

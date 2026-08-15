@@ -1,0 +1,77 @@
+Columbia Basin Insurance - Auto, Home, Commercial, Farms
+Independent - Local - Quincy, WA
+
+Hi {{FIRST_NAME}} - one agent, every policy you own.
+
+We're an independent agency in Quincy, so we shop your auto, home,
+business and farm coverage across multiple carriers - then hand you one
+plain-English recommendation. No call center. No phone tree. Just a
+neighbor who answers.
+
+Get a free quote: fred@columbiabasininsurance.com
+Or call: 509-765-8839
+
+-----------------------------------------------------------------------
+WHAT WE COVER
+-----------------------------------------------------------------------
+
+AUTO
+- Full coverage, liability-only and SR-22 filings
+- Uninsured/underinsured motorist - the one that pays when the other
+  driver can't
+- Multi-vehicle, teen driver and bundled home/auto discounts
+
+HOME
+- Homeowners, renters, condo and rental-property policies
+- Replacement-cost review so you're not underinsured at claim time
+- Wildfire, wind and water-damage questions answered straight
+
+COMMERCIAL
+- General liability, commercial property and BOP packages
+- Commercial auto, tools & equipment, and hired/non-owned
+- Same-day certificates of insurance when a job needs one
+
+FARM
+- Farm dwelling, outbuildings, irrigation and equipment
+- Farm liability plus custom-farming and hired-labor exposures
+- Reviews timed around harvest, not around a renewal notice
+
+-----------------------------------------------------------------------
+QUESTIONS WE GET EVERY WEEK
+-----------------------------------------------------------------------
+
+Do I have to cancel my current policy to get a quote?
+No. Send us your current declarations page and we'll price the same
+coverage against several carriers. Nothing changes until you say so, and
+we time the switch so you're never uncovered for a day.
+
+How long does a quote take?
+Most personal auto and home quotes come back the same business day.
+Commercial and farm accounts take a little longer because we're building
+them properly - usually two to three days.
+
+Can I keep my auto and home with different companies?
+You can - but bundling usually wins on price and it means one deductible
+conversation when a storm takes out the car and the roof together. We'll
+show you both numbers and let you choose.
+
+What do you need from me to start?
+Your current declarations page, drivers and vehicles, and the address of
+anything you want covered. A photo of the paperwork texted or emailed
+over is plenty.
+
+-----------------------------------------------------------------------
+
+Fred Aguilar
+Columbia Basin Insurance
+Phone: 509-765-8839
+Email: fred@columbiabasininsurance.com
+Office: 21 D St SW, Suite A, Quincy, WA 98848
+
+Licensed in Washington. Coverage descriptions here are summaries only -
+your policy language governs.
+
+You received this because you're a client or asked us for a quote.
+Unsubscribe: {{UNSUBSCRIBE_URL}}
+Email preferences: {{PREFERENCES_URL}}
+View in browser: {{VIEW_IN_BROWSER_URL}}
