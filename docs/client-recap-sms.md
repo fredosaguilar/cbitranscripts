@@ -106,6 +106,15 @@ one of them:
 Every recap goes out from the single number in `RINGCENTRAL_SMS_FROM` — there is
 no per-agent sender — so that one value decides what every client sees.
 
+The two permissions are separate, and only one of them blocks sending:
+
+- **SMS** is what sending needs. Without it every send is refused, and the check
+  says so from the token's own scopes without calling anything.
+- **ReadAccounts** is what *listing the numbers* needs. An app set up for call
+  recordings will not have it, and the check then says it cannot confirm the
+  sender belongs to the extension rather than reporting a failure — sending may
+  well work anyway. A test send with dry run off is the remaining check.
+
 ### Before the first real send
 
 - **Turn off `CLIENT_SMS_DRY_RUN`** only once you have drafted a few recaps and
