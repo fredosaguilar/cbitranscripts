@@ -217,6 +217,11 @@
         </p>
 
         <div id="recapStatus" class="recap-status">Loading…</div>
+        <p class="recap-setup-line">
+            <button type="button" class="link-button" onclick="recapCheckSetup()">Check sending setup</button>
+            <span class="recap-setup-hint">Asks RingCentral which numbers this app is allowed to text from.</span>
+        </p>
+        <div id="recapSetup" class="recap-setup" hidden></div>
 
         <div id="recapEditor" class="recap-editor" hidden>
             <div class="recap-row">
@@ -749,6 +754,69 @@
         const data = await recapRequest("/send", { method: "POST" }, "The text could not be sent.");
         button.textContent = "Send Text";
         if (data && data.message) showToast(data.message);
+    }
+
+    async function recapCheckSetup() {
+        const box = document.getElementById("recapSetup");
+        box.hidden = false;
+        box.textContent = "Asking RingCentral…";
+        box.className = "recap-setup";
+        try {
+            const res = await fetch("/api/sms/setup");
+            if (!res.ok) {
+                box.textContent = res.status === 401
+                    ? "Your session expired. Log in again, then check the setup."
+                    : `Could not check the setup (error ${res.status}).`;
+                box.classList.add("bad");
+                return;
+            }
+            recapRenderSetup(box, await res.json());
+        } catch (e) {
+            box.textContent = "Could not reach the server to check the setup.";
+            box.classList.add("bad");
+        }
+    }
+
+    function recapRenderSetup(box, setup) {
+        box.textContent = "";
+        box.classList.add(setup.ok ? "good" : "bad");
+
+        const headline = document.createElement("div");
+        headline.className = "recap-setup-headline";
+        headline.textContent = setup.problem
+            ? setup.problem
+            : setup.dry_run
+                ? `Ready — but dry run is on, so nothing is delivered. Sending from ${setup.configured_from || "the configured number"}.`
+                : `Ready. Every recap sends from ${setup.configured_from}.`;
+        box.appendChild(headline);
+
+        if (setup.sms_scope === false) {
+            const scope = document.createElement("div");
+            scope.className = "recap-setup-note";
+            scope.textContent = "The app's RingCentral token does not include the SMS permission.";
+            box.appendChild(scope);
+        }
+
+        if (setup.extension) {
+            const ext = document.createElement("div");
+            ext.className = "recap-setup-note";
+            ext.textContent = `Authenticating as extension ${setup.extension.extensionNumber || setup.extension.id}`
+                + (setup.extension.name ? ` (${setup.extension.name})` : "");
+            box.appendChild(ext);
+        }
+
+        if (setup.numbers && setup.numbers.length) {
+            const list = document.createElement("ul");
+            list.className = "recap-setup-numbers";
+            setup.numbers.forEach(number => {
+                const item = document.createElement("li");
+                item.textContent = `${number.display || number.phoneNumber} — ${number.usageType || "number"}`
+                    + (number.sms ? " · can send texts" : " · cannot send texts");
+                if (!number.sms) item.classList.add("muted");
+                list.appendChild(item);
+            });
+            box.appendChild(list);
+        }
     }
 
     recapLoad();

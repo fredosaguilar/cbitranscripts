@@ -88,6 +88,24 @@ CLIENT_RECAP_AUTO_SEND=false           # text on approval with no second look
 Nothing else needs installing. The tables (`client_recaps`, `sms_opt_outs`) are
 created by the startup migrations.
 
+### Checking the setup before you need it
+
+Two things stop a first send, and neither is visible until a message is
+refused: the RingCentral app not having the **SMS** permission, and
+`RINGCENTRAL_SMS_FROM` naming a number that does not belong to the extension the
+app authenticates as.
+
+**Check sending setup** on the transcript page (or `GET /api/sms/setup`) asks
+RingCentral directly and answers both. It lists every number on the extension,
+marks which can send texts, and says plainly whether the configured number is
+one of them:
+
+> (509) 765-8839 is not one of the numbers this extension can text from.
+> RingCentral will refuse it. Numbers that will work: (509) 555-0143.
+
+Every recap goes out from the single number in `RINGCENTRAL_SMS_FROM` — there is
+no per-agent sender — so that one value decides what every client sees.
+
 ### Before the first real send
 
 - **Turn off `CLIENT_SMS_DRY_RUN`** only once you have drafted a few recaps and
@@ -167,6 +185,7 @@ All routes require an admin session.
 | `POST` | `/api/transcripts/{id}/client-recap/draft` | Write a draft from the call analysis |
 | `PUT` | `/api/transcripts/{id}/client-recap` | Save edits (`body`, `to_number`) |
 | `POST` | `/api/transcripts/{id}/client-recap/send` | Send it and record the outcome |
+| `GET` | `/api/sms/setup` | Which numbers RingCentral will let this app send from |
 | `POST` | `/api/sms/opt-out` | Record a number that must not be texted |
 
 ## What is stored
