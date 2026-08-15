@@ -105,6 +105,8 @@ def on_startup():
             id UUID PRIMARY KEY,
             transcript_id UUID NOT NULL,
             body TEXT NOT NULL,
+            language VARCHAR,
+            english_gloss TEXT,
             to_number VARCHAR,
             from_number VARCHAR,
             status VARCHAR NOT NULL DEFAULT 'draft',
@@ -119,6 +121,8 @@ def on_startup():
             updated_at TIMESTAMP
         )""",
         "CREATE INDEX IF NOT EXISTS ix_client_recaps_transcript_id ON client_recaps (transcript_id)",
+        "ALTER TABLE client_recaps ADD COLUMN IF NOT EXISTS language VARCHAR",
+        "ALTER TABLE client_recaps ADD COLUMN IF NOT EXISTS english_gloss TEXT",
         "CREATE TABLE IF NOT EXISTS sms_opt_outs (phone_e164 VARCHAR PRIMARY KEY, note TEXT, recorded_by VARCHAR, created_at TIMESTAMP)",
         # A user may be email-only, with no Pushover key
         "ALTER TABLE users_tokens ALTER COLUMN token DROP NOT NULL",
@@ -2398,6 +2402,9 @@ def _recap_json(recap) -> dict:
     return {
         "id": str(recap.id),
         "body": recap.body,
+        "language": recap.language or "en",
+        "language_name": client_recap.language_name(recap.language),
+        "english_gloss": recap.english_gloss,
         "to_number": recap.to_number,
         "status": recap.status,
         "source": recap.source,
@@ -2440,12 +2447,21 @@ def _recap_state(db: Session, transcript) -> dict:
     to_number = (draft.to_number if draft else None) or client_recap.resolve_client_number(transcript)
     blocker = _recap_blocker(db, transcript, to_number)
 
+    spoken = client_recap.resolve_language(transcript)
+    # The disclaimer follows the draft's language, not the call's: a draft that
+    # fell back to English must not be closed with a Spanish line.
+    written_in = (draft.language if draft and draft.language else spoken)
+
     return {
         "configured": client_sms.is_configured(),
         "provider": client_sms.describe_configuration(),
         "to_number": to_number,
         "to_number_display": client_sms.format_phone_for_display(to_number),
-        "disclaimer": client_recap.DISCLAIMER,
+        "call_language": spoken,
+        "call_language_name": client_recap.language_name(spoken),
+        "draft_language": written_in,
+        "draft_language_name": client_recap.language_name(written_in),
+        "disclaimer": client_recap.disclaimer_for(written_in),
         "max_characters": client_recap.RECAP_MAX_CHARS,
         "has_analysis": client_recap.has_enough_to_recap(transcript),
         "draft": _recap_json(draft),
@@ -2469,19 +2485,23 @@ def draft_client_recap(id: str, request: Request, db: Session = Depends(get_db))
     _require_admin(request, db)
     transcript = _load_transcript_or_404(db, id)
 
-    body, source = client_recap.draft_recap(transcript)
+    written = client_recap.draft_recap(transcript)
 
     draft = _open_draft(db, transcript.id)
     if draft is None:
-        draft = models.ClientRecap(id=uuid.uuid4(), transcript_id=transcript.id, body=body)
+        draft = models.ClientRecap(id=uuid.uuid4(), transcript_id=transcript.id, body=written.body)
         db.add(draft)
     else:
-        draft.body = body
-    draft.source = source
+        draft.body = written.body
+    draft.source = written.source
+    draft.language = written.language
+    draft.english_gloss = written.english_gloss
     draft.to_number = draft.to_number or client_recap.resolve_client_number(transcript)
     db.commit()
 
-    return JSONResponse(content=_recap_state(db, transcript))
+    state = _recap_state(db, transcript)
+    state["warning"] = written.warning
+    return JSONResponse(content=state)
 
 
 @app.put("/api/transcripts/{id}/client-recap")
@@ -2506,6 +2526,9 @@ def save_client_recap(id: str, data: ClientRecapUpdate, request: Request, db: Se
         db.add(draft)
     draft.body = body
     draft.source = "manual"
+    # Hand-edited wording is no longer what the model rendered into English
+    draft.english_gloss = None
+    draft.language = draft.language or client_recap.resolve_language(transcript)
     draft.to_number = to_number or draft.to_number or client_recap.resolve_client_number(transcript)
     db.commit()
 
@@ -2514,7 +2537,7 @@ def save_client_recap(id: str, data: ClientRecapUpdate, request: Request, db: Se
 
 def _send_recap(db: Session, transcript, draft, sent_by: str) -> tuple[bool, str]:
     """Text the draft and record the outcome. Returns (sent, message)."""
-    final_text = client_recap.compose(draft.body)
+    final_text = client_recap.compose(draft.body, draft.language or "en")
     result = client_sms.send_sms(draft.to_number, final_text)
 
     draft.body = final_text
@@ -2601,15 +2624,29 @@ def _auto_send_client_recap(db: Session, transcript, sent_by: str) -> None:
             logger.info("Skipping the automatic recap for transcript %s: nothing analysed to recap", transcript.id)
             return
 
-        body, source = client_recap.draft_recap(transcript)
+        written = client_recap.draft_recap(transcript)
         draft = _open_draft(db, transcript.id)
         if draft is None:
-            draft = models.ClientRecap(id=uuid.uuid4(), transcript_id=transcript.id, body=body)
+            draft = models.ClientRecap(id=uuid.uuid4(), transcript_id=transcript.id, body=written.body)
             db.add(draft)
-        draft.body = body
-        draft.source = source
+        draft.body = written.body
+        draft.source = written.source
+        draft.language = written.language
+        draft.english_gloss = written.english_gloss
         draft.to_number = to_number
         db.commit()
+
+        # A recap that came out in the wrong language is exactly the case an
+        # agent needs to see. Leave it as a draft rather than sending English
+        # to someone who called in Spanish.
+        if written.language != client_recap.resolve_language(transcript):
+            logger.warning(
+                "Leaving the recap for transcript %s as a draft: the call was in %s but the draft is in %s",
+                transcript.id,
+                client_recap.language_name(client_recap.resolve_language(transcript)),
+                client_recap.language_name(written.language),
+            )
+            return
 
         _send_recap(db, transcript, draft, sent_by)
     except Exception:

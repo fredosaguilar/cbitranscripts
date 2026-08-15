@@ -233,6 +233,13 @@
                 <span id="recapSource"></span>
             </div>
 
+            <div id="recapWarning" class="recap-warning" hidden></div>
+
+            <div id="recapGloss" class="recap-gloss" hidden>
+                <div class="recap-gloss-label">English, so you can check it before sending — this is not what goes out</div>
+                <div id="recapGlossBody"></div>
+            </div>
+
             <div class="recap-disclaimer">
                 Sent automatically at the end of every recap:
                 <em id="recapDisclaimer"></em>
@@ -570,7 +577,11 @@
         const editor = document.getElementById("recapEditor");
         const blocked = document.getElementById("recapBlocked");
 
-        status.textContent = state.provider;
+        // Says what the call was, not what the draft is — the draft may have
+        // fallen back to English, and the warning below is what reports that.
+        status.textContent = state.call_language && state.call_language !== "en"
+            ? `${state.provider} · this call was spoken in ${state.call_language_name}.`
+            : state.provider;
         status.classList.toggle("warn", !state.configured);
         editor.hidden = false;
 
@@ -584,9 +595,20 @@
         }
 
         const source = document.getElementById("recapSource");
-        source.textContent = draft.source === "ai" ? "Drafted from the call analysis"
+        const how = draft.source === "ai" ? "Drafted from the call analysis"
             : draft.source === "template" ? "Drafted from the call fields"
             : draft.source === "manual" ? "Edited by hand" : "";
+        const written = draft.language_name || state.draft_language_name;
+        source.textContent = how ? (written ? `${how} · in ${written}` : how) : "";
+
+        // The gloss is how an English reader checks a message they cannot read
+        const gloss = document.getElementById("recapGloss");
+        document.getElementById("recapGlossBody").textContent = draft.english_gloss || "";
+        gloss.hidden = !draft.english_gloss;
+
+        const warning = document.getElementById("recapWarning");
+        warning.textContent = state.warning || "";
+        warning.hidden = !state.warning;
 
         const sendButton = document.getElementById("recapSendButton");
         sendButton.disabled = !state.can_send;
@@ -660,7 +682,14 @@
                 if (data && data.provider) recapRender(data);
                 return null;
             }
-            if (data) recapRender(data);
+            if (data) {
+                // A save or send returns no warning of its own; keep the one
+                // the draft raised so it does not vanish on the way to Send.
+                if (data.warning === undefined && recapState && recapState.warning) {
+                    data.warning = recapState.warning;
+                }
+                recapRender(data);
+            }
             return data;
         } catch (error) {
             showToast(failureMessage);

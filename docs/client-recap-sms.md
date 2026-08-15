@@ -16,6 +16,14 @@ unreviewed AI summary sent to a client creates exposure rather than closing it
 — it becomes a written statement by the agency about a policy, made by nobody.
 Auto-send exists (`CLIENT_RECAP_AUTO_SEND=true`) but ships off.
 
+**It is written in the language the call was spoken in.** Whisper already
+records the spoken language on each transcript, so a call taken in Spanish
+produces a Spanish recap — including a Spanish closing disclaimer. The analysis
+fields themselves are stored in English, so the translation happens at drafting
+time, and the draft comes back with a plain-English rendering shown beside it so
+an English-reading agent can check a message they cannot read before it goes.
+That gloss is stored with the record but never sent.
+
 **It never confirms coverage.** The draft is written from the analysis fields —
 what was discussed, what options were presented, what the client chose, what
 was recommended — and the model is instructed never to state that anything is
@@ -23,6 +31,14 @@ bound, added, removed, or in force. Every message closes with:
 
 > This is a summary of our conversation, not confirmation of coverage. Reply if
 > anything here is wrong. Reply STOP to opt out.
+
+and in Spanish:
+
+> Este es un resumen de nuestra conversación, no una confirmación de cobertura.
+> Responda si algo aquí no es correcto. Responda STOP para no recibir más mensajes.
+
+`STOP` stays in English in every language — carriers match that exact keyword to
+process an opt-out, so translating it would break the opt-out itself.
 
 That line is the point of the whole feature. A client who lets it stand has
 been told in writing; a client who corrects it has told you something you needed
@@ -60,8 +76,13 @@ AGENCY_NAME=Columbia Basin Insurance
 AGENCY_PHONE=509-765-8839
 CLIENT_RECAP_MODEL=gpt-4.1-mini        # reuses OPENAI_API_KEY
 CLIENT_RECAP_MAX_CHARS=480             # ~4 SMS segments, disclaimer included
-# CLIENT_RECAP_DISCLAIMER=...          # override the closing line
 CLIENT_RECAP_AUTO_SEND=false           # text on approval with no second look
+
+# The closing line per language. English and Spanish are built in; add any other
+# language the agency serves and recaps in it stop falling back to English.
+# CLIENT_RECAP_DISCLAIMER_EN=...
+# CLIENT_RECAP_DISCLAIMER_ES=...
+# CLIENT_RECAP_DISCLAIMER_VI=...
 ```
 
 Nothing else needs installing. The tables (`client_recaps`, `sms_opt_outs`) are
@@ -97,6 +118,32 @@ Send is blocked, with the reason shown, when the transcript is not approved,
 when there is no textable mobile number, when the number has opted out, or when
 no provider is configured.
 
+### Languages
+
+English and Spanish are complete: recap and disclaimer both. Whisper's detected
+language decides, and the page says which language the call was in before the
+agent drafts.
+
+For any other language, the recap itself is written in that language but the
+closing disclaimer falls back to English, and the page says so in an amber
+warning before the agent can send. Setting `CLIENT_RECAP_DISCLAIMER_<CODE>` for
+that language clears the warning.
+
+Two cases produce a deliberate English draft rather than a wrong one:
+
+- **The model could not be reached.** The fallback recap is assembled from the
+  English analysis fields, so it can only be English. The page says "This call
+  was in Spanish, but the draft is in English" and leaves it to the agent.
+- **Auto-send is on and the draft came back in the wrong language.** It is left
+  as a draft instead of being sent, because that is exactly the case a person
+  should look at.
+
+Accented languages cost more per text: one character outside GSM-7 puts the
+whole message into UCS-2, dropping a segment from 153 characters to 67. The
+counter under the draft shows the real segment count as you type, so a Spanish
+recap at 480 characters reads as 7 segments rather than 4. Lower
+`CLIENT_RECAP_MAX_CHARS` if that matters to the bill.
+
 ### Which number gets texted
 
 Inbound calls text the caller; outbound calls text the number dialled. Landlines,
@@ -129,6 +176,8 @@ All routes require an admin session.
 | Column | Meaning |
 | --- | --- |
 | `body` | The wording. After a send, exactly what the client received, disclaimer included |
+| `language` | The language the body is actually written in |
+| `english_gloss` | Plain English rendering of the body, for an English reader later. Never sent |
 | `to_number` / `from_number` | E.164 |
 | `status` | `draft`, `sent`, or `failed` |
 | `source` | `ai`, `template`, or `manual` — how the wording was arrived at |

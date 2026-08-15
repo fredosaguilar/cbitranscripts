@@ -292,3 +292,29 @@ button {
 .recap-blocked.done {
     color: #15825a;
 }
+
+.recap-warning {
+    margin-top: 10px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    background: rgba(217, 119, 6, 0.14);
+    color: #b45309;
+    font-size: 0.82rem;
+}
+
+.recap-gloss {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: rgba(128, 128, 128, 0.09);
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+}
+
+.recap-gloss-label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    opacity: 0.7;
+    margin-bottom: 4px;
+}
