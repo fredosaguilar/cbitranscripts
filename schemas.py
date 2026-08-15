@@ -1,6 +1,12 @@
 from pydantic import BaseModel, field_validator
 from typing import Optional
 
+
+# The agent's edits to a client recap text before it is sent
+class ClientRecapUpdate(BaseModel):
+    body: str
+    to_number: Optional[str] = None
+
 # User schema
 class UserCreate(BaseModel):
     user_id: str
