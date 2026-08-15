@@ -103,8 +103,11 @@ one of them:
 > (509) 765-8839 is not one of the numbers this extension can text from.
 > RingCentral will refuse it. Numbers that will work: (509) 555-0143.
 
-Every recap goes out from the single number in `RINGCENTRAL_SMS_FROM` — there is
-no per-agent sender — so that one value decides what every client sees.
+Every recap goes out from the single number in `RINGCENTRAL_SMS_FROM`, whichever
+agent took the call and whichever extension it came in on — there is deliberately
+no per-agent sender. A client should recognise the number, and one number means
+one inbox for the replies the recap invites. The sender is stored on each recap
+row as it is sent, so the record shows the number the client actually saw.
 
 The two permissions are separate, and only one of them blocks sending:
 
@@ -206,7 +209,7 @@ All routes require an admin session.
 | `body` | The wording. After a send, exactly what the client received, disclaimer included |
 | `language` | The language the body is actually written in |
 | `english_gloss` | Plain English rendering of the body, for an English reader later. Never sent |
-| `to_number` / `from_number` | E.164 |
+| `to_number` / `from_number` | E.164. The sender is recorded per message, so the record shows which number the client was actually texted from rather than which one was configured at the time |
 | `status` | `draft`, `sent`, or `failed` |
 | `source` | `ai`, `template`, or `manual` — how the wording was arrived at |
 | `provider`, `provider_message_id`, `provider_status` | For tracing a message back to RingCentral or Twilio |
