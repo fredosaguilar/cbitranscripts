@@ -6,15 +6,23 @@ straight away or leaves it standing — and a text that stood uncorrected for
 months is worth a great deal when a claim is denied and the recollection of the
 call turns out to be a matter of dispute.
 
-That only holds if the recap is accurate, so the wording is drafted from the
-analysis fields, never from the raw transcript, and it never states that
-coverage exists. Confirming coverage in a text is precisely the exposure this
-is meant to reduce.
+That only holds if the client can read it, so the recap is written in the
+language the call was spoken in. It also only holds if the recap is accurate,
+so the wording is drafted from the analysis fields, never from the raw
+transcript, and it never states that coverage exists. Confirming coverage in a
+text is precisely the exposure this is meant to reduce.
+
+The analysis fields are stored in English regardless of what was spoken, so a
+Spanish recap is a translation performed by the model at drafting time. When the
+model cannot be reached the draft falls back to English and says so, rather than
+sending a client a message in a language nobody chose.
 """
 
+import json
 import logging
 import os
 import re
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import requests
@@ -35,20 +43,96 @@ AGENCY_NAME = os.getenv("AGENCY_NAME", "Columbia Basin Insurance")
 AGENCY_PHONE = os.getenv("AGENCY_PHONE", "509-765-8839")
 
 # Four GSM-7 segments. Long enough to say what changed, short enough that the
-# client actually reads it.
+# client actually reads it. Accented languages cost more segments for the same
+# characters, which the page's counter shows as it is typed.
 RECAP_MAX_CHARS = int(os.getenv("CLIENT_RECAP_MAX_CHARS", "480"))
-# Room the closing line needs, reserved out of the budget given to the model.
-DISCLAIMER = os.getenv(
-    "CLIENT_RECAP_DISCLAIMER",
-    "This is a summary of our conversation, not confirmation of coverage. "
-    "Reply if anything here is wrong. Reply STOP to opt out.",
-)
+
+# Whisper reports the spoken language as a name or a code depending on the
+# model, so both are accepted.
+_LANGUAGE_CODES = {
+    "en": "en", "eng": "en", "english": "en",
+    "es": "es", "spa": "es", "spanish": "es", "espanol": "es", "español": "es", "castellano": "es",
+    "pt": "pt", "por": "pt", "portuguese": "pt", "portugues": "pt", "português": "pt",
+    "fr": "fr", "fra": "fr", "french": "fr", "francais": "fr", "français": "fr",
+    "ru": "ru", "rus": "ru", "russian": "ru",
+    "uk": "uk", "ukr": "uk", "ukrainian": "uk",
+    "vi": "vi", "vie": "vi", "vietnamese": "vi",
+    "ar": "ar", "ara": "ar", "arabic": "ar",
+    "zh": "zh", "chi": "zh", "chinese": "zh", "mandarin": "zh",
+    "tl": "tl", "tgl": "tl", "tagalog": "tl", "filipino": "tl",
+    "de": "de", "deu": "de", "german": "de",
+    "pa": "pa", "pan": "pa", "punjabi": "pa",
+    "mixtec": "mix", "mix": "mix", "triqui": "trq", "trq": "trq",
+}
+
+LANGUAGE_NAMES = {
+    "en": "English", "es": "Spanish", "pt": "Portuguese", "fr": "French",
+    "ru": "Russian", "uk": "Ukrainian", "vi": "Vietnamese", "ar": "Arabic",
+    "zh": "Chinese", "tl": "Tagalog", "de": "German", "pa": "Punjabi",
+    "mix": "Mixtec", "trq": "Triqui",
+}
+
+# The closing line is the part that does the legal work, so it is written out
+# per language rather than machine-translated on the fly. Anything not listed
+# here falls back to English and the page says so before the agent sends.
+#
+# "STOP" stays in English in every language: carriers match that exact keyword
+# to process an opt-out, so translating it would break the opt-out itself.
+_BUILT_IN_DISCLAIMERS = {
+    "en": (
+        "This is a summary of our conversation, not confirmation of coverage. "
+        "Reply if anything here is wrong. Reply STOP to opt out."
+    ),
+    "es": (
+        "Este es un resumen de nuestra conversación, no una confirmación de cobertura. "
+        "Responda si algo aquí no es correcto. Responda STOP para no recibir más mensajes."
+    ),
+}
+
+# What to say when a call produced nothing worth reporting back. Any language
+# without an entry gets the English one.
+_COURTESY = {
+    "en": "thanks for your time on the phone today. Call us at {phone} if you have any questions.",
+    "es": "gracias por su tiempo hoy. Llámenos al {phone} si tiene alguna pregunta.",
+}
+
+# Override or add one with CLIENT_RECAP_DISCLAIMER_ES, CLIENT_RECAP_DISCLAIMER_VI, ...
+# CLIENT_RECAP_DISCLAIMER (no suffix) still overrides English, as it did before.
+def disclaimer_for(language: str | None) -> str:
+    code = (language or "en").lower()
+    override = os.getenv(f"CLIENT_RECAP_DISCLAIMER_{code.upper()}")
+    if override:
+        return override.strip()
+    if code == "en":
+        legacy = os.getenv("CLIENT_RECAP_DISCLAIMER")
+        if legacy:
+            return legacy.strip()
+    return _BUILT_IN_DISCLAIMERS.get(code, _BUILT_IN_DISCLAIMERS["en"])
+
+
+def has_disclaimer(language: str | None) -> bool:
+    """Whether the closing line exists in this language rather than English."""
+    code = (language or "en").lower()
+    return code in _BUILT_IN_DISCLAIMERS or bool(os.getenv(f"CLIENT_RECAP_DISCLAIMER_{code.upper()}"))
+
+
+# Kept for callers that only ever dealt in English
+DISCLAIMER = disclaimer_for("en")
 
 _NO_DATA_VALUES = {
     "", "none", "n/a", "na", "no", "-", "not mentioned", "none noted",
     "not applicable", "no data available", "no data available.", "nothing noted",
     "unknown", "not identified", "not discussed",
 }
+
+
+@dataclass
+class Draft:
+    body: str
+    source: str            # ai | template
+    language: str          # the language the body is actually written in
+    english_gloss: Optional[str] = None   # for the agent to review, never sent
+    warning: Optional[str] = None         # what the agent should know before sending
 
 
 def _clean(value: Any) -> Optional[str]:
@@ -60,6 +144,16 @@ def _clean(value: Any) -> Optional[str]:
     return text
 
 
+def resolve_language(transcript: Any) -> str:
+    """The language the call was spoken in, as a short code. Defaults to English."""
+    spoken = (_clean(getattr(transcript, "original_language", None)) or "").lower()
+    return _LANGUAGE_CODES.get(spoken, "en")
+
+
+def language_name(code: str | None) -> str:
+    return LANGUAGE_NAMES.get((code or "en").lower(), (code or "en"))
+
+
 def resolve_client_number(transcript: Any) -> Optional[str]:
     """Work out which number on the call belongs to the client.
 
@@ -68,7 +162,6 @@ def resolve_client_number(transcript: Any) -> Optional[str]:
     so direction decides before any fallback does.
     """
     direction = (_clean(getattr(transcript, "direction", None)) or "").lower()
-    candidates: list[Any] = []
     if direction.startswith("out"):
         candidates = [
             getattr(transcript, "to_phoneNumber", None),
@@ -131,8 +224,8 @@ def has_enough_to_recap(transcript: Any) -> bool:
     )
 
 
-def _budget() -> int:
-    return max(120, RECAP_MAX_CHARS - len(DISCLAIMER) - 2)
+def _budget(language: str = "en") -> int:
+    return max(120, RECAP_MAX_CHARS - len(disclaimer_for(language)) - 2)
 
 
 SYSTEM_PROMPT = """You write the short text message an insurance agency sends a client right after a phone call, confirming in writing what was discussed.
@@ -141,25 +234,32 @@ Rules, all of them binding:
 - Use ONLY the facts given to you. Never add a detail, a date, an amount, or a coverage that is not there.
 - Never state or imply that coverage is in force, bound, added, removed, or effective. Describe what was DISCUSSED, REQUESTED, or SELECTED, not what is covered.
 - Never promise a price, a rate, a discount, or an outcome.
-- Write to the client as "you", in plain English, past tense, no insurance jargon.
+- Write to the client as "you", in plain everyday language, past tense, no insurance jargon.
 - No greeting, no sign-off, no emoji, no markdown, no bullets with symbols. Short sentences separated by a space or a line break.
 - Lead with what changed or what was decided. End with the next step and who owes it, if there is one.
 - If the facts are thin, write one honest sentence about what was discussed rather than padding it.
 
-Reply with the message text and nothing else."""
+The facts are given to you in English. Write the message in the language named below — the language the client actually spoke on the call — using natural everyday wording a native speaker would use, not a word-for-word translation. Keep names, policy numbers, and amounts exactly as given.
+
+Reply with JSON only, in this shape:
+{"message": "<the text message, in the requested language>", "english": "<a plain English rendering of that same message, for the agent to check before sending>"}
+
+When the requested language is English, "english" repeats "message" unchanged."""
 
 
-def _draft_with_model(transcript: Any, facts: list[tuple[str, str]]) -> Optional[str]:
+def _draft_with_model(transcript: Any, facts: list[tuple[str, str]], language: str) -> Optional[tuple[str, Optional[str]]]:
+    """Return (message, english gloss), or None if the model could not be used."""
     if not OPENAI_API_KEY:
         return None
 
-    budget = _budget()
+    budget = _budget(language)
     name = _first_name(transcript)
     details = "\n".join(f"{label}: {value}" for label, value in facts)
     user_prompt = (
         f"Agency: {AGENCY_NAME}\n"
-        f"Client first name: {name or '(unknown — do not guess, just leave the name out)'}\n"
-        f"Hard limit: {budget} characters.\n\n"
+        f"Write the message in: {language_name(language)}\n"
+        f"Client first name: {name or '(unknown - do not guess, just leave the name out)'}\n"
+        f"Hard limit for the message: {budget} characters.\n\n"
         f"Facts from the call:\n{details}"
     )
 
@@ -170,6 +270,7 @@ def _draft_with_model(transcript: Any, facts: list[tuple[str, str]]) -> Optional
             json={
                 "model": RECAP_MODEL,
                 "temperature": 0.2,
+                "response_format": {"type": "json_object"},
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
@@ -178,12 +279,17 @@ def _draft_with_model(transcript: Any, facts: list[tuple[str, str]]) -> Optional
             timeout=RECAP_TIMEOUT,
         )
         response.raise_for_status()
-        text = (response.json()["choices"][0]["message"]["content"] or "").strip()
+        raw = (response.json()["choices"][0]["message"]["content"] or "").strip()
+        payload = json.loads(raw)
+        message = _tidy(str(payload.get("message") or ""))
+        gloss = _tidy(str(payload.get("english") or "")) or None
     except Exception:
         logger.exception("Could not draft a client recap with the model; falling back to the template")
         return None
 
-    return _tidy(text) or None
+    if not message:
+        return None
+    return message, (None if language == "en" else gloss)
 
 
 # label shown to the client, source field, how important it is to keep, where it reads
@@ -203,20 +309,21 @@ _TEMPLATE_LINES = [
 _TEMPLATE_LINE_MAX = 140
 
 
-def _draft_from_template(transcript: Any, facts: list[tuple[str, str]]) -> str:
+def _draft_from_template(transcript: Any) -> str:
     """A recap written without the model, so drafting never depends on the API.
 
-    Deliberately plain — it reads like a form, which is the right register for a
-    record. Lines are chosen by how much they matter rather than by where they
-    appear, so a long call loses "why you called" before it loses the decision
-    the client made.
+    Always English: the analysis fields it copies from are English, so there is
+    nothing here to write in another language. Deliberately plain — it reads
+    like a form, which is the right register for a record. Lines are chosen by
+    how much they matter rather than by where they appear, so a long call loses
+    "why you called" before it loses the decision the client made.
     """
     name = _first_name(transcript)
     opening = f"{name}, a recap of our call:" if name else "A recap of our call:"
 
-    budget = _budget() - len(opening)
+    budget = _budget("en") - len(opening)
     chosen: list[tuple[int, str]] = []
-    for label, attribute, importance, position in sorted(_TEMPLATE_LINES, key=lambda row: row[2]):
+    for label, attribute, _importance, position in sorted(_TEMPLATE_LINES, key=lambda row: row[2]):
         value = _clean(getattr(transcript, attribute, None))
         if not value:
             continue
@@ -236,11 +343,11 @@ def _draft_from_template(transcript: Any, facts: list[tuple[str, str]]) -> str:
 
 # Typographic characters cost real money in a text: one em dash pushes the whole
 # message out of GSM-7 and into UCS-2, halving how much fits in a segment.
-# Letters are left alone — an accented name is worth the extra segment, a curly
-# apostrophe is not.
+# Letters are left alone — an accented name, or a Spanish message, is worth the
+# extra segment; a curly apostrophe is not.
 _PUNCTUATION_SWAPS = {
     "—": "-", "–": "-", "‘": "'", "’": "'",
-    "“": '"', "”": '"', "…": "...", " ": " ",
+    "“": '"', "”": '"', "…": "...", " ": " ",
     "•": "-", "·": "-", "−": "-",
 }
 
@@ -273,27 +380,59 @@ def _truncate(text: str, limit: int) -> str:
     return (window[:cut] if cut > 0 else window).rstrip(" ,;:-") + "..."
 
 
-def compose(body: str) -> str:
+def compose(body: str, language: str = "en") -> str:
     """Put the agent's wording and the standing disclaimer together."""
-    trimmed = _truncate(_tidy(body), _budget())
+    closing = disclaimer_for(language)
+    trimmed = _truncate(_tidy(body), max(120, RECAP_MAX_CHARS - len(closing) - 2))
     if not trimmed:
-        return DISCLAIMER
-    separator = "\n\n" if len(trimmed) + len(DISCLAIMER) + 2 <= RECAP_MAX_CHARS else "\n"
-    return f"{trimmed}{separator}{DISCLAIMER}"
+        return closing
+    separator = "\n\n" if len(trimmed) + len(closing) + 2 <= RECAP_MAX_CHARS else "\n"
+    return f"{trimmed}{separator}{closing}"
 
 
-def draft_recap(transcript: Any) -> tuple[str, str]:
-    """Return the draft body (without the disclaimer) and how it was written."""
+def draft_recap(transcript: Any) -> Draft:
+    """Write the recap in the language the call was spoken in."""
+    language = resolve_language(transcript)
     facts = _facts(transcript)
-    if not facts:
-        name = _first_name(transcript)
-        opening = f"{name}, thanks for your time on the phone today." if name else "Thanks for your time on the phone today."
-        return f"{opening} Call us at {AGENCY_PHONE} if you have any questions.", "template"
 
-    drafted = _draft_with_model(transcript, facts)
+    # Nothing was analysed, so there is nothing to translate — a fixed courtesy
+    # line in the client's language, or English when we have none written.
+    if not facts:
+        written_in = language if language in _COURTESY else "en"
+        courtesy = _COURTESY[written_in].format(phone=AGENCY_PHONE)
+        name = _first_name(transcript)
+        body = f"{name}, {courtesy}" if name else courtesy[0].upper() + courtesy[1:]
+        warning = None if written_in == language else _fallback_warning(language)
+        return Draft(body, "template", written_in, None, warning)
+
+    drafted = _draft_with_model(transcript, facts, language)
     if drafted:
-        return _truncate(drafted, _budget()), "ai"
-    return _truncate(_draft_from_template(transcript, facts), _budget()), "template"
+        message, gloss = drafted
+        return Draft(_truncate(message, _budget(language)), "ai", language, gloss, _language_warning(language))
+
+    return Draft(_truncate(_draft_from_template(transcript), _budget("en")), "template", "en", None,
+                 _fallback_warning(language))
+
+
+def _language_warning(language: str) -> Optional[str]:
+    """Flag a message whose closing line will not be in the client's language."""
+    if language == "en" or has_disclaimer(language):
+        return None
+    return (
+        f"The recap is written in {language_name(language)}, but there is no approved closing "
+        f"line in {language_name(language)} — the English one will be sent. Set "
+        f"CLIENT_RECAP_DISCLAIMER_{language.upper()} to change that."
+    )
+
+
+def _fallback_warning(language: str) -> Optional[str]:
+    """Say plainly when a call was not in English but the draft is."""
+    if language == "en":
+        return None
+    return (
+        f"This call was in {language_name(language)}, but the draft is in English — "
+        f"the model could not be reached. Translate it before sending, or draft again."
+    )
 
 
 def segment_count(text: str) -> int:

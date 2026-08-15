@@ -84,6 +84,11 @@ class ClientRecap(Base):
     transcript_id = Column(UUID(as_uuid=True), nullable=False, index=True)
 
     body = Column(Text, nullable=False)
+    # The language the body is written in, and a plain English rendering of it.
+    # The gloss is never sent — it is what an English reader (the agent now, an
+    # adjuster later) uses to know what the client was actually told.
+    language = Column(String, nullable=True)
+    english_gloss = Column(Text, nullable=True)
     to_number = Column(String, nullable=True)
     from_number = Column(String, nullable=True)
 
