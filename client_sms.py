@@ -251,8 +251,19 @@ def check_sending_setup() -> dict:
             f"is only a limit on what this check can tell you."
         )
 
-    sendable = [number for number in setup["numbers"] if number["sms"]]
+    # A number carrying SmsSender is not enough. The main company number lists
+    # that feature because the account can text from it, but RingCentral refuses
+    # it as a sender for a user extension — "Phone number doesn't belong to
+    # extension", MSG-304. Only a direct number on the extension really works.
+    sendable = [
+        number for number in setup["numbers"]
+        if number["sms"] and (number["usageType"] or "").lower() == "directnumber"
+    ]
     configured = normalize_phone(RINGCENTRAL_SMS_FROM)
+    configured_record = next(
+        (number for number in setup["numbers"] if normalize_phone(number["phoneNumber"]) == configured),
+        None,
+    )
 
     # Ordered by how much each one blocks: no permission to send at all, then no
     # sender configured, then a sender that will be refused.
@@ -270,10 +281,20 @@ def check_sending_setup() -> dict:
         )
     elif not configured:
         setup["problem"] = f"RINGCENTRAL_SMS_FROM is set to {RINGCENTRAL_SMS_FROM!r}, which is not a phone number."
+    elif configured_record and configured_record not in sendable:
+        allowed = ", ".join(number["display"] for number in sendable)
+        usage = configured_record["usageType"] or "number"
+        setup["problem"] = (
+            f"{format_phone_for_display(configured)} is on this extension, but it is a {usage} — "
+            f"RingCentral will not send a text from it on behalf of an extension, and refuses it "
+            f"with \"Phone number doesn't belong to extension\". A direct number is what works. "
+            + (f"On this extension: {allowed}." if sendable else
+               "This extension has no direct number, so one has to be assigned before it can text.")
+        )
     elif setup["numbers"] and not sendable:
         setup["problem"] = (
-            "This extension has no SMS-capable number. Assign one to the extension the app "
-            "authenticates as, or point the app at an extension that has one."
+            "This extension has no direct number that can send texts. Assign one to the extension "
+            "the app authenticates as, or point the app at an extension that has one."
         )
     elif sendable and not any(normalize_phone(number["phoneNumber"]) == configured for number in sendable):
         allowed = ", ".join(number["display"] for number in sendable)
@@ -291,6 +312,33 @@ def check_sending_setup() -> dict:
             )
 
     return setup
+
+
+def _explain_send_refusal(response) -> str:
+    """Turn RingCentral's refusal into something the agent can act on."""
+    raw = response.text.strip()[:500]
+    try:
+        payload = response.json()
+        code = str(payload.get("errorCode") or "")
+        detail = str(payload.get("message") or "")
+    except Exception:
+        code, detail = "", ""
+
+    if code == "FeatureNotAvailable" and "belong to extension" in detail:
+        return (
+            f"RingCentral will not text from {format_phone_for_display(RINGCENTRAL_SMS_FROM)} on behalf of "
+            f"this extension. That usually means the number is the main company number rather than a "
+            f"direct number on the extension the app authenticates as. Run Check sending setup for the "
+            f"numbers that will work."
+        )
+    if code == "InsufficientPermissions":
+        return (
+            "The RingCentral app does not have the SMS permission, so the message was refused. "
+            "Add SMS to the app in the developer console."
+        )
+    if detail:
+        return f"RingCentral refused the message ({response.status_code}): {detail}"
+    return f"RingCentral refused the message ({response.status_code}): {raw}"
 
 
 def _send_via_ringcentral(to_number: str, body: str) -> SendResult:
@@ -314,7 +362,7 @@ def _send_via_ringcentral(to_number: str, body: str) -> SendResult:
         return SendResult(
             ok=False,
             provider="ringcentral",
-            error=f"RingCentral refused the message ({response.status_code}): {response.text.strip()[:500]}",
+            error=_explain_send_refusal(response),
         )
 
     payload = response.json()
