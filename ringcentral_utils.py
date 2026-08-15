@@ -44,6 +44,9 @@ LOCAL_AUDIO_CACHE_DIR = os.getenv("LOCAL_AUDIO_CACHE_DIR") or os.path.join(BASE_
 _token_lock = threading.Lock()
 _cached_access_token: Optional[str] = None
 _cached_access_token_expiry: Optional[datetime] = None
+# Which permissions the token actually carries. Kept so a refused SMS can be
+# explained as "the app has no SMS permission" rather than a bare 403.
+_cached_scopes: Optional[set[str]] = None
 
 
 def _clean_string(value: Any) -> Optional[str]:
@@ -187,10 +190,12 @@ def _can_refresh_ringcentral_token() -> bool:
     return bool(_clean_string(RINGCENTRAL_BASIC_AUTH) and _clean_string(RINGCENTRAL_JWT_ASSERTION))
 
 
-def _cache_access_token(access_token: str, expires_in: Any = None) -> str:
-    global _cached_access_token, _cached_access_token_expiry
+def _cache_access_token(access_token: str, expires_in: Any = None, scope: Any = None) -> str:
+    global _cached_access_token, _cached_access_token_expiry, _cached_scopes
 
     _cached_access_token = access_token
+    cleaned_scope = _clean_string(scope)
+    _cached_scopes = set(cleaned_scope.split()) if cleaned_scope else None
     expiry_seconds = None
     try:
         if expires_in is not None:
@@ -257,7 +262,11 @@ def _fetch_ringcentral_access_token() -> str:
         raise ValueError(f"RingCentral token response did not include access_token: {response_data}")
 
     logger.info("Fetched a fresh RingCentral access token")
-    return _cache_access_token(access_token, response_data.get("expires_in"))
+    return _cache_access_token(
+        access_token,
+        response_data.get("expires_in"),
+        response_data.get("scope"),
+    )
 
 
 def get_ringcentral_access_token(force_refresh: bool = False) -> str | None:
@@ -274,6 +283,35 @@ def get_ringcentral_access_token(force_refresh: bool = False) -> str | None:
             return static_token
 
     return None
+
+
+def get_ringcentral_scopes() -> Optional[set[str]]:
+    """The permissions on the current token, or None when they are unknown.
+
+    They are only known from a token the app fetched itself; a static token
+    supplied through the environment arrives without them.
+    """
+    return set(_cached_scopes) if _cached_scopes else None
+
+
+def ringcentral_api_get(path: str, params: dict | None = None) -> requests.Response:
+    """GET a RingCentral REST path, refreshing the token once on a 401."""
+    url = f"{RINGCENTRAL_PLATFORM_BASE_URL.rstrip('/')}/restapi/v1.0/{path.lstrip('/')}"
+
+    def _request(force_refresh: bool) -> requests.Response:
+        headers = {"Accept": "application/json"}
+        access_token = get_ringcentral_access_token(force_refresh=force_refresh)
+        if access_token:
+            headers["Authorization"] = f"Bearer {access_token}"
+        cookie = _clean_string(RINGCENTRAL_COOKIE)
+        if cookie:
+            headers["Cookie"] = cookie
+        return requests.get(url, headers=headers, params=params, timeout=RINGCENTRAL_REQUEST_TIMEOUT)
+
+    response = _request(force_refresh=False)
+    if response.status_code == 401 and _can_refresh_ringcentral_token():
+        response = _request(force_refresh=True)
+    return response
 
 
 def _build_audio_request_headers(url: str, byte_range: str | None = None, force_refresh: bool = False) -> dict[str, str]:
