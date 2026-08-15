@@ -2582,6 +2582,13 @@ def send_client_recap(id: str, request: Request, db: Session = Depends(get_db)):
     return JSONResponse(content=state, status_code=200 if sent else 502)
 
 
+@app.get("/api/sms/setup")
+# What RingCentral will actually let this app send from, and from what number.
+def sms_setup(request: Request, db: Session = Depends(get_db)):
+    _require_admin(request, db)
+    return JSONResponse(content=client_sms.check_sending_setup())
+
+
 @app.post("/api/sms/opt-out")
 # Record that a number has asked not to be texted.
 def record_sms_opt_out(
