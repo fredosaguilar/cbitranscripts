@@ -53,6 +53,10 @@ class SendResult:
     message_id: Optional[str] = None
     status: Optional[str] = None
     error: Optional[str] = None
+    # Which number the message actually went out from, recorded on every
+    # attempt. "It should have been the office number" is not evidence; the
+    # number stored against the message the client received is.
+    from_number: Optional[str] = None
 
 
 def normalize_phone(value: str | None) -> Optional[str]:
@@ -107,6 +111,23 @@ def active_provider() -> Optional[str]:
         return "ringcentral"
     if _twilio_ready():
         return "twilio"
+    return None
+
+
+def sending_number() -> Optional[str]:
+    """The one number every text goes out from, whatever the transcript.
+
+    There is deliberately no per-agent or per-extension sender: a client who
+    gets a recap should recognise the number, and one number is also one inbox
+    for the replies the recap asks for.
+    """
+    provider = active_provider()
+    if provider == "ringcentral":
+        return normalize_phone(RINGCENTRAL_SMS_FROM) or RINGCENTRAL_SMS_FROM or None
+    if provider == "twilio":
+        if TWILIO_MESSAGING_SERVICE_SID:
+            return TWILIO_MESSAGING_SERVICE_SID
+        return normalize_phone(TWILIO_FROM_NUMBER) or TWILIO_FROM_NUMBER or None
     return None
 
 
@@ -351,7 +372,8 @@ def send_sms(to_number: str, body: str) -> SendResult:
 
     if CLIENT_SMS_DRY_RUN:
         logger.info("DRY RUN — would text %s: %s", normalized_to, body)
-        return SendResult(ok=True, provider="dry-run", message_id="dry-run", status="DryRun")
+        return SendResult(ok=True, provider="dry-run", message_id="dry-run", status="DryRun",
+                          from_number=sending_number())
 
     provider = active_provider()
     if provider is None:
@@ -366,8 +388,11 @@ def send_sms(to_number: str, body: str) -> SendResult:
         logger.exception("Texting %s failed", normalized_to)
         return SendResult(ok=False, provider=provider, error=f"{type(exc).__name__}: {exc}")
 
+    result.from_number = result.from_number or sending_number()
+
     if result.ok:
-        logger.info("Texted %s via %s (message %s)", normalized_to, result.provider, result.message_id)
+        logger.info("Texted %s from %s via %s (message %s)",
+                    normalized_to, result.from_number, result.provider, result.message_id)
     else:
         logger.warning("Could not text %s via %s: %s", normalized_to, result.provider, result.error)
     return result

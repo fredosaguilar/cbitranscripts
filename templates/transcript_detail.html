@@ -652,6 +652,7 @@
             const label = item.status === "sent" ? "Sent" : "Failed";
             when.textContent = `${label} ${stamp ? new Date(stamp + "Z").toLocaleString() : ""}`
                 + (item.to_number ? ` to ${item.to_number}` : "")
+                + (item.from_number_display ? ` from ${item.from_number_display}` : "")
                 + (item.sent_by ? ` by ${item.sent_by}` : "")
                 + (item.provider ? ` · ${item.provider}` : "");
             entry.appendChild(when);

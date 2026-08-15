@@ -2406,6 +2406,8 @@ def _recap_json(recap) -> dict:
         "language_name": client_recap.language_name(recap.language),
         "english_gloss": recap.english_gloss,
         "to_number": recap.to_number,
+        "from_number": recap.from_number,
+        "from_number_display": client_sms.format_phone_for_display(recap.from_number),
         "status": recap.status,
         "source": recap.source,
         "provider": recap.provider,
@@ -2457,6 +2459,8 @@ def _recap_state(db: Session, transcript) -> dict:
         "provider": client_sms.describe_configuration(),
         "to_number": to_number,
         "to_number_display": client_sms.format_phone_for_display(to_number),
+        "from_number": client_sms.sending_number(),
+        "from_number_display": client_sms.format_phone_for_display(client_sms.sending_number()),
         "call_language": spoken,
         "call_language_name": client_recap.language_name(spoken),
         "draft_language": written_in,
@@ -2541,6 +2545,7 @@ def _send_recap(db: Session, transcript, draft, sent_by: str) -> tuple[bool, str
     result = client_sms.send_sms(draft.to_number, final_text)
 
     draft.body = final_text
+    draft.from_number = result.from_number
     draft.provider = result.provider
     draft.provider_message_id = result.message_id
     draft.provider_status = result.status
