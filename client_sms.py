@@ -131,6 +131,18 @@ def describe_configuration() -> str:
     )
 
 
+def _missing_permission(response) -> Optional[str]:
+    """The permission RingCentral says is missing, when that is why it refused."""
+    try:
+        payload = response.json()
+    except Exception:
+        return None
+    if str(payload.get("errorCode") or "") != "InsufficientPermissions":
+        return None
+    match = re.search(r"\[([A-Za-z]+)\]", str(payload.get("message") or ""))
+    return match.group(1) if match else "unknown"
+
+
 def check_sending_setup() -> dict:
     """Ask RingCentral what this app can actually send from.
 
@@ -138,6 +150,13 @@ def check_sending_setup() -> dict:
     permission, and the configured number not belonging to the extension the
     app authenticates as — are invisible until a message is refused. This asks
     up front, so the answer arrives before a client is waiting on it.
+
+    The token's own scopes answer the first question without calling anything,
+    so that verdict is reached before the number lookup and survives it failing.
+    Listing the numbers needs ReadAccounts, which an app set up only for call
+    recordings will not have — and being unable to list them is a far smaller
+    problem than being unable to send, so it is reported as a note rather than
+    replacing the answer.
     """
     setup: dict = {
         "provider": active_provider(),
@@ -146,28 +165,25 @@ def check_sending_setup() -> dict:
         "extension": None,
         "numbers": [],
         "sms_scope": None,       # True, False, or None when it cannot be known
+        "notes": [],
         "ok": False,
         "problem": None,
     }
 
     if setup["provider"] == "twilio":
-        setup["ok"] = True
         setup["problem"] = None if TWILIO_MESSAGING_SERVICE_SID or TWILIO_FROM_NUMBER else \
             "Twilio is selected but neither TWILIO_FROM_NUMBER nor TWILIO_MESSAGING_SERVICE_SID is set."
         setup["ok"] = setup["problem"] is None
         return setup
 
-    if not RINGCENTRAL_SMS_FROM:
-        setup["problem"] = (
-            "RINGCENTRAL_SMS_FROM is not set. The numbers listed below are the ones this "
-            "app is allowed to send from — put one of them in that variable."
-        )
-
     scopes = get_ringcentral_scopes()
     if scopes is not None:
-        setup["sms_scope"] = any(scope.lower() == "sms" for scope in scopes)
         setup["scopes"] = sorted(scopes)
+        setup["sms_scope"] = any(scope.lower() == "sms" for scope in scopes)
 
+    # Best effort. Whatever this manages to learn improves the answer; what it
+    # cannot learn must not erase what the scopes already told us.
+    listing_blocked_by = None
     try:
         response = ringcentral_api_get("account/~/extension/~")
         if response.status_code < 400:
@@ -179,46 +195,66 @@ def check_sending_setup() -> dict:
                 "type": extension.get("type"),
             }
         else:
-            setup["problem"] = f"RingCentral refused the extension lookup ({response.status_code}): {response.text.strip()[:300]}"
-            return setup
+            listing_blocked_by = _missing_permission(response)
+            if not listing_blocked_by:
+                setup["notes"].append(
+                    f"RingCentral refused the extension lookup ({response.status_code})."
+                )
 
-        numbers = ringcentral_api_get("account/~/extension/~/phone-number", params={"perPage": 100})
-        if numbers.status_code >= 400:
-            setup["problem"] = f"RingCentral refused the phone-number lookup ({numbers.status_code}): {numbers.text.strip()[:300]}"
-            return setup
-
-        for record in numbers.json().get("records", []):
-            features = [str(feature) for feature in (record.get("features") or [])]
-            setup["numbers"].append({
-                "phoneNumber": record.get("phoneNumber"),
-                "display": format_phone_for_display(record.get("phoneNumber")),
-                "usageType": record.get("usageType"),
-                "label": record.get("label"),
-                "sms": "SmsSender" in features,
-                "mms": "MmsSender" in features,
-            })
+        if listing_blocked_by is None:
+            numbers = ringcentral_api_get("account/~/extension/~/phone-number", params={"perPage": 100})
+            if numbers.status_code >= 400:
+                listing_blocked_by = _missing_permission(numbers)
+                if not listing_blocked_by:
+                    setup["notes"].append(
+                        f"RingCentral refused the phone-number lookup ({numbers.status_code})."
+                    )
+            else:
+                for record in numbers.json().get("records", []):
+                    features = [str(feature) for feature in (record.get("features") or [])]
+                    setup["numbers"].append({
+                        "phoneNumber": record.get("phoneNumber"),
+                        "display": format_phone_for_display(record.get("phoneNumber")),
+                        "usageType": record.get("usageType"),
+                        "label": record.get("label"),
+                        "sms": "SmsSender" in features,
+                        "mms": "MmsSender" in features,
+                    })
     except Exception as exc:
-        setup["problem"] = f"Could not reach RingCentral: {type(exc).__name__}: {exc}"
-        return setup
+        setup["notes"].append(f"Could not reach RingCentral: {type(exc).__name__}: {exc}")
+
+    if listing_blocked_by:
+        setup["notes"].append(
+            f"This app cannot list the extension's numbers — RingCentral wants the "
+            f"{listing_blocked_by} permission for that. Sending does not need it, so this "
+            f"is only a limit on what this check can tell you."
+        )
 
     sendable = [number for number in setup["numbers"] if number["sms"]]
     configured = normalize_phone(RINGCENTRAL_SMS_FROM)
 
+    # Ordered by how much each one blocks: no permission to send at all, then no
+    # sender configured, then a sender that will be refused.
     if setup["sms_scope"] is False:
         setup["problem"] = (
             "This RingCentral app does not have the SMS permission, so every send will be "
             "refused. Add SMS to the app in the RingCentral developer console and re-authorize it."
         )
     elif not RINGCENTRAL_SMS_FROM:
-        pass  # the problem is already set above
+        setup["problem"] = (
+            "RINGCENTRAL_SMS_FROM is not set." + (
+                " The numbers listed below are the ones this app is allowed to send from — "
+                "put one of them in that variable." if sendable else ""
+            )
+        )
     elif not configured:
         setup["problem"] = f"RINGCENTRAL_SMS_FROM is set to {RINGCENTRAL_SMS_FROM!r}, which is not a phone number."
-    elif not sendable:
+    elif setup["numbers"] and not sendable:
         setup["problem"] = (
             "This extension has no SMS-capable number. Assign one to the extension the app "
             "authenticates as, or point the app at an extension that has one."
         )
-    elif not any(normalize_phone(number["phoneNumber"]) == configured for number in sendable):
+    elif sendable and not any(normalize_phone(number["phoneNumber"]) == configured for number in sendable):
         allowed = ", ".join(number["display"] for number in sendable)
         setup["problem"] = (
             f"{format_phone_for_display(configured)} is not one of the numbers this extension can "
@@ -226,6 +262,12 @@ def check_sending_setup() -> dict:
         )
     else:
         setup["ok"] = True
+        if not setup["numbers"]:
+            setup["notes"].append(
+                "Nothing here contradicts the setup, but the numbers could not be listed, so "
+                "whether the sender belongs to this extension is still unconfirmed. A test send "
+                "with dry run off is the remaining check."
+            )
 
     return setup
 

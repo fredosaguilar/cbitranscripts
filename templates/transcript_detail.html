@@ -797,6 +797,13 @@
             box.appendChild(scope);
         }
 
+        (setup.notes || []).forEach(text => {
+            const note = document.createElement("div");
+            note.className = "recap-setup-note";
+            note.textContent = text;
+            box.appendChild(note);
+        });
+
         if (setup.extension) {
             const ext = document.createElement("div");
             ext.className = "recap-setup-note";
