@@ -98,10 +98,27 @@ app authenticates as.
 **Check sending setup** on the transcript page (or `GET /api/sms/setup`) asks
 RingCentral directly and answers both. It lists every number on the extension,
 marks which can send texts, and says plainly whether the configured number is
-one of them:
+one of them.
 
-> (509) 765-8839 is not one of the numbers this extension can text from.
-> RingCentral will refuse it. Numbers that will work: (509) 555-0143.
+**It has to be a direct number.** A main company number lists the `SmsSender`
+feature — the account can text from it — but RingCentral refuses it as a sender
+on behalf of a user extension:
+
+```
+FeatureNotAvailable / MSG-304: Phone number doesn't belong to extension
+```
+
+So the check requires `usageType` to be `DirectNumber`, and says which numbers
+on the extension qualify:
+
+> (509) 765-8839 is on this extension, but it is a MainCompanyNumber —
+> RingCentral will not send a text from it on behalf of an extension. A direct
+> number is what works. On this extension: (509) 497-2021, (253) 238-7422.
+
+If you want recaps to come from the main office number specifically, that is a
+RingCentral account change rather than a setting here: the number has to be a
+direct number on the extension the app authenticates as. Ask RingCentral support
+what that means for how the main line rings before making it.
 
 Every recap goes out from the single number in `RINGCENTRAL_SMS_FROM`, whichever
 agent took the call and whichever extension it came in on — there is deliberately
