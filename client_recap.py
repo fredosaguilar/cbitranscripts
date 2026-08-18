@@ -450,7 +450,11 @@ _RISKY_PHRASES = [
     r"quedo cubierto",
     # Allow a few words between, so "la cobertura ya esta vigente" is caught too
     r"cobertura[^.!?]{0,24}(?:activa|vigente|en vigor)",
-    r"esta(?:s)? (?:vigente|en vigor)",
+    # "Tu poliza esta activa hasta el 18 de febrero" is a statement that cover
+    # exists on a date, which is the single most expensive sentence a recap can
+    # contain. It went out once before this pattern existed.
+    r"poliza[^.!?]{0,24}(?:activa|vigente|en vigor|al dia)",
+    r"(?:esta|estara|sigue|permanece)\s+(?:activ[ao]|vigente|en vigor)",
     r"garantiza",
     r"aprobado",
     r"no se preocupe",
