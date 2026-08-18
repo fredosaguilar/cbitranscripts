@@ -231,6 +231,8 @@ def _extension_owning_main_number() -> tuple[Optional[str], str]:
             # Found, but attached to the company rather than to anybody. This is
             # the normal shape of a main number that answers to an auto-
             # receptionist, and no extension can send from it while that holds.
+            logger.warning("RingCentral lists %s as: %s", AGENCY_MAIN_NUMBER, record)
+            _log_textable_alternatives(records)
             usage = str(record.get("usageType") or "company number")
             return None, (
                 f"{sender} is on the account as a {usage} and is not assigned to any extension, so no "
@@ -246,6 +248,49 @@ def _extension_owning_main_number() -> tuple[Optional[str], str]:
     except Exception as exc:
         logger.exception("Could not work out which extension owns %s", AGENCY_MAIN_NUMBER)
         return None, f"the lookup for which extension holds {sender} failed: {type(exc).__name__}: {exc}"
+
+
+def _log_textable_alternatives(records: list) -> None:
+    """Log the numbers that could send, when the configured one cannot.
+
+    Only logged, never offered in the app: the agency wants every recap to come
+    from the main line, so a list of substitutes belongs where someone
+    diagnosing can find it, not where an agent might pick one.
+    """
+    usable = [
+        f"{format_phone_for_display(record.get('phoneNumber'))} "
+        f"({record.get('usageType') or 'number'}, extension {(record.get('extension') or {}).get('extensionNumber') or (record.get('extension') or {}).get('id')})"
+        for record in records
+        if (record.get("extension") or {}).get("id")
+        and "SmsSender" in [str(feature) for feature in (record.get("features") or [])]
+    ]
+    logger.warning(
+        "Numbers on this account that are on an extension and can send SMS: %s",
+        ", ".join(usable) if usable else "none",
+    )
+
+
+def _authenticated_extension() -> str:
+    """Which extension the app's own token belongs to, for a failure message.
+
+    "~" in the SMS endpoint means whoever the JWT signs in as, and that is the
+    one part of this the app cannot see from its own configuration -- it is
+    baked into the credential. When a number that used to send stops sending,
+    the token quietly pointing at a different extension looks identical from
+    outside to the number having been moved, and they need opposite fixes.
+    """
+    try:
+        response = ringcentral_api_get("account/~/extension/~")
+        if response.status_code >= 400:
+            return ""
+        extension = response.json()
+        number = extension.get("extensionNumber") or extension.get("id")
+        contact = extension.get("contact") or {}
+        name = " ".join(part for part in (contact.get("firstName"), contact.get("lastName")) if part)
+        return f"extension {number}" + (f" ({name})" if name else "")
+    except Exception:
+        logger.exception("Could not read which extension this app authenticates as")
+        return ""
 
 
 def _post_sms(access_token: str, extension: str, to_number: str, body: str):
@@ -281,10 +326,12 @@ def _send_via_ringcentral(to_number: str, body: str) -> SendResult:
     if response.status_code >= 400 and _error_codes(response) & _WRONG_EXTENSION_CODES:
         owning_extension, why_not = _extension_owning_main_number()
         if not owning_extension:
+            signed_in_as = _authenticated_extension()
+            whoami = f" This app signs in as {signed_in_as}." if signed_in_as else ""
             return SendResult(
                 ok=False,
                 provider="ringcentral",
-                error=f"RingCentral will not send from {sender} as this app's extension, and {why_not}",
+                error=f"RingCentral will not send from {sender} as this app's extension, and {why_not}{whoami}",
             )
 
         logger.info("Retrying the text from extension %s, which owns %s", owning_extension, AGENCY_MAIN_NUMBER)
