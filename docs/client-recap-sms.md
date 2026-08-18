@@ -32,7 +32,7 @@ bound, added, removed, or in force.
 Every message goes out in three parts, and only the middle one is the agent's:
 
 ```
-Summary of our recent call. This is not confirmation of coverage. Reply if anything here is wrong.
+Summary of your recent call with Columbia Basin Insurance. This is not confirmation of coverage. Reply if anything here is wrong.
 
 Maria, here is what we went over:
 Why you called: ...
@@ -43,12 +43,16 @@ Reply STOP to opt out.
 
 and in Spanish:
 
-> Resumen de nuestra llamada reciente. No es una confirmación de cobertura:
-> responda si algo aquí no es correcto.
+> Resumen de su llamada reciente con Columbia Basin Insurance. No es una
+> confirmación de cobertura: responda si algo aquí no es correcto.
 >
 > …
 >
 > Responda STOP para cancelar.
+
+The agency is named there because a text from a number the client may not have
+saved is otherwise unattributed, and an unattributed message about someone's
+policy is one they are entitled to ignore. `AGENCY_NAME` sets it.
 
 The opening line is where the legal work is done, and it opens the message
 rather than closing it because that is where it is read. A text that starts with

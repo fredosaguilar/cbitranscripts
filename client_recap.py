@@ -83,16 +83,19 @@ LANGUAGE_NAMES = {
 # Both fixed lines are written out per language rather than machine-translated
 # on the fly. Anything not listed here falls back to English and the page says
 # so before the agent sends.
+# The agency is named in the opening line because a text from a number the
+# client may not have saved is otherwise unattributed, and an unattributed
+# message about someone's policy is one they are entitled to ignore.
 _BUILT_IN_HEADERS = {
     # Plain ASCII on purpose: one typographic dash here would push every English
     # recap into UCS-2 and double what it costs to send.
     "en": (
-        "Summary of our recent call. This is not confirmation of coverage. "
-        "Reply if anything here is wrong."
+        f"Summary of your recent call with {AGENCY_NAME}. This is not confirmation "
+        f"of coverage. Reply if anything here is wrong."
     ),
     "es": (
-        "Resumen de nuestra llamada reciente. No es una confirmación de cobertura: "
-        "responda si algo aquí no es correcto."
+        f"Resumen de su llamada reciente con {AGENCY_NAME}. No es una confirmación "
+        f"de cobertura: responda si algo aquí no es correcto."
     ),
 }
 
