@@ -249,22 +249,37 @@ def _send_via_ringcentral(to_number: str, body: str) -> SendResult:
     # Refused because the sender is not on that extension. The number is right --
     # it is the agency's main line -- so find the extension it does belong to and
     # send it from there rather than falling back to some other number.
+    sender = format_phone_for_display(AGENCY_MAIN_NUMBER)
     if response.status_code >= 400 and _error_codes(response) & _WRONG_EXTENSION_CODES:
         owning_extension = _extension_owning_main_number()
-        if owning_extension:
-            logger.info("Retrying the text from extension %s, which owns %s",
-                        owning_extension, AGENCY_MAIN_NUMBER)
-            response = _post_sms(access_token, owning_extension, to_number, body)
-        else:
+        if not owning_extension:
             return SendResult(
                 ok=False,
                 provider="ringcentral",
                 error=(
-                    f"RingCentral will not send from {format_phone_for_display(AGENCY_MAIN_NUMBER)} as this "
-                    f"app's extension, and the extension that owns that number could not be looked up. "
-                    f"Either assign the main number to the extension the app signs in as (its SMS "
-                    f"permission must be on), or give the app the ReadAccounts permission so it can find "
-                    f"the right extension itself."
+                    f"RingCentral will not send from {sender} as this app's extension, and the extension "
+                    f"that owns that number could not be looked up. In RingCentral, either assign {sender} "
+                    f"to the extension the app signs in as and turn on its SMS feature, or give the app "
+                    f"the ReadAccounts permission so it can find the right extension itself."
+                ),
+            )
+
+        logger.info("Retrying the text from extension %s, which owns %s", owning_extension, AGENCY_MAIN_NUMBER)
+        response = _post_sms(access_token, owning_extension, to_number, body)
+
+        # Refused from the extension that owns the number too, so this is not
+        # about which door the request came through: RingCentral is not letting
+        # this number text at all. Say that, rather than handing back the same
+        # JSON twice with nothing learned from the retry.
+        if response.status_code >= 400 and _error_codes(response) & _WRONG_EXTENSION_CODES:
+            return SendResult(
+                ok=False,
+                provider="ringcentral",
+                error=(
+                    f"RingCentral refused {sender} both as this app's extension and as extension "
+                    f"{owning_extension}, which its own records say owns that number. That points at the "
+                    f"number rather than the app: check in RingCentral that {sender} still has SMS turned "
+                    f"on and that its A2P/10DLC registration is still active."
                 ),
             )
 
