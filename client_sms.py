@@ -186,19 +186,24 @@ _WRONG_EXTENSION_CODES = {"MSG-304", "FeatureNotAvailable"}
 _sender_extension_id: Optional[str] = None
 
 
-def _extension_owning_main_number() -> Optional[str]:
+def _extension_owning_main_number() -> tuple[Optional[str], str]:
     """Which extension the main company number is assigned to, per RingCentral.
 
     The SMS endpoint is extension-scoped and refuses a sender the extension does
     not own, so a main number that lives on the auto-receptionist cannot be sent
     from as the app's own extension however it is configured. Asking the account
     which extension holds it turns that refusal into a working send.
+
+    Returns the extension and, when there isn't one, why -- because the three
+    ways this can come back empty need three different fixes, in three different
+    places, and "could not be looked up" sends someone to check all of them.
     """
     global _sender_extension_id
     if _sender_extension_id:
-        return _sender_extension_id
+        return _sender_extension_id, ""
 
     wanted = normalize_phone(AGENCY_MAIN_NUMBER)
+    sender = format_phone_for_display(AGENCY_MAIN_NUMBER)
     try:
         response = ringcentral_api_get("account/~/phone-number", params={"perPage": 1000})
         if response.status_code >= 400:
@@ -206,18 +211,41 @@ def _extension_owning_main_number() -> Optional[str]:
                 "Could not list the account's numbers to find the sender's extension (%s): %s",
                 response.status_code, response.text.strip()[:200],
             )
-            return None
-        for record in response.json().get("records", []):
+            return None, (
+                f"this app is not allowed to list the account's numbers (RingCentral answered "
+                f"{response.status_code}), so it cannot find which extension holds {sender}. Add the "
+                f"ReadAccounts permission to the app in the RingCentral developer console and "
+                f"re-authorize it."
+            )
+
+        records = response.json().get("records", [])
+        for record in records:
             if normalize_phone(record.get("phoneNumber")) != wanted:
                 continue
             extension_id = ((record.get("extension") or {}).get("id"))
             if extension_id:
                 _sender_extension_id = str(extension_id)
                 logger.info("The main number %s is on extension %s", AGENCY_MAIN_NUMBER, _sender_extension_id)
-                return _sender_extension_id
-    except Exception:
+                return _sender_extension_id, ""
+
+            # Found, but attached to the company rather than to anybody. This is
+            # the normal shape of a main number that answers to an auto-
+            # receptionist, and no extension can send from it while that holds.
+            usage = str(record.get("usageType") or "company number")
+            return None, (
+                f"{sender} is on the account as a {usage} and is not assigned to any extension, so no "
+                f"extension can text from it. In RingCentral, assign it to the extension this app signs "
+                f"in as and turn on that extension's SMS feature."
+            )
+
+        return None, (
+            f"{sender} is not on this RingCentral account at all ({len(records)} numbers checked). "
+            f"Either RINGCENTRAL_SMS_FROM is pointing at the wrong number, or the app is signed in to "
+            f"a different RingCentral account than the one that owns it."
+        )
+    except Exception as exc:
         logger.exception("Could not work out which extension owns %s", AGENCY_MAIN_NUMBER)
-    return None
+        return None, f"the lookup for which extension holds {sender} failed: {type(exc).__name__}: {exc}"
 
 
 def _post_sms(access_token: str, extension: str, to_number: str, body: str):
@@ -251,17 +279,12 @@ def _send_via_ringcentral(to_number: str, body: str) -> SendResult:
     # send it from there rather than falling back to some other number.
     sender = format_phone_for_display(AGENCY_MAIN_NUMBER)
     if response.status_code >= 400 and _error_codes(response) & _WRONG_EXTENSION_CODES:
-        owning_extension = _extension_owning_main_number()
+        owning_extension, why_not = _extension_owning_main_number()
         if not owning_extension:
             return SendResult(
                 ok=False,
                 provider="ringcentral",
-                error=(
-                    f"RingCentral will not send from {sender} as this app's extension, and the extension "
-                    f"that owns that number could not be looked up. In RingCentral, either assign {sender} "
-                    f"to the extension the app signs in as and turn on its SMS feature, or give the app "
-                    f"the ReadAccounts permission so it can find the right extension itself."
-                ),
+                error=f"RingCentral will not send from {sender} as this app's extension, and {why_not}",
             )
 
         logger.info("Retrying the text from extension %s, which owns %s", owning_extension, AGENCY_MAIN_NUMBER)
