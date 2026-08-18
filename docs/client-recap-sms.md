@@ -18,7 +18,7 @@ Auto-send exists (`CLIENT_RECAP_AUTO_SEND=true`) but ships off.
 
 **It is written in the language the call was spoken in.** Whisper already
 records the spoken language on each transcript, so a call taken in Spanish
-produces a Spanish recap — including a Spanish closing disclaimer. The analysis
+produces a Spanish recap — opening line and opt-out included. The analysis
 fields themselves are stored in English, so the translation happens at drafting
 time, and the draft comes back with a plain-English rendering shown beside it so
 an English-reading agent can check a message they cannot read before it goes.
@@ -27,22 +27,43 @@ That gloss is stored with the record but never sent.
 **It never confirms coverage.** The draft is written from the analysis fields —
 what was discussed, what options were presented, what the client chose, what
 was recommended — and the model is instructed never to state that anything is
-bound, added, removed, or in force. Every message closes with:
+bound, added, removed, or in force.
 
-> This is a summary of our conversation, not confirmation of coverage. Reply if
-> anything here is wrong. Reply STOP to opt out.
+Every message goes out in three parts, and only the middle one is the agent's:
+
+```
+Summary of our recent call. This is not confirmation of coverage. Reply if anything here is wrong.
+
+Maria, here is what we went over:
+Why you called: ...
+Your decision: ...
+
+Reply STOP to opt out.
+```
 
 and in Spanish:
 
-> Este es un resumen de nuestra conversación, no una confirmación de cobertura.
-> Responda si algo aquí no es correcto. Responda STOP para no recibir más mensajes.
+> Resumen de nuestra llamada reciente. No es una confirmación de cobertura:
+> responda si algo aquí no es correcto.
+>
+> …
+>
+> Responda STOP para cancelar.
+
+The opening line is where the legal work is done, and it opens the message
+rather than closing it because that is where it is read. A text that starts with
+policy details reads like a confirmation no matter what the small print says at
+the bottom; one that names itself a summary of the call in its first six words
+cannot be mistaken for one. The opt-out is left at the end and kept to a single
+short sentence — it is a carrier requirement, not a message, and every character
+it costs comes out of what the client is actually being told.
 
 `STOP` stays in English in every language — carriers match that exact keyword to
 process an opt-out, so translating it would break the opt-out itself.
 
-That line is the point of the whole feature. A client who lets it stand has
-been told in writing; a client who corrects it has told you something you needed
-to know before the claim.
+That opening line is the point of the whole feature. A client who lets it stand
+has been told in writing; a client who corrects it has told you something you
+needed to know before the claim.
 
 **What was sent is never rewritten.** Rows in `client_recaps` are immutable
 once sent. Editing after a send creates a new row, so the record of what the
@@ -75,14 +96,17 @@ CLIENT_SMS_DRY_RUN=true
 AGENCY_NAME=Columbia Basin Insurance
 AGENCY_PHONE=509-765-8839
 CLIENT_RECAP_MODEL=gpt-4.1-mini        # reuses OPENAI_API_KEY
-CLIENT_RECAP_MAX_CHARS=480             # ~4 SMS segments, disclaimer included
+CLIENT_RECAP_MAX_CHARS=480             # ~4 SMS segments, fixed lines included
 CLIENT_RECAP_AUTO_SEND=false           # text on approval with no second look
 
-# The closing line per language. English and Spanish are built in; add any other
-# language the agency serves and recaps in it stop falling back to English.
-# CLIENT_RECAP_DISCLAIMER_EN=...
-# CLIENT_RECAP_DISCLAIMER_ES=...
-# CLIENT_RECAP_DISCLAIMER_VI=...
+# The opening and closing lines per language. English and Spanish are built in;
+# add any other language the agency serves and recaps in it stop falling back to
+# English. The older CLIENT_RECAP_DISCLAIMER[_CODE] names still set the closing
+# line, so an agency that already worded its own keeps it.
+# CLIENT_RECAP_HEADER_ES=...
+# CLIENT_RECAP_OPT_OUT_ES=...
+# CLIENT_RECAP_HEADER_VI=...
+# CLIENT_RECAP_OPT_OUT_VI=...
 ```
 
 Nothing else needs installing. The tables (`client_recaps`, `sms_opt_outs`) are
@@ -139,8 +163,10 @@ On the transcript detail page, under **Client Recap Text**:
 1. **Draft from call** writes a recap from the call analysis. If `OPENAI_API_KEY`
    is set it drafts with the model; if not — or if the API fails — it falls back
    to a plainer recap assembled from the same fields, so drafting never breaks.
-2. Edit the wording and the destination number. The counter shows the length
-   with the disclaimer included, and how many SMS segments that costs.
+2. Edit the wording and the destination number. You are writing the middle of
+   the message; the opening and the opt-out are shown below the box and added
+   for you. The counter shows the length with both included, and how many SMS
+   segments that costs.
 3. **Send Text**. The message is delivered, the row is marked sent, and it drops
    into the history below with the timestamp, number, provider, and who sent it.
 
@@ -150,14 +176,14 @@ no provider is configured.
 
 ### Languages
 
-English and Spanish are complete: recap and disclaimer both. Whisper's detected
-language decides, and the page says which language the call was in before the
-agent drafts.
+English and Spanish are complete: recap, opening line and opt-out. Whisper's
+detected language decides, and the page says which language the call was in
+before the agent drafts.
 
 For any other language, the recap itself is written in that language but the
-closing disclaimer falls back to English, and the page says so in an amber
-warning before the agent can send. Setting `CLIENT_RECAP_DISCLAIMER_<CODE>` for
-that language clears the warning.
+opening and opt-out fall back to English, and the page says so in an amber
+warning before the agent can send. Setting `CLIENT_RECAP_HEADER_<CODE>` and
+`CLIENT_RECAP_OPT_OUT_<CODE>` for that language clears the warning.
 
 Two cases produce a deliberate English draft rather than a wrong one:
 
@@ -206,7 +232,7 @@ All routes require an admin session.
 
 | Column | Meaning |
 | --- | --- |
-| `body` | The wording. After a send, exactly what the client received, disclaimer included |
+| `body` | The wording. After a send, exactly what the client received, opening and opt-out included |
 | `language` | The language the body is actually written in |
 | `english_gloss` | Plain English rendering of the body, for an English reader later. Never sent |
 | `to_number` / `from_number` | E.164. The sender is recorded per message, so the record shows which number the client was actually texted from rather than which one was configured at the time |

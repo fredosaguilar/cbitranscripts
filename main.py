@@ -2450,8 +2450,8 @@ def _recap_state(db: Session, transcript) -> dict:
     blocker = _recap_blocker(db, transcript, to_number)
 
     spoken = client_recap.resolve_language(transcript)
-    # The disclaimer follows the draft's language, not the call's: a draft that
-    # fell back to English must not be closed with a Spanish line.
+    # The fixed lines follow the draft's language, not the call's: a draft that
+    # fell back to English must not be wrapped in Spanish ones.
     written_in = (draft.language if draft and draft.language else spoken)
 
     return {
@@ -2465,7 +2465,8 @@ def _recap_state(db: Session, transcript) -> dict:
         "call_language_name": client_recap.language_name(spoken),
         "draft_language": written_in,
         "draft_language_name": client_recap.language_name(written_in),
-        "disclaimer": client_recap.disclaimer_for(written_in),
+        "header": client_recap.header_for(written_in),
+        "opt_out": client_recap.opt_out_for(written_in),
         "max_characters": client_recap.RECAP_MAX_CHARS,
         "has_analysis": client_recap.has_enough_to_recap(transcript),
         "draft": _recap_json(draft),
