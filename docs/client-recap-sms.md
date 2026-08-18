@@ -99,12 +99,11 @@ CLIENT_RECAP_MODEL=gpt-4.1-mini        # reuses OPENAI_API_KEY
 CLIENT_RECAP_MAX_CHARS=480             # ~4 SMS segments, fixed lines included
 CLIENT_RECAP_AUTO_SEND=false           # text on approval with no second look
 
-# The opening and closing lines per language. English and Spanish are built in;
-# add any other language the agency serves and recaps in it stop falling back to
-# English. The older CLIENT_RECAP_DISCLAIMER[_CODE] names still set the closing
-# line, so an agency that already worded its own keeps it.
-# CLIENT_RECAP_HEADER_ES=...
-# CLIENT_RECAP_OPT_OUT_ES=...
+# The opening and closing lines for a language the code does NOT already carry.
+# English and Spanish are written into client_recap.py and cannot be changed
+# from here: those two lines do the legal work, so what they say belongs in the
+# code, where it shows up in a diff and is the same everywhere the app runs.
+# Setting one of these for a built-in language has no effect.
 # CLIENT_RECAP_HEADER_VI=...
 # CLIENT_RECAP_OPT_OUT_VI=...
 ```
@@ -178,12 +177,16 @@ no provider is configured.
 
 English and Spanish are complete: recap, opening line and opt-out. Whisper's
 detected language decides, and the page says which language the call was in
-before the agent drafts.
+before the agent drafts. Their two fixed lines live in `_BUILT_IN_HEADERS` and
+`_BUILT_IN_OPT_OUTS` in `client_recap.py` and are edited there — no environment
+variable can change them, deliberately, so what a client is told cannot drift
+from what the code says.
 
 For any other language, the recap itself is written in that language but the
 opening and opt-out fall back to English, and the page says so in an amber
 warning before the agent can send. Setting `CLIENT_RECAP_HEADER_<CODE>` and
-`CLIENT_RECAP_OPT_OUT_<CODE>` for that language clears the warning.
+`CLIENT_RECAP_OPT_OUT_<CODE>` for that language clears the warning; writing it
+into the two dictionaries instead is better, and makes it settled the same way.
 
 Two cases produce a deliberate English draft rather than a wrong one:
 

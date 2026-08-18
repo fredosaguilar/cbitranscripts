@@ -112,32 +112,33 @@ _COURTESY = {
     "es": "gracias por su tiempo hoy. Llámenos al {phone} si tiene alguna pregunta.",
 }
 
-# Override or add one with CLIENT_RECAP_HEADER_ES, CLIENT_RECAP_HEADER_VI, ...
+# A language written out above is settled: the wording here wins, and no
+# environment variable can quietly replace it. These two lines are the part of
+# the message that does legal work, so what they say should be visible in the
+# code, reviewable in a diff, and identical everywhere the app runs -- not
+# something a stale variable in a hosting dashboard can change without anyone
+# noticing. A forgotten CLIENT_RECAP_DISCLAIMER_ES doing exactly that is what
+# prompted this.
+#
+# The variables remain for languages NOT written out above, which is the case
+# they are actually needed for: adding a language the code does not yet carry,
+# without a deploy.
 def header_for(language: str | None) -> str:
     """The opening line, which names the message as a summary of the call."""
     code = (language or "en").lower()
+    if code in _BUILT_IN_HEADERS:
+        return _BUILT_IN_HEADERS[code]
     override = os.getenv(f"CLIENT_RECAP_HEADER_{code.upper()}")
-    if override:
-        return _tidy(override)
-    return _BUILT_IN_HEADERS.get(code, _BUILT_IN_HEADERS["en"])
+    return _tidy(override) if override else _BUILT_IN_HEADERS["en"]
 
 
-# Override or add one with CLIENT_RECAP_OPT_OUT_ES, CLIENT_RECAP_OPT_OUT_VI, ...
-# The older CLIENT_RECAP_DISCLAIMER[_CODE] names still work: they set the same
-# closing line they always did, so an agency that already worded its own is left
-# alone rather than silently reverted.
 def opt_out_for(language: str | None) -> str:
     """The closing line, which is the opt-out and nothing else."""
     code = (language or "en").lower()
-    for name in (f"CLIENT_RECAP_OPT_OUT_{code.upper()}", f"CLIENT_RECAP_DISCLAIMER_{code.upper()}"):
-        override = os.getenv(name)
-        if override:
-            return _tidy(override)
-    if code == "en":
-        legacy = os.getenv("CLIENT_RECAP_DISCLAIMER")
-        if legacy:
-            return _tidy(legacy)
-    return _BUILT_IN_OPT_OUTS.get(code, _BUILT_IN_OPT_OUTS["en"])
+    if code in _BUILT_IN_OPT_OUTS:
+        return _BUILT_IN_OPT_OUTS[code]
+    override = os.getenv(f"CLIENT_RECAP_OPT_OUT_{code.upper()}")
+    return _tidy(override) if override else _BUILT_IN_OPT_OUTS["en"]
 
 
 def has_fixed_lines(language: str | None) -> bool:
@@ -145,9 +146,7 @@ def has_fixed_lines(language: str | None) -> bool:
     code = (language or "en").lower()
     return all((
         code in _BUILT_IN_HEADERS or bool(os.getenv(f"CLIENT_RECAP_HEADER_{code.upper()}")),
-        code in _BUILT_IN_OPT_OUTS
-        or bool(os.getenv(f"CLIENT_RECAP_OPT_OUT_{code.upper()}"))
-        or bool(os.getenv(f"CLIENT_RECAP_DISCLAIMER_{code.upper()}")),
+        code in _BUILT_IN_OPT_OUTS or bool(os.getenv(f"CLIENT_RECAP_OPT_OUT_{code.upper()}")),
     ))
 
 _NO_DATA_VALUES = {
