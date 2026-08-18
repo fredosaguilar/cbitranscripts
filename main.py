@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+import hashlib
 import json
 import logging
 import math
@@ -58,6 +59,38 @@ from zoom_agency_utils import (
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Admin Panel API")
+
+
+def _build_fingerprint() -> str:
+    """A short hash of the app's own source files.
+
+    Deploying here is a manual step, and "is the running app the code I just
+    merged?" has been answered by inference more than once -- reading a sent
+    message for wording only the new code produces, or checking whether a button
+    is still on a page. Inference is slow and it has been wrong. This changes
+    whenever the source does, needs no version to be remembered and bumped, and
+    turns the question into one unauthenticated request.
+    """
+    base = os.path.dirname(os.path.abspath(__file__))
+    digest = hashlib.sha256()
+    for name in ("main.py", "client_sms.py", "client_recap.py", "transcription.py",
+                 "ringcentral_utils.py", "templates/transcript_detail.html"):
+        try:
+            with open(os.path.join(base, name), "rb") as handle:
+                digest.update(handle.read())
+        except OSError:
+            digest.update(b"<missing>")
+    return digest.hexdigest()[:12]
+
+
+BUILD_FINGERPRINT = _build_fingerprint()
+
+
+@app.get("/healthz")
+# Unauthenticated on purpose: it says nothing about the data, only which build
+# is answering, and it has to be readable from a browser without logging in.
+def healthz():
+    return JSONResponse(content={"status": "ok", "build": BUILD_FINGERPRINT})
 
 
 @app.on_event("startup")
