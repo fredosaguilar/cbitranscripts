@@ -246,8 +246,10 @@
             </div>
 
             <div class="recap-disclaimer">
-                Sent automatically at the end of every recap:
-                <em id="recapDisclaimer"></em>
+                Added to every recap automatically — this opens the text, above your wording:
+                <em id="recapHeader"></em>
+                and this closes it:
+                <em id="recapOptOut"></em>
             </div>
 
             <div class="recap-actions">
@@ -558,9 +560,15 @@
         return text.length <= single ? 1 : Math.ceil(text.length / multi);
     }
 
+    // What the client receives: the fixed opening, the agent's wording, the opt-out.
+    function recapFullMessage(body) {
+        const header = (recapState && recapState.header) || "";
+        const optOut = (recapState && recapState.opt_out) || "";
+        return [header, body, optOut].filter(Boolean).join("\n\n");
+    }
+
     function recapUpdateCounter() {
         const body = document.getElementById("recapBody").value.trim();
-        const disclaimer = (recapState && recapState.disclaimer) || "";
         // Count the message the client will actually receive, accents and all —
         // one character outside GSM-7 halves how much fits in a segment.
         const max = (recapState && recapState.max_characters) || 480;
@@ -570,9 +578,9 @@
             counter.classList.remove("over");
             return;
         }
-        const full = `${body}\n\n${disclaimer}`;
+        const full = recapFullMessage(body);
         const segments = recapSegments(full);
-        counter.textContent = `${full.length} of ${max} characters · ${segments} segment${segments === 1 ? "" : "s"} with the disclaimer`;
+        counter.textContent = `${full.length} of ${max} characters · ${segments} segment${segments === 1 ? "" : "s"} with the opening and opt-out`;
         counter.classList.toggle("over", full.length > max);
     }
 
@@ -590,7 +598,8 @@
         status.classList.toggle("warn", !state.configured);
         editor.hidden = false;
 
-        document.getElementById("recapDisclaimer").textContent = state.disclaimer;
+        document.getElementById("recapHeader").textContent = state.header;
+        document.getElementById("recapOptOut").textContent = state.opt_out;
         document.getElementById("recapNumber").value = state.to_number_display || "";
 
         const draft = state.draft || {};
@@ -738,7 +747,9 @@
             return;
         }
         const to = document.getElementById("recapNumber").value || "this client";
-        if (!confirm(`Text this recap to ${to}?\n\n${body}\n\n${recapState.disclaimer}`)) return;
+        // Confirm on the whole message, not the middle of it — the agent should
+        // see exactly what the client will see before it goes.
+        if (!confirm(`Text this recap to ${to}?\n\n${recapFullMessage(body)}`)) return;
 
         // Send what is on screen, not what was last saved, so an edit made just
         // before pressing Send is the wording the client receives.

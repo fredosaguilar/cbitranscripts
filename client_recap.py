@@ -72,21 +72,37 @@ LANGUAGE_NAMES = {
     "mix": "Mixtec", "trq": "Triqui",
 }
 
-# The closing line is the part that does the legal work, so it is written out
-# per language rather than machine-translated on the fly. Anything not listed
-# here falls back to English and the page says so before the agent sends.
+# Every recap goes out in three parts: this opening line, the agent's wording,
+# then the opt-out. The opening says what the message is before the client reads
+# a word of it — a text that opens with policy details reads like a
+# confirmation, and one that opens by naming itself a summary of the call cannot
+# be mistaken for one. It carries the legal work too, where it is actually read,
+# rather than in small print after the details.
+#
+# Both fixed lines are written out per language rather than machine-translated
+# on the fly. Anything not listed here falls back to English and the page says
+# so before the agent sends.
+_BUILT_IN_HEADERS = {
+    # Plain ASCII on purpose: one typographic dash here would push every English
+    # recap into UCS-2 and double what it costs to send.
+    "en": (
+        "Summary of our recent call. This is not confirmation of coverage. "
+        "Reply if anything here is wrong."
+    ),
+    "es": (
+        "Resumen de nuestra llamada reciente. No es una confirmación de cobertura: "
+        "responda si algo aquí no es correcto."
+    ),
+}
+
+# Short by design: it is a legal requirement, not a message, and every character
+# it costs comes out of what the client is actually being told.
 #
 # "STOP" stays in English in every language: carriers match that exact keyword
 # to process an opt-out, so translating it would break the opt-out itself.
-_BUILT_IN_DISCLAIMERS = {
-    "en": (
-        "This is a summary of our conversation, not confirmation of coverage. "
-        "Reply if anything here is wrong. Reply STOP to opt out."
-    ),
-    "es": (
-        "Este es un resumen de nuestra conversación, no una confirmación de cobertura. "
-        "Responda si algo aquí no es correcto. Responda STOP para no recibir más mensajes."
-    ),
+_BUILT_IN_OPT_OUTS = {
+    "en": "Reply STOP to opt out.",
+    "es": "Responda STOP para cancelar.",
 }
 
 # What to say when a call produced nothing worth reporting back. Any language
@@ -96,28 +112,43 @@ _COURTESY = {
     "es": "gracias por su tiempo hoy. Llámenos al {phone} si tiene alguna pregunta.",
 }
 
-# Override or add one with CLIENT_RECAP_DISCLAIMER_ES, CLIENT_RECAP_DISCLAIMER_VI, ...
-# CLIENT_RECAP_DISCLAIMER (no suffix) still overrides English, as it did before.
-def disclaimer_for(language: str | None) -> str:
+# Override or add one with CLIENT_RECAP_HEADER_ES, CLIENT_RECAP_HEADER_VI, ...
+def header_for(language: str | None) -> str:
+    """The opening line, which names the message as a summary of the call."""
     code = (language or "en").lower()
-    override = os.getenv(f"CLIENT_RECAP_DISCLAIMER_{code.upper()}")
+    override = os.getenv(f"CLIENT_RECAP_HEADER_{code.upper()}")
     if override:
-        return override.strip()
+        return _tidy(override)
+    return _BUILT_IN_HEADERS.get(code, _BUILT_IN_HEADERS["en"])
+
+
+# Override or add one with CLIENT_RECAP_OPT_OUT_ES, CLIENT_RECAP_OPT_OUT_VI, ...
+# The older CLIENT_RECAP_DISCLAIMER[_CODE] names still work: they set the same
+# closing line they always did, so an agency that already worded its own is left
+# alone rather than silently reverted.
+def opt_out_for(language: str | None) -> str:
+    """The closing line, which is the opt-out and nothing else."""
+    code = (language or "en").lower()
+    for name in (f"CLIENT_RECAP_OPT_OUT_{code.upper()}", f"CLIENT_RECAP_DISCLAIMER_{code.upper()}"):
+        override = os.getenv(name)
+        if override:
+            return _tidy(override)
     if code == "en":
         legacy = os.getenv("CLIENT_RECAP_DISCLAIMER")
         if legacy:
-            return legacy.strip()
-    return _BUILT_IN_DISCLAIMERS.get(code, _BUILT_IN_DISCLAIMERS["en"])
+            return _tidy(legacy)
+    return _BUILT_IN_OPT_OUTS.get(code, _BUILT_IN_OPT_OUTS["en"])
 
 
-def has_disclaimer(language: str | None) -> bool:
-    """Whether the closing line exists in this language rather than English."""
+def has_fixed_lines(language: str | None) -> bool:
+    """Whether both fixed lines exist in this language rather than English."""
     code = (language or "en").lower()
-    return code in _BUILT_IN_DISCLAIMERS or bool(os.getenv(f"CLIENT_RECAP_DISCLAIMER_{code.upper()}"))
-
-
-# Kept for callers that only ever dealt in English
-DISCLAIMER = disclaimer_for("en")
+    return all((
+        code in _BUILT_IN_HEADERS or bool(os.getenv(f"CLIENT_RECAP_HEADER_{code.upper()}")),
+        code in _BUILT_IN_OPT_OUTS
+        or bool(os.getenv(f"CLIENT_RECAP_OPT_OUT_{code.upper()}"))
+        or bool(os.getenv(f"CLIENT_RECAP_DISCLAIMER_{code.upper()}")),
+    ))
 
 _NO_DATA_VALUES = {
     "", "none", "n/a", "na", "no", "-", "not mentioned", "none noted",
@@ -225,7 +256,9 @@ def has_enough_to_recap(transcript: Any) -> bool:
 
 
 def _budget(language: str = "en") -> int:
-    return max(120, RECAP_MAX_CHARS - len(disclaimer_for(language)) - 2)
+    """How much room the agent's own wording has once the fixed lines are paid for."""
+    fixed = len(header_for(language)) + len(opt_out_for(language)) + 4
+    return max(120, RECAP_MAX_CHARS - fixed)
 
 
 SYSTEM_PROMPT = """You write the short text message an insurance agency sends a client right after a phone call, confirming in writing what was discussed.
@@ -236,6 +269,7 @@ Rules, all of them binding:
 - Never promise a price, a rate, a discount, or an outcome.
 - Write to the client as "you", in plain everyday language, past tense, no insurance jargon.
 - No greeting, no sign-off, no emoji, no markdown, no bullets with symbols. Short sentences separated by a space or a line break.
+- Write the middle of the message only. A line saying this is a summary of the recent call is added above what you write, and an opt-out line is added below it, so never introduce the message or repeat either one — go straight into what was discussed.
 - Lead with what changed or what was decided. End with the next step and who owes it, if there is one.
 - If the facts are thin, write one honest sentence about what was discussed rather than padding it.
 
@@ -318,8 +352,10 @@ def _draft_from_template(transcript: Any) -> str:
     how much they matter rather than by where they appear, so a long call loses
     "why you called" before it loses the decision the client made.
     """
+    # The line above it already says this is a summary of the call, so the body
+    # opens straight into the detail rather than announcing itself twice.
     name = _first_name(transcript)
-    opening = f"{name}, a recap of our call:" if name else "A recap of our call:"
+    opening = f"{name}, here is what we went over:" if name else "Here is what we went over:"
 
     budget = _budget("en") - len(opening)
     chosen: list[tuple[int, str]] = []
@@ -381,13 +417,17 @@ def _truncate(text: str, limit: int) -> str:
 
 
 def compose(body: str, language: str = "en") -> str:
-    """Put the agent's wording and the standing disclaimer together."""
-    closing = disclaimer_for(language)
-    trimmed = _truncate(_tidy(body), max(120, RECAP_MAX_CHARS - len(closing) - 2))
-    if not trimmed:
-        return closing
-    separator = "\n\n" if len(trimmed) + len(closing) + 2 <= RECAP_MAX_CHARS else "\n"
-    return f"{trimmed}{separator}{closing}"
+    """The message as the client receives it: header, then wording, then opt-out."""
+    opening = header_for(language)
+    closing = opt_out_for(language)
+    trimmed = _truncate(_tidy(body), _budget(language))
+    parts = [opening, trimmed, closing] if trimmed else [opening, closing]
+
+    # Blank lines make the three parts read as three parts, but they are paid
+    # for like any other character, so a long recap gives them up before it
+    # gives up an extra segment.
+    joined = "\n\n".join(parts)
+    return joined if len(joined) <= RECAP_MAX_CHARS else "\n".join(parts)
 
 
 def draft_recap(transcript: Any) -> Draft:
@@ -415,13 +455,14 @@ def draft_recap(transcript: Any) -> Draft:
 
 
 def _language_warning(language: str) -> Optional[str]:
-    """Flag a message whose closing line will not be in the client's language."""
-    if language == "en" or has_disclaimer(language):
+    """Flag a message whose fixed lines will not be in the client's language."""
+    if language == "en" or has_fixed_lines(language):
         return None
     return (
-        f"The recap is written in {language_name(language)}, but there is no approved closing "
-        f"line in {language_name(language)} — the English one will be sent. Set "
-        f"CLIENT_RECAP_DISCLAIMER_{language.upper()} to change that."
+        f"The recap is written in {language_name(language)}, but the opening and opt-out lines "
+        f"are only approved in English — the English ones will be sent. Set "
+        f"CLIENT_RECAP_HEADER_{language.upper()} and CLIENT_RECAP_OPT_OUT_{language.upper()} "
+        f"to change that."
     )
 
 
