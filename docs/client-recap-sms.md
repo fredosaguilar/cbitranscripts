@@ -65,6 +65,19 @@ That opening line is the point of the whole feature. A client who lets it stand
 has been told in writing; a client who corrects it has told you something you
 needed to know before the claim.
 
+**The wording is read back before an agent can send it.** The model is told to
+avoid anything that reads as confirming coverage, and an instruction is not a
+guarantee — nor does it reach a message an agent typed by hand, or the analysis
+fields the fallback draft copies verbatim. So every draft, however it was made,
+is scanned for the phrasings that turn a record into a promise: "you're
+covered", "fully covered", "all set", "guaranteed", "approved", "in force", and
+their Spanish equivalents, accents or not.
+
+A match raises an amber warning above the Send button naming the exact phrase.
+It never edits and never blocks: silently rewording a message an agent is about
+to put their name to would be worse than the risk it removes. A false positive
+costs one sentence reread.
+
 **What was sent is never rewritten.** Rows in `client_recaps` are immutable
 once sent. Editing after a send creates a new row, so the record of what the
 client actually received survives later edits.
@@ -75,8 +88,9 @@ Add to `.env`:
 
 ```ini
 # --- sending ---------------------------------------------------------------
-# RingCentral: an SMS-capable number on the extension the app authenticates as.
+# The agency's main number. Every text goes out from this and nothing else.
 # It reuses the existing RINGCENTRAL_* JWT credentials — nothing else to set up.
+# Defaults to AGENCY_PHONE, so a missing value still sends from the main line.
 RINGCENTRAL_SMS_FROM=+15097658839
 
 # Twilio, as an alternative if the RingCentral app has no SMS scope:
@@ -111,35 +125,30 @@ CLIENT_RECAP_AUTO_SEND=false           # text on approval with no second look
 Nothing else needs installing. The tables (`client_recaps`, `sms_opt_outs`) are
 created by the startup migrations.
 
-### Checking the setup before you need it
+### The sending number
 
-Two things stop a first send, and neither is visible until a message is
-refused: the RingCentral app not having the **SMS** permission, and
-`RINGCENTRAL_SMS_FROM` naming a number that does not belong to the extension the
-app authenticates as.
+Every recap goes out from the agency's main number, whichever agent took the
+call and whichever extension it came in on. There is deliberately no per-agent
+sender: a client should recognise the number, and one number means one inbox for
+the replies the recap invites. The sender is stored on each recap row as it is
+sent, so the record shows the number the client actually saw.
 
-**Check sending setup** on the transcript page (or `GET /api/sms/setup`) asks
-RingCentral directly and answers both. It lists every number on the extension,
-marks which can send texts, and says plainly whether the configured number is
-one of them:
+RingCentral's SMS endpoint is scoped to an extension and refuses a sender that
+extension does not own:
 
-> (509) 765-8839 is not one of the numbers this extension can text from.
-> RingCentral will refuse it. Numbers that will work: (509) 555-0143.
+> FeatureNotAvailable — Phone number doesn't belong to extension (MSG-304)
 
-Every recap goes out from the single number in `RINGCENTRAL_SMS_FROM`, whichever
-agent took the call and whichever extension it came in on — there is deliberately
-no per-agent sender. A client should recognise the number, and one number means
-one inbox for the replies the recap invites. The sender is stored on each recap
-row as it is sent, so the record shows the number the client actually saw.
+A main company number usually lives on the auto-receptionist rather than on the
+user the app signs in as, which is exactly when this appears. The app handles it
+without changing the sender: it sends as its own extension first, and on that
+specific refusal looks up which extension actually holds the main number and
+re-sends from there. The answer is cached, so it costs one lookup.
 
-The two permissions are separate, and only one of them blocks sending:
-
-- **SMS** is what sending needs. Without it every send is refused, and the check
-  says so from the token's own scopes without calling anything.
-- **ReadAccounts** is what *listing the numbers* needs. An app set up for call
-  recordings will not have it, and the check then says it cannot confirm the
-  sender belongs to the extension rather than reporting a failure — sending may
-  well work anyway. A test send with dry run off is the remaining check.
+That lookup needs the **ReadAccounts** permission. Without it the app cannot
+find the owning extension, and the send fails with a message saying so — the fix
+is then either to grant ReadAccounts, or to assign the main number to the
+extension the app signs in as. Sending itself needs the **SMS** permission; no
+amount of configuration substitutes for it.
 
 ### Before the first real send
 
@@ -226,7 +235,6 @@ All routes require an admin session.
 | `POST` | `/api/transcripts/{id}/client-recap/draft` | Write a draft from the call analysis |
 | `PUT` | `/api/transcripts/{id}/client-recap` | Save edits (`body`, `to_number`) |
 | `POST` | `/api/transcripts/{id}/client-recap/send` | Send it and record the outcome |
-| `GET` | `/api/sms/setup` | Which numbers RingCentral will let this app send from |
 | `POST` | `/api/sms/opt-out` | Record a number that must not be texted |
 
 ## What is stored
