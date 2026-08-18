@@ -9,6 +9,18 @@ load_dotenv()
 # base url
 BASE_URI= os.getenv("FRONTEND_BASE_URL")
 
+
+def transcript_url(transcript_id: str) -> str:
+    """The page for one transcript, joined the same way the emails join it.
+
+    This used to concatenate the base and the id with nothing between them, so
+    every notification linked to https://<host><uuid> -- a 404 on a host that
+    does not exist. The logs show it plainly once you look: "Final URL for
+    notification: https://cbitranscripts.up.railway.appd2b60d91-...".
+    """
+    base = (BASE_URI or "").rstrip("/")
+    return f"{base}/user/transcripts/{transcript_id}" if base else str(transcript_id)
+
 # pushover.net API token for sending notifications
 TOKEN = os.getenv("TOKEN")
 
@@ -17,7 +29,7 @@ TOKEN = os.getenv("TOKEN")
 def send_push_notification(transcript_id: str, user_key: str, structured_data: dict):
 
     conn = http.client.HTTPSConnection("api.pushover.net", 443)
-    final_url = BASE_URI + transcript_id
+    final_url = transcript_url(transcript_id)
 
     print("Preparing to send notification for transcript ID:", transcript_id)
     print("User key for notification:", user_key)  
