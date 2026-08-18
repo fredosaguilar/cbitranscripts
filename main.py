@@ -2537,7 +2537,11 @@ def save_client_recap(id: str, data: ClientRecapUpdate, request: Request, db: Se
     draft.to_number = to_number or draft.to_number or client_recap.resolve_client_number(transcript)
     db.commit()
 
-    return JSONResponse(content=_recap_state(db, transcript))
+    # Hand-edited wording gets read for the same risky phrasing the drafted
+    # wording is checked for — the model's instructions do not reach an edit.
+    state = _recap_state(db, transcript)
+    state["warning"] = client_recap.risk_warning(body)
+    return JSONResponse(content=state)
 
 
 def _send_recap(db: Session, transcript, draft, sent_by: str) -> tuple[bool, str]:
@@ -2586,13 +2590,6 @@ def send_client_recap(id: str, request: Request, db: Session = Depends(get_db)):
     state = _recap_state(db, transcript)
     state["message"] = message
     return JSONResponse(content=state, status_code=200 if sent else 502)
-
-
-@app.get("/api/sms/setup")
-# What RingCentral will actually let this app send from, and from what number.
-def sms_setup(request: Request, db: Session = Depends(get_db)):
-    _require_admin(request, db)
-    return JSONResponse(content=client_sms.check_sending_setup())
 
 
 @app.post("/api/sms/opt-out")

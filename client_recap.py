@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -262,10 +263,16 @@ def _budget(language: str = "en") -> int:
 
 SYSTEM_PROMPT = """You write the short text message an insurance agency sends a client right after a phone call, confirming in writing what was discussed.
 
+This message is a legal record. It will be read back years later, by a client whose claim was denied, and by their lawyer. Every sentence must still be defensible then. When you are unsure whether to include something, leave it out: an incomplete recap is safe, an overstated one is not.
+
 Rules, all of them binding:
-- Use ONLY the facts given to you. Never add a detail, a date, an amount, or a coverage that is not there.
-- Never state or imply that coverage is in force, bound, added, removed, or effective. Describe what was DISCUSSED, REQUESTED, or SELECTED, not what is covered.
-- Never promise a price, a rate, a discount, or an outcome.
+- Use ONLY the facts given to you. Never add a detail, a date, an amount, or a coverage that is not there. If a fact is not given, it did not happen.
+- Never state or imply that coverage exists, is in force, bound, added, removed, active, effective, or "all set". Describe what was DISCUSSED, REQUESTED, QUOTED, or SELECTED. A request is not a policy.
+- Where the client asked for something to change, say they requested it and that it is not in effect until the agency confirms it. Never leave a requested change sounding done.
+- Never promise or predict a price, a rate, a discount, a refund, an approval, or how a claim would be paid. An amount that was quoted is an estimate that can change, and must be described that way.
+- Never give advice or an opinion of your own. Where advice was given on the call, attribute it: "we recommended", not "you should".
+- No absolutes: not "fully covered", "everything is covered", "guaranteed", "no problem", "don't worry", "you're all set", "taken care of".
+- Never state a deadline, effective date, or renewal date that is not in the facts.
 - Write to the client as "you", in plain everyday language, past tense, no insurance jargon.
 - No greeting, no sign-off, no emoji, no markdown, no bullets with symbols. Short sentences separated by a space or a line break.
 - Write the middle of the message only. A line saying this is a summary of the recent call is added above what you write, and an opt-out line is added below it, so never introduce the message or repeat either one — go straight into what was discussed.
@@ -415,6 +422,78 @@ def _truncate(text: str, limit: int) -> str:
     return (window[:cut] if cut > 0 else window).rstrip(" ,;:-") + "..."
 
 
+# Wording that turns a record of a conversation into a statement that coverage
+# exists. The model is instructed to avoid all of it, but an instruction is not
+# a guarantee, and the analysis fields the template copies from were never bound
+# by it at all -- so whatever is about to be sent gets read back.
+#
+# This warns and never edits. Silently rewording a message an agent is about to
+# put their name to would be worse than the risk it removes; a false positive
+# costs someone rereading one sentence.
+_RISKY_PHRASES = [
+    r"you(?:'re| are)\s+(?:now\s+)?covered",
+    r"fully covered",
+    r"will be covered",
+    r"we'?ll cover",
+    r"everything is covered",
+    r"(?:is|are)\s+(?:now\s+)?(?:in force|in effect|active|effective|bound)",
+    r"coverage (?:is|will be)",
+    r"all set",
+    r"taken care of",
+    r"guarantee",
+    r"approved",
+    r"don'?t worry",
+    r"no problem",
+    # Spanish, matched without accents (the text is stripped before matching)
+    r"esta(?:s)? cubierto",
+    r"todo esta cubierto",
+    r"quedo cubierto",
+    # Allow a few words between, so "la cobertura ya esta vigente" is caught too
+    r"cobertura[^.!?]{0,24}(?:activa|vigente|en vigor)",
+    r"esta(?:s)? (?:vigente|en vigor)",
+    r"garantiza",
+    r"aprobado",
+    r"no se preocupe",
+    r"sin problema",
+    r"ya esta listo",
+]
+
+_RISK_PATTERN = re.compile("|".join(f"({phrase})" for phrase in _RISKY_PHRASES), re.IGNORECASE)
+
+
+def _without_accents(text: str) -> str:
+    stripped = unicodedata.normalize("NFKD", text)
+    return "".join(character for character in stripped if not unicodedata.combining(character))
+
+
+def risky_wording(text: str) -> list[str]:
+    """Phrases in a draft that read as a promise of coverage rather than a record."""
+    if not text:
+        return []
+    found = []
+    for match in _RISK_PATTERN.finditer(_without_accents(text)):
+        phrase = match.group(0).strip()
+        if phrase.lower() not in {existing.lower() for existing in found}:
+            found.append(phrase)
+    return found
+
+
+def risk_warning(text: str) -> Optional[str]:
+    phrases = risky_wording(text)
+    if not phrases:
+        return None
+    quoted = ", ".join(f'"{phrase}"' for phrase in phrases[:4])
+    return (
+        f"Check this wording before sending: {quoted}. A recap records what was discussed — "
+        f"wording that reads as confirming coverage is the thing this text exists to avoid."
+    )
+
+
+def _combine_warnings(*warnings: Optional[str]) -> Optional[str]:
+    kept = [warning for warning in warnings if warning]
+    return " ".join(kept) if kept else None
+
+
 def compose(body: str, language: str = "en") -> str:
     """The message as the client receives it: header, then wording, then opt-out."""
     opening = header_for(language)
@@ -447,10 +526,16 @@ def draft_recap(transcript: Any) -> Draft:
     drafted = _draft_with_model(transcript, facts, language)
     if drafted:
         message, gloss = drafted
-        return Draft(_truncate(message, _budget(language)), "ai", language, gloss, _language_warning(language))
+        body = _truncate(message, _budget(language))
+        # The gloss is read too: a promise of coverage in Spanish is still a
+        # promise of coverage, and the English rendering is where an
+        # English-reading agent would catch it.
+        return Draft(body, "ai", language, gloss, _combine_warnings(
+            _language_warning(language), risk_warning(f"{body}\n{gloss or ''}")))
 
-    return Draft(_truncate(_draft_from_template(transcript), _budget("en")), "template", "en", None,
-                 _fallback_warning(language))
+    body = _truncate(_draft_from_template(transcript), _budget("en"))
+    return Draft(body, "template", "en", None,
+                 _combine_warnings(_fallback_warning(language), risk_warning(body)))
 
 
 def _language_warning(language: str) -> Optional[str]:

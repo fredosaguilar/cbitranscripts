@@ -23,7 +23,6 @@ from ringcentral_utils import (
     RINGCENTRAL_PLATFORM_BASE_URL,
     RINGCENTRAL_REQUEST_TIMEOUT,
     get_ringcentral_access_token,
-    get_ringcentral_scopes,
     ringcentral_api_get,
 )
 
@@ -37,7 +36,19 @@ CLIENT_SMS_PROVIDER = (os.getenv("CLIENT_SMS_PROVIDER") or "auto").strip().lower
 # wording has been read on a real handset, since the recipients are real clients.
 CLIENT_SMS_DRY_RUN = (os.getenv("CLIENT_SMS_DRY_RUN") or "").strip().lower() in {"1", "true", "yes", "on"}
 
-RINGCENTRAL_SMS_FROM = (os.getenv("RINGCENTRAL_SMS_FROM") or "").strip()
+# Every text comes from the agency's main number and no other. A client who gets
+# a recap should see the number they already have for the office, and replies --
+# which the recap explicitly invites -- have to land somewhere the agency reads,
+# not on whichever extension happened to take the call. This is deliberately not
+# configurable per agent, per extension, or per call.
+AGENCY_MAIN_NUMBER = (
+    (os.getenv("RINGCENTRAL_SMS_FROM") or "").strip()
+    or (os.getenv("AGENCY_PHONE") or "").strip()
+    or "509-765-8839"
+)
+
+# Kept under the old name for the settings text and anything else reading it
+RINGCENTRAL_SMS_FROM = AGENCY_MAIN_NUMBER
 
 TWILIO_ACCOUNT_SID = (os.getenv("TWILIO_ACCOUNT_SID") or "").strip()
 TWILIO_AUTH_TOKEN = (os.getenv("TWILIO_AUTH_TOKEN") or "").strip()
@@ -147,150 +158,83 @@ def describe_configuration() -> str:
         origin = TWILIO_MESSAGING_SERVICE_SID or format_phone_for_display(TWILIO_FROM_NUMBER)
         return f"Twilio, sending from {origin}."
     return (
-        "Not configured. Set RINGCENTRAL_SMS_FROM to an SMS-capable number on the "
-        "RingCentral extension the app authenticates as, or set the TWILIO_* variables."
+        "Not configured. Set RINGCENTRAL_SMS_FROM to the agency's main number, "
+        "or set the TWILIO_* variables."
     )
 
 
-def _missing_permission(response) -> Optional[str]:
-    """The permission RingCentral says is missing, when that is why it refused."""
+def _error_codes(response) -> set[str]:
+    """Every error code RingCentral put in a refusal, top level and nested."""
     try:
         payload = response.json()
     except Exception:
-        return None
-    if str(payload.get("errorCode") or "") != "InsufficientPermissions":
-        return None
-    match = re.search(r"\[([A-Za-z]+)\]", str(payload.get("message") or ""))
-    return match.group(1) if match else "unknown"
+        return set()
+    codes = {str(payload.get("errorCode") or "")}
+    for error in payload.get("errors") or []:
+        if isinstance(error, dict):
+            codes.add(str(error.get("errorCode") or ""))
+    return {code for code in codes if code}
 
 
-def check_sending_setup() -> dict:
-    """Ask RingCentral what this app can actually send from.
+# RingCentral's way of saying the sender is not assigned to the extension the
+# app authenticated as. The number is fine; it is being asked for through the
+# wrong door.
+_WRONG_EXTENSION_CODES = {"MSG-304", "FeatureNotAvailable"}
 
-    Both of the things that stop a first send — the app having no SMS
-    permission, and the configured number not belonging to the extension the
-    app authenticates as — are invisible until a message is refused. This asks
-    up front, so the answer arrives before a client is waiting on it.
+# The extension that owns the main number, once found. Worth remembering: it
+# does not change between messages, and finding it costs an API call.
+_sender_extension_id: Optional[str] = None
 
-    The token's own scopes answer the first question without calling anything,
-    so that verdict is reached before the number lookup and survives it failing.
-    Listing the numbers needs ReadAccounts, which an app set up only for call
-    recordings will not have — and being unable to list them is a far smaller
-    problem than being unable to send, so it is reported as a note rather than
-    replacing the answer.
+
+def _extension_owning_main_number() -> Optional[str]:
+    """Which extension the main company number is assigned to, per RingCentral.
+
+    The SMS endpoint is extension-scoped and refuses a sender the extension does
+    not own, so a main number that lives on the auto-receptionist cannot be sent
+    from as the app's own extension however it is configured. Asking the account
+    which extension holds it turns that refusal into a working send.
     """
-    setup: dict = {
-        "provider": active_provider(),
-        "dry_run": CLIENT_SMS_DRY_RUN,
-        "configured_from": RINGCENTRAL_SMS_FROM or None,
-        "extension": None,
-        "numbers": [],
-        "sms_scope": None,       # True, False, or None when it cannot be known
-        "notes": [],
-        "ok": False,
-        "problem": None,
-    }
+    global _sender_extension_id
+    if _sender_extension_id:
+        return _sender_extension_id
 
-    if setup["provider"] == "twilio":
-        setup["problem"] = None if TWILIO_MESSAGING_SERVICE_SID or TWILIO_FROM_NUMBER else \
-            "Twilio is selected but neither TWILIO_FROM_NUMBER nor TWILIO_MESSAGING_SERVICE_SID is set."
-        setup["ok"] = setup["problem"] is None
-        return setup
-
-    scopes = get_ringcentral_scopes()
-    if scopes is not None:
-        setup["scopes"] = sorted(scopes)
-        setup["sms_scope"] = any(scope.lower() == "sms" for scope in scopes)
-
-    # Best effort. Whatever this manages to learn improves the answer; what it
-    # cannot learn must not erase what the scopes already told us.
-    listing_blocked_by = None
+    wanted = normalize_phone(AGENCY_MAIN_NUMBER)
     try:
-        response = ringcentral_api_get("account/~/extension/~")
-        if response.status_code < 400:
-            extension = response.json()
-            setup["extension"] = {
-                "id": extension.get("id"),
-                "name": (extension.get("contact") or {}).get("firstName"),
-                "extensionNumber": extension.get("extensionNumber"),
-                "type": extension.get("type"),
-            }
-        else:
-            listing_blocked_by = _missing_permission(response)
-            if not listing_blocked_by:
-                setup["notes"].append(
-                    f"RingCentral refused the extension lookup ({response.status_code})."
-                )
-
-        if listing_blocked_by is None:
-            numbers = ringcentral_api_get("account/~/extension/~/phone-number", params={"perPage": 100})
-            if numbers.status_code >= 400:
-                listing_blocked_by = _missing_permission(numbers)
-                if not listing_blocked_by:
-                    setup["notes"].append(
-                        f"RingCentral refused the phone-number lookup ({numbers.status_code})."
-                    )
-            else:
-                for record in numbers.json().get("records", []):
-                    features = [str(feature) for feature in (record.get("features") or [])]
-                    setup["numbers"].append({
-                        "phoneNumber": record.get("phoneNumber"),
-                        "display": format_phone_for_display(record.get("phoneNumber")),
-                        "usageType": record.get("usageType"),
-                        "label": record.get("label"),
-                        "sms": "SmsSender" in features,
-                        "mms": "MmsSender" in features,
-                    })
-    except Exception as exc:
-        setup["notes"].append(f"Could not reach RingCentral: {type(exc).__name__}: {exc}")
-
-    if listing_blocked_by:
-        setup["notes"].append(
-            f"This app cannot list the extension's numbers — RingCentral wants the "
-            f"{listing_blocked_by} permission for that. Sending does not need it, so this "
-            f"is only a limit on what this check can tell you."
-        )
-
-    sendable = [number for number in setup["numbers"] if number["sms"]]
-    configured = normalize_phone(RINGCENTRAL_SMS_FROM)
-
-    # Ordered by how much each one blocks: no permission to send at all, then no
-    # sender configured, then a sender that will be refused.
-    if setup["sms_scope"] is False:
-        setup["problem"] = (
-            "This RingCentral app does not have the SMS permission, so every send will be "
-            "refused. Add SMS to the app in the RingCentral developer console and re-authorize it."
-        )
-    elif not RINGCENTRAL_SMS_FROM:
-        setup["problem"] = (
-            "RINGCENTRAL_SMS_FROM is not set." + (
-                " The numbers listed below are the ones this app is allowed to send from — "
-                "put one of them in that variable." if sendable else ""
+        response = ringcentral_api_get("account/~/phone-number", params={"perPage": 1000})
+        if response.status_code >= 400:
+            logger.warning(
+                "Could not list the account's numbers to find the sender's extension (%s): %s",
+                response.status_code, response.text.strip()[:200],
             )
-        )
-    elif not configured:
-        setup["problem"] = f"RINGCENTRAL_SMS_FROM is set to {RINGCENTRAL_SMS_FROM!r}, which is not a phone number."
-    elif setup["numbers"] and not sendable:
-        setup["problem"] = (
-            "This extension has no SMS-capable number. Assign one to the extension the app "
-            "authenticates as, or point the app at an extension that has one."
-        )
-    elif sendable and not any(normalize_phone(number["phoneNumber"]) == configured for number in sendable):
-        allowed = ", ".join(number["display"] for number in sendable)
-        setup["problem"] = (
-            f"{format_phone_for_display(configured)} is not one of the numbers this extension can "
-            f"text from. RingCentral will refuse it. Numbers that will work: {allowed}."
-        )
-    else:
-        setup["ok"] = True
-        if not setup["numbers"]:
-            setup["notes"].append(
-                "Nothing here contradicts the setup, but the numbers could not be listed, so "
-                "whether the sender belongs to this extension is still unconfirmed. A test send "
-                "with dry run off is the remaining check."
-            )
+            return None
+        for record in response.json().get("records", []):
+            if normalize_phone(record.get("phoneNumber")) != wanted:
+                continue
+            extension_id = ((record.get("extension") or {}).get("id"))
+            if extension_id:
+                _sender_extension_id = str(extension_id)
+                logger.info("The main number %s is on extension %s", AGENCY_MAIN_NUMBER, _sender_extension_id)
+                return _sender_extension_id
+    except Exception:
+        logger.exception("Could not work out which extension owns %s", AGENCY_MAIN_NUMBER)
+    return None
 
-    return setup
+
+def _post_sms(access_token: str, extension: str, to_number: str, body: str):
+    url = (
+        f"{RINGCENTRAL_PLATFORM_BASE_URL.rstrip('/')}"
+        f"/restapi/v1.0/account/~/extension/{extension}/sms"
+    )
+    return requests.post(
+        url,
+        headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+        json={
+            "from": {"phoneNumber": AGENCY_MAIN_NUMBER},
+            "to": [{"phoneNumber": to_number}],
+            "text": body,
+        },
+        timeout=RINGCENTRAL_REQUEST_TIMEOUT,
+    )
 
 
 def _send_via_ringcentral(to_number: str, body: str) -> SendResult:
@@ -298,17 +242,31 @@ def _send_via_ringcentral(to_number: str, body: str) -> SendResult:
     if not access_token:
         return SendResult(ok=False, provider="ringcentral", error="No RingCentral access token available.")
 
-    url = f"{RINGCENTRAL_PLATFORM_BASE_URL.rstrip('/')}/restapi/v1.0/account/~/extension/~/sms"
-    response = requests.post(
-        url,
-        headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-        json={
-            "from": {"phoneNumber": RINGCENTRAL_SMS_FROM},
-            "to": [{"phoneNumber": to_number}],
-            "text": body,
-        },
-        timeout=RINGCENTRAL_REQUEST_TIMEOUT,
-    )
+    # The app's own extension first: that is the path that works when the main
+    # number is assigned to it, and it costs no extra lookup.
+    response = _post_sms(access_token, "~", to_number, body)
+
+    # Refused because the sender is not on that extension. The number is right --
+    # it is the agency's main line -- so find the extension it does belong to and
+    # send it from there rather than falling back to some other number.
+    if response.status_code >= 400 and _error_codes(response) & _WRONG_EXTENSION_CODES:
+        owning_extension = _extension_owning_main_number()
+        if owning_extension:
+            logger.info("Retrying the text from extension %s, which owns %s",
+                        owning_extension, AGENCY_MAIN_NUMBER)
+            response = _post_sms(access_token, owning_extension, to_number, body)
+        else:
+            return SendResult(
+                ok=False,
+                provider="ringcentral",
+                error=(
+                    f"RingCentral will not send from {format_phone_for_display(AGENCY_MAIN_NUMBER)} as this "
+                    f"app's extension, and the extension that owns that number could not be looked up. "
+                    f"Either assign the main number to the extension the app signs in as (its SMS "
+                    f"permission must be on), or give the app the ReadAccounts permission so it can find "
+                    f"the right extension itself."
+                ),
+            )
 
     if response.status_code >= 400:
         return SendResult(
