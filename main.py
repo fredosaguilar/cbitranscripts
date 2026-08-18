@@ -77,7 +77,11 @@ def _build_fingerprint() -> str:
                  "ringcentral_utils.py", "templates/transcript_detail.html"):
         try:
             with open(os.path.join(base, name), "rb") as handle:
-                digest.update(handle.read())
+                # Line endings are normalised because git on Windows rewrites
+                # them on checkout. Without this the same commit hashes one way
+                # deployed from a Windows clone and another from the repository,
+                # which makes the value useless for the comparison it exists for.
+                digest.update(handle.read().replace(b"\r\n", b"\n"))
         except OSError:
             digest.update(b"<missing>")
     return digest.hexdigest()[:12]
