@@ -1,9 +1,16 @@
-# Client recap texts
+# Client file-note emails
 
-After a call is transcribed, analysed and approved, the agency can text the
-client a short written recap of what was discussed and what changed. Every
-draft and every send is kept, so months later you can show exactly what wording
-went to which number and when.
+After a call is transcribed, analysed and approved, the agency can email the
+client the file note kept on that call. Every draft and every send is kept, so
+months later you can show exactly what wording went to which address and when.
+
+> **The recap text messages were removed.** Sending by SMS is gone: the panel,
+> the endpoints, `client_sms.py` and `client_recap.py`. The `client_recaps` and
+> `sms_opt_outs` tables are deliberately left in place — texts that went to real
+> clients are evidence, and dropping the record of them to tidy up the code
+> would destroy the very thing the feature existed to create. The history below
+> describes that feature as it was; it is kept because the reasoning still
+> applies to the email, which works the same way.
 
 ## Why it is built the way it is
 
@@ -270,9 +277,8 @@ part of the record too.
 
 ## Emailing the file note
 
-The recap text is a short summary written for a phone screen. The **Email the
-File Note** panel on the same page sends something different: the CRM note
-itself, the words that go on the file, so what the agency wrote down and what
+The **Email the File Note** panel on the transcript page sends the CRM note
+itself — the words that go on the file — so what the agency wrote down and what
 the client was told are provably the same.
 
 It goes from `info@columbiabasininsurance.com` (`CLIENT_EMAIL_FROM`) with the
@@ -338,3 +344,23 @@ returns an error, which the page shows rather than silently rewriting the sender
 In Google Workspace or Microsoft 365 that means adding the address as a
 send-as alias on the mailbox in `SMTP_USER`, or authenticating as that mailbox
 directly.
+
+### Previewing from the transcripts list
+
+Every row on the transcripts page has a **Preview email** link beside *View
+Details*. It shows the From, To and Subject, and the message itself, without
+saving anything or sending anything — so a whole afternoon of calls can be
+checked without opening each one.
+
+What it shows depends on where that call has got to:
+
+| State | Shown |
+| --- | --- |
+| Already sent | Exactly what the client received, and when |
+| An unsent draft exists | The draft, edits included — what would go if sent |
+| Nothing drafted yet | What drafting would produce |
+| No CRM note on the call | Nothing to send, and says so |
+
+A sent email shows the stored body rather than recomposing it. Recomposing
+would display words nobody was ever sent, and the note may well have been
+edited since it went.
