@@ -122,6 +122,8 @@ CLIENT_RECAP_AUTO_SEND=false           # text on approval with no second look
 # be allowed to send as it; see "The From address" below.
 CLIENT_EMAIL_FROM=info@columbiabasininsurance.com
 CLIENT_NOTE_EMAIL_SUBJECT=Notes Added to Your File
+AGENCY_ADDRESS=21 D St SW, Suite A, Quincy, WA 98848
+# CLIENT_EMAIL_SIGNATURE=...   # replaces the whole sign-off block
 
 # The opening and closing lines for a language the code does NOT already carry.
 # English and Spanish are written into client_recap.py and cannot be changed
@@ -282,7 +284,21 @@ Hello Maria,
 Here is a summary of the notes we added to your file for our record retention:
 
 Client called to make a payment of $287.12 on the liability coverage. ...
+
+Columbia Basin Insurance
+Phone: 509-765-8839
+Email: info@columbiabasininsurance.com
+Office: 21 D St SW, Suite A, Quincy, WA 98848
+
+Licensed in Washington. Coverage descriptions here are summaries only - your policy language governs.
 ```
+
+The sign-off matches the one on the agency's other client mail. It is built from
+`AGENCY_NAME`, `AGENCY_PHONE`, `CLIENT_EMAIL_FROM` and `AGENCY_ADDRESS`, so
+changing the phone number in one place changes it here too;
+`CLIENT_EMAIL_SIGNATURE` replaces the whole block. The licensing line is not
+decoration — this email carries a summary of somebody's policy file, and it says
+in the same breath that the policy language governs.
 
 **Read it before it goes.** The note was written for the file, not for the
 client. A note meant for internal use can carry an assessment of the caller, a
