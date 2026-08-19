@@ -50,7 +50,7 @@ from zoom_agency_utils import (
     find_agency_zoom_employee_by_email,
     list_agency_zoom_employees,
     list_agency_zoom_employees_with_error,
-    create_agency_zoom_tasks_for_transcript,
+    create_agency_zoom_task_for_transcript,
     normalize_follow_up_task,
     resolve_transcript_agency_zoom_match,
     search_agency_zoom_customers,
@@ -178,6 +178,7 @@ def on_startup():
         )""",
         "CREATE INDEX IF NOT EXISTS ix_client_note_emails_transcript_id ON client_note_emails (transcript_id)",
         "ALTER TABLE client_note_emails ADD COLUMN IF NOT EXISTS note_fingerprint VARCHAR",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS follow_up_task_state TEXT",
         # A user may be email-only, with no Pushover key
         "ALTER TABLE users_tokens ALTER COLUMN token DROP NOT NULL",
     ]
@@ -260,15 +261,12 @@ ASSIGNMENT_EMAILS_ENABLED = _env_flag("ASSIGNMENT_EMAILS_ENABLED")
 # Optional startup seeding: "101:henry@example.com,102:fred@example.com"
 EXTENSION_EMAIL_MAP = os.getenv("EXTENSION_EMAIL_MAP", "")
 
-# Auto-create AgencyZoom tasks for fresh calls flagged follow_up_needed
 # Follow-up tasks reach Agency Zoom only when an agent adds them, so nothing is
 # pushed into the CRM without a person deciding it belongs there.
-AUTO_AGENCY_ZOOM_TASKS = _env_flag("AUTO_AGENCY_ZOOM_TASKS", "false")
 
 # A reprocess request holds the scheduler cursor until the call is transcribed
 # again; abandoned after this long so one bad call cannot hold it forever.
 REPROCESS_HOLD_HOURS = int(os.getenv("REPROCESS_HOLD_HOURS", "24"))
-AUTO_TASK_MAX_AGE_DAYS = int(os.getenv("AUTO_TASK_MAX_AGE_DAYS", "7"))
 
 # Cached audio retention
 AUDIO_CACHE_RETENTION_DAYS = int(os.getenv("AUDIO_CACHE_RETENTION_DAYS", "90"))
@@ -1601,6 +1599,124 @@ def agency_zoom_search(id: str, request: Request, db: Session = Depends(get_db))
     })
 
 
+def _task_key(task_text: str) -> str:
+    """Identifies a task by its words, so rewording it starts it afresh."""
+    return hashlib.sha256(" ".join(task_text.lower().split()).encode("utf-8")).hexdigest()[:16]
+
+
+def _task_state(transcript) -> dict:
+    try:
+        return json.loads(transcript.follow_up_task_state or "{}")
+    except (ValueError, TypeError):
+        return {}
+
+
+def _save_task_state(transcript, state: dict) -> None:
+    transcript.follow_up_task_state = json.dumps(state)
+
+
+@app.post("/api/transcripts/{id}/follow-up/add")
+# Add one follow-up task to Agency Zoom, with its own due date.
+def add_follow_up_task(
+    id: str,
+    request: Request,
+    task: str = Form(...),
+    due_date: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    """Create a single task, on demand.
+
+    Tasks are written by the analysis but not sent anywhere until somebody adds
+    them. A suggestion nobody read is not a commitment the agency should be
+    making to a client, and adding them one at a time is what lets each carry
+    the date it is actually due.
+    """
+    if not get_logged_in_admin(request, db):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    transcript = _load_transcript_or_404(db, id)
+    task_text = _clean_string(task)
+    if not task_text:
+        raise HTTPException(status_code=400, detail="There is no task text to add.")
+
+    state = _task_state(transcript)
+    key = _task_key(task_text)
+    if state.get(key, {}).get("task_id"):
+        raise HTTPException(status_code=409, detail="That task has already been added to Agency Zoom.")
+
+    employee_id, agent_name = _assigned_agency_zoom_agent(db, transcript)
+    try:
+        task_id = create_agency_zoom_task_for_transcript(
+            transcript, task_text,
+            due_date=_clean_string(due_date),
+            assignee_id=employee_id,
+            agent_name=agent_name,
+        )
+    except Exception as exc:
+        logger.exception("Agency Zoom refused a follow-up task for transcript %s", transcript.id)
+        raise HTTPException(status_code=502, detail=f"Agency Zoom could not add the task: {exc}") from exc
+
+    if not task_id:
+        raise HTTPException(status_code=502, detail="Agency Zoom accepted the task but returned no id.")
+
+    state[key] = {"task_id": str(task_id), "due_date": _clean_string(due_date) or None,
+                  "task": task_text, "added_at": datetime.utcnow().isoformat()}
+    _save_task_state(transcript, state)
+
+    existing = [line for line in (transcript.agency_zoom_task_ids or "").splitlines() if line.strip()]
+    transcript.agency_zoom_task_ids = "\n".join(existing + [str(task_id)])
+    db.commit()
+
+    return JSONResponse(content={"status": "ok", "task_id": str(task_id), "key": key})
+
+
+@app.post("/api/transcripts/{id}/follow-up/due-date")
+# Remember a due date for one task, before it is added.
+def set_follow_up_due_date(
+    id: str,
+    request: Request,
+    task: str = Form(...),
+    due_date: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    if not get_logged_in_admin(request, db):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    transcript = _load_transcript_or_404(db, id)
+    task_text = _clean_string(task)
+    if not task_text:
+        raise HTTPException(status_code=400, detail="There is no task to set a date on.")
+
+    state = _task_state(transcript)
+    entry = state.setdefault(_task_key(task_text), {"task": task_text})
+    entry["due_date"] = _clean_string(due_date) or None
+    _save_task_state(transcript, state)
+    db.commit()
+    return JSONResponse(content={"status": "ok"})
+
+
+@app.get("/api/transcripts/{id}/follow-up/state")
+# Which follow-up tasks have been added, and the date set against each.
+def get_follow_up_state(id: str, request: Request, db: Session = Depends(get_db)):
+    if not get_logged_in_admin(request, db):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    transcript = _load_transcript_or_404(db, id)
+    state = _task_state(transcript)
+    tasks = [line.strip() for line in (transcript.follow_up_task or "").splitlines() if line.strip()]
+    return JSONResponse(content={
+        "tasks": [
+            {
+                "task": text,
+                "key": _task_key(text),
+                "task_id": state.get(_task_key(text), {}).get("task_id"),
+                "due_date": state.get(_task_key(text), {}).get("due_date"),
+            }
+            for text in tasks
+        ],
+        "default_due_date": transcript.agency_zoom_due_date,
+    })
+
+
 _CLIENT_LINE = re.compile(r"^\s*Client:.*(?:\r?\n)+", re.IGNORECASE)
 
 
@@ -1653,6 +1769,7 @@ def _stamp_client_on_note(note: str | None, linked_name: str | None,
     to match rather than leaving a name nobody at the agency recognises.
     """
     body = _CLIENT_LINE.sub("", _clean_string(note) or "", count=1).strip()
+    body = client_note_email.strip_boilerplate(body)
     if not body:
         return _clean_string(note)
 
@@ -1911,7 +2028,7 @@ def create_transcript(
         customer_sentiment=_blank_if_placeholder(data.customer_sentiment),
         follow_up_needed=data.follow_up_needed,
         follow_up_task=_blank_if_placeholder(data.follow_up_task),
-        crm_note=_blank_if_placeholder(data.crm_note),
+        crm_note=client_note_email.strip_boilerplate(_blank_if_placeholder(data.crm_note)) or None,
         recordingID=normalized_recording_id,
         caller_number=data.caller_number,
         from_name=_blank_if_placeholder(data.from_name),
@@ -1973,23 +2090,10 @@ def create_transcript(
     if was_reprocess:
         _advance_cursor_to_newest_transcript()
 
-    # Auto-create AgencyZoom follow-up tasks for fresh calls only, so backlog
-    # re-sweeps of old calls never spam the CRM.
-    if AUTO_AGENCY_ZOOM_TASKS and new_transcript.follow_up_needed and not new_transcript.agency_zoom_task_ids:
-        call_time = _ensure_utc_datetime(new_transcript.start_time)
-        is_recent = call_time is not None and (
-            datetime.now(timezone.utc) - call_time <= timedelta(days=AUTO_TASK_MAX_AGE_DAYS)
-        )
-        if is_recent and normalize_follow_up_task(new_transcript.follow_up_task):
-            try:
-                employee_id, agent_name = _assigned_agency_zoom_agent(db, new_transcript)
-                created_task_ids = create_agency_zoom_tasks_for_transcript(
-                    new_transcript, assignee_id=employee_id, agent_name=agent_name)
-                if created_task_ids:
-                    new_transcript.agency_zoom_task_ids = "\n".join(created_task_ids)
-                    db.commit()
-            except Exception:
-                logger.exception("Failed to auto-create AgencyZoom tasks for transcript %s", new_transcript.id)
+    # Follow-up tasks are written by the analysis and shown on the call, but
+    # nothing reaches Agency Zoom until an agent adds one. A task the CRM is
+    # holding is work the agency has taken on, and that should be somebody's
+    # decision rather than a side effect of a call being transcribed.
 
     # Tell the assigned agent their call is ready to review
     if ASSIGNMENT_EMAILS_ENABLED:
@@ -2325,13 +2429,10 @@ def update_status(
                 transcript.agency_zoom_note_posted_at = datetime.utcnow()
                 db.commit()
 
-            # Skip creation when tasks were already auto-created at ingest time
-            if normalized_tasks and not _clean_string(transcript.agency_zoom_task_ids):
-                created_task_ids = create_agency_zoom_tasks_for_transcript(
-                    transcript, assignee_id=employee_id, agent_name=agent_name)
-                if created_task_ids:
-                    transcript.agency_zoom_task_ids = "\n".join(created_task_ids)
-                    db.commit()
+            # Follow-ups are not created here. They are suggestions until an
+            # agent adds one, each with the date that task is actually due --
+            # approving a call is not the same as committing the agency to every
+            # follow-up the analysis thought of.
         except Exception as exc:
             logger.exception("Agency Zoom rejected the approval of transcript %s", id)
             posted = "The call note was saved to Agency Zoom. " if transcript.agency_zoom_note_posted_at else ""

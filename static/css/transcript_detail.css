@@ -319,3 +319,15 @@ button {
     margin-bottom: 4px;
 }
 
+
+.task-due {
+    font-size: 0.78rem;
+    padding: 2px 6px;
+}
+
+.task-added {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #15825a;
+    white-space: nowrap;
+}

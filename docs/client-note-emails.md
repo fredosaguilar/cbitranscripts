@@ -481,3 +481,35 @@ What it shows depends on where that call has got to:
 A sent email shows the stored body rather than recomposing it. Recomposing
 would display words nobody was ever sent, and the note may well have been
 edited since it went.
+
+## Follow-up tasks
+
+The analysis writes follow-up tasks from the call, and they appear on the
+transcript page — but nothing reaches Agency Zoom until somebody presses **Add
+to Agency Zoom** on that task. A task the CRM is holding is work the agency has
+taken on, and that should be a decision rather than a side effect of a call
+being transcribed.
+
+Each task has its own due date beside it. A date set before the task is added is
+remembered, so it survives a reload; a task added without one uses the call's
+default date, which itself defaults to tomorrow. Once added, the row shows
+`Added #<id>` and the button goes, so the same task cannot be sent twice.
+
+Tasks are tracked by their text, so rewording one makes it a new task with a
+clean slate — which is the right answer, since a reworded task is a different
+piece of work.
+
+Approving a call no longer creates tasks, and neither does transcribing one.
+
+## What the note does not say
+
+The analysis used to close every note with its own disclaimers — "No coverage
+was bound during this call", "No specific coverages, limits, or premiums were
+discussed or confirmed on this call". These are stripped, at ingest and again
+when a note written before that is next touched.
+
+They said nothing about the call. They were identical on every note, they
+crowded out what actually happened, and a client reading their own file note
+does not need to be told what was not discussed. Only sentences in those fixed
+forms go: a sentence recording something real — a premium that *was* quoted, a
+change the client asked for — says what happened and is left alone.

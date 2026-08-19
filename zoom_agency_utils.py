@@ -813,6 +813,64 @@ def _task_due_dates(chosen: Any) -> tuple[str, str]:
 
 
 # Create one Agency Zoom task for each follow-up line on a transcript.
+def create_agency_zoom_task_for_transcript(
+    transcript: Any,
+    task_text: str,
+    due_date: Optional[str] = None,
+    assignee_id: Optional[str] = None,
+    agent_name: Optional[str] = None,
+) -> Optional[str]:
+    """Create one follow-up task, with its own due date, and return its id.
+
+    Tasks are added one at a time and only when somebody presses Add, so each
+    carries the date that task is actually due rather than one date standing in
+    for every follow-up on the call.
+    """
+    text = _clean_string(task_text)
+    if not text:
+        raise ValueError("A follow-up task needs some text before it can be added.")
+
+    resolved_due, resolved_datetime = _task_due_dates(
+        _clean_string(due_date) or getattr(transcript, "agency_zoom_due_date", None))
+
+    context_lines = [
+        f"Client Name: {_clean_string(getattr(transcript, 'client_name', None)) or UNKNOWN_VALUE}",
+        f"Client Number: {_clean_string(getattr(transcript, 'client_number', None)) or UNKNOWN_VALUE}",
+        f"Policy Type: {_clean_string(getattr(transcript, 'policy_type', None)) or UNKNOWN_VALUE}",
+        f"Reason For Call: {_clean_string(getattr(transcript, 'reason_for_call', None)) or UNKNOWN_VALUE}",
+        f"Handled by: {_clean_string(agent_name) or UNKNOWN_VALUE}",
+        f"Recording ID: {_clean_string(getattr(transcript, 'recordingID', None)) or UNKNOWN_VALUE}",
+        f"Transcript ID: {getattr(transcript, 'id', UNKNOWN_VALUE)}",
+        "The full call write-up is on the customer's notes.",
+    ]
+
+    jwt_token = zomm_agency_login()
+    resolved_assignee = _clean_int(assignee_id) or resolve_agency_zoom_assignee_id(
+        transcript, jwt_token=jwt_token)
+
+    customer_name = _clean_string(getattr(transcript, "client_name", None))
+    customer_id = customer_type = None
+    match = resolve_transcript_agency_zoom_match(transcript, jwt_token=jwt_token)
+    if match:
+        customer_id = match.get("id")
+        customer_type = match.get("type") or "customer"
+        customer_name = match.get("name") or customer_name
+
+    response_data = create_agency_zoom_task(
+        title=f"{TASK_TITLE}: {customer_name}" if customer_name else TASK_TITLE,
+        due_date=resolved_due,
+        task_datetime=resolved_datetime,
+        comments="\n".join([text, ""] + context_lines),
+        time_specific=True,
+        customer_name=customer_name,
+        customer_id=customer_id,
+        customer_type=customer_type,
+        assignee_id=resolved_assignee,
+        jwt_token=jwt_token,
+    )
+    return _extract_agency_zoom_task_id(response_data)
+
+
 def create_agency_zoom_tasks_for_transcript(
     transcript: Any,
     assignee_id: Optional[str] = None,

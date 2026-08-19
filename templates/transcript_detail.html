@@ -165,6 +165,10 @@
         <textarea id="reasonForCallInput" rows="4">{{ transcript.reason_for_call }}</textarea>
 
         <label class="field-label">Follow Up Task</label>
+        <p style="margin:0 0 8px; font-size:0.85rem; opacity:0.8;">
+            Written from the call, but nothing reaches Agency Zoom until you add it. Give a task its
+            own due date if it needs one, then press Add.
+        </p>
         {# Numbered the same way the server numbers them, so a button always
            acts on the task it sits next to, whatever the text contains. #}
         {% set follow_up_tasks = (transcript.follow_up_task or "").splitlines()
@@ -172,9 +176,11 @@
         <div id="followUpTaskList" class="follow-up-task-list">
             {% if follow_up_tasks %}
             {% for task in follow_up_tasks %}
-            <div class="follow-up-task-item" data-index="{{ loop.index0 }}">
+            <div class="follow-up-task-item" data-index="{{ loop.index0 }}" data-task="{{ task }}">
                 <span class="task-text">{{ task }}</span>
                 <div class="task-actions">
+                    <input type="date" class="task-due" title="Due date for this task">
+                    <button type="button" class="task-add">Add to Agency Zoom</button>
                     <button type="button" class="task-edit">Edit</button>
                     <button type="button" class="task-delete">Delete</button>
                 </div>
@@ -193,7 +199,7 @@
             <input type="date" id="dueDateInput" value="{{ transcript.agency_zoom_due_date or '' }}"
                    onchange="saveDueDate()">
             <small style="opacity:0.75;">
-                Applied to tasks created for this call when it is approved. Defaults to tomorrow.
+                Used for any task added without a date of its own. Defaults to tomorrow.
             </small>
         </div>
 
@@ -505,8 +511,84 @@
             editFollowUpTask(index, task);
         } else if (button.classList.contains("task-delete")) {
             deleteFollowUpTask(index, task);
+        } else if (button.classList.contains("task-add")) {
+            addTaskToAgencyZoom(item, task, button);
         }
     });
+
+    // A date set before the task is added is remembered, so it is still there
+    // if the page is reloaded before anyone presses Add.
+    document.getElementById("followUpTaskList").addEventListener("change", (event) => {
+        const field = event.target.closest(".task-due");
+        const item = field && field.closest(".follow-up-task-item");
+        if (!item) return;
+        const body = new FormData();
+        body.append("task", item.querySelector(".task-text").textContent.trim());
+        body.append("due_date", field.value);
+        fetch(`/api/transcripts/{{ transcript.id }}/follow-up/due-date`, { method: "POST", body })
+            .catch(() => showToast("Could not save the due date for that task."));
+    });
+
+    async function addTaskToAgencyZoom(item, task, button) {
+        const due = item.querySelector(".task-due");
+        const body = new FormData();
+        body.append("task", task);
+        body.append("due_date", due ? due.value : "");
+
+        button.disabled = true;
+        button.textContent = "Adding…";
+        try {
+            const response = await fetch(`/api/transcripts/{{ transcript.id }}/follow-up/add`,
+                                         { method: "POST", body });
+            const data = await response.json().catch(() => null);
+            if (!response.ok) {
+                showToast((data && data.detail) || "Agency Zoom could not add that task.");
+                button.disabled = false;
+                button.textContent = "Add to Agency Zoom";
+                return;
+            }
+            markTaskAdded(item, data.task_id);
+            showToast(`Task added to Agency Zoom (#${data.task_id})`);
+        } catch (error) {
+            showToast("Could not reach the server to add that task.");
+            button.disabled = false;
+            button.textContent = "Add to Agency Zoom";
+        }
+    }
+
+    function markTaskAdded(item, taskId) {
+        const actions = item.querySelector(".task-actions");
+        const add = actions.querySelector(".task-add");
+        if (add) add.remove();
+        const due = actions.querySelector(".task-due");
+        if (due) due.disabled = true;
+        if (!actions.querySelector(".task-added")) {
+            const badge = document.createElement("span");
+            badge.className = "task-added";
+            badge.textContent = taskId ? `Added #${taskId}` : "Added";
+            actions.prepend(badge);
+        }
+    }
+
+    // Which tasks are already in Agency Zoom, and the dates set against them
+    async function loadFollowUpState() {
+        try {
+            const response = await fetch(`/api/transcripts/{{ transcript.id }}/follow-up/state`);
+            if (!response.ok) return;
+            const data = await response.json();
+            const items = [...document.querySelectorAll(".follow-up-task-item")];
+            (data.tasks || []).forEach(entry => {
+                const item = items.find(
+                    el => el.querySelector(".task-text").textContent.trim() === entry.task);
+                if (!item) return;
+                const due = item.querySelector(".task-due");
+                if (due && entry.due_date) due.value = entry.due_date;
+                if (entry.task_id) markTaskAdded(item, entry.task_id);
+            });
+        } catch (error) { /* the buttons still work without this */ }
+    }
+
+    loadFollowUpState();
 
     async function sendFollowUpChange(body, failureMessage) {
         const id = "{{ transcript.id }}";
