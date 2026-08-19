@@ -2702,6 +2702,23 @@ def _linked_agency_zoom_email(transcript) -> Optional[str]:
     return None
 
 
+def _assigned_agent_name(db: Session, transcript) -> Optional[str]:
+    """The real name of the agent this call is assigned to, if we know one.
+
+    The assignment is stored as an extension number, which is not a name a
+    client would recognise, so this reaches for the name recorded against that
+    user before falling back to the extension's own name on the transcript.
+    """
+    assignee = _clean_string(getattr(transcript, "assigned_to", None)) or _clean_string(
+        getattr(transcript, "extension_number", None))
+    if not assignee:
+        return None
+    user = db.query(models.UserToken).filter(models.UserToken.user_id == assignee).first()
+    if user is None:
+        return None
+    return _clean_string(getattr(user, "agency_zoom_employee_name", None))
+
+
 def _note_email_blocker(transcript, to_email: str | None) -> str | None:
     """Why this note email cannot go yet, in words the agent can act on."""
     status = transcript.status.value if hasattr(transcript.status, "value") else str(transcript.status)
@@ -2752,7 +2769,7 @@ def draft_note_email(id: str, request: Request, db: Session = Depends(get_db)):
     if not client_note_email.has_note(transcript):
         raise HTTPException(status_code=400, detail="There is no CRM note on this call to send.")
 
-    body = client_note_email.compose(transcript)
+    body = client_note_email.compose(transcript, _assigned_agent_name(db, transcript))
     draft = _open_note_email_draft(db, transcript.id)
     if draft is None:
         draft = models.ClientNoteEmail(
