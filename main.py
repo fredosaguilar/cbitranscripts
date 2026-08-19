@@ -1604,21 +1604,64 @@ def agency_zoom_search(id: str, request: Request, db: Session = Depends(get_db))
 _CLIENT_LINE = re.compile(r"^\s*Client:.*(?:\r?\n)+", re.IGNORECASE)
 
 
-def _stamp_client_on_note(note: str | None, linked_name: str | None) -> str | None:
-    """Head the note with the customer whose file it belongs on.
+def _prose_name(full_name: str) -> str:
+    """How a name reads mid-sentence: the given name for a person, all of it
+    for a business, since "Ochoa called about the renewal" is wrong for a farm."""
+    words = full_name.replace(",", " ").split()
+    if not words:
+        return full_name
+    if any(word.lower().strip(".,") in client_note_email._BUSINESS_MARKERS for word in words):
+        return full_name
+    if "," in full_name:
+        after = full_name.split(",", 1)[1].split()
+        if after:
+            return after[0]
+    return words[0]
 
-    The analysis names whoever spoke, which is often not who the account is
-    under -- a call about the Curiel policy can be made by Andres, and the note
-    will say Andres. Both facts are true and the note needs both, so the account
-    is stamped at the top rather than the speaker's name being overwritten in
-    the prose. Rewriting "Andres called" to "Mauro called" would make the file
-    say a person phoned who did not, which is a worse record than an unclear one.
+
+def _rename_client_in_note(note: str, old_names: list[str | None], new_name: str) -> str:
+    """Put the linked customer's name where the analysis wrote somebody else's.
+
+    Whisper hears a first name and the analysis writes the whole note around it,
+    so a call on the Martinez file comes back saying "Sirio called". The name
+    the agency knows the client by is the one that belongs on the record, so
+    once the call is linked the note is rewritten to use it.
+
+    Only the name the analysis identified as the client is touched, matched
+    whole-word, so other people named in the call -- a second driver, a
+    body shop, a spouse -- are left exactly as written.
+    """
+    replacement = _prose_name(new_name)
+    for old in old_names:
+        cleaned = _clean_string(old)
+        if not cleaned or cleaned.lower() == new_name.lower():
+            continue
+        for variant in {cleaned, _prose_name(cleaned)}:
+            if len(variant) < 3 or variant.lower() == replacement.lower():
+                continue
+            note = re.sub(rf"\b{re.escape(variant)}\b", replacement, note, flags=re.IGNORECASE)
+    return note
+
+
+def _stamp_client_on_note(note: str | None, linked_name: str | None,
+                          spoken_names: list[str | None] | None = None) -> str | None:
+    """Head the note with the customer whose file it belongs on, and use their name.
+
+    The analysis names whoever spoke, which is not always the name the account
+    is under. The agency files the call against the linked customer, so that is
+    the name the note carries: the header states it, and the prose is rewritten
+    to match rather than leaving a name nobody at the agency recognises.
     """
     body = _CLIENT_LINE.sub("", _clean_string(note) or "", count=1).strip()
     if not body:
         return _clean_string(note)
+
     cleaned_name = _clean_string(linked_name)
-    return f"Client: {cleaned_name}\n\n{body}" if cleaned_name else body
+    if not cleaned_name:
+        return body
+
+    body = _rename_client_in_note(body, spoken_names or [], cleaned_name)
+    return f"Client: {cleaned_name}\n\n{body}"
 
 
 @app.post("/api/transcripts/{id}/agencyzoom/link")
@@ -1649,7 +1692,12 @@ def agency_zoom_link(
     transcript.agency_zoom_customer_name = linked_name
     # The note follows the link immediately: the page shows the change, and the
     # email built from the note is right before anybody presses send.
-    transcript.crm_note = _stamp_client_on_note(transcript.crm_note, linked_name)
+    # The names the analysis used for the caller, which the linked customer's
+    # name replaces. Captured before client_name is updated to the linked one.
+    spoken_names = [transcript.client_name, transcript.from_name]
+    transcript.crm_note = _stamp_client_on_note(transcript.crm_note, linked_name, spoken_names)
+    if linked_name:
+        transcript.client_name = linked_name
 
     # Optionally apply the same link to every other call from this number
     also_updated = 0
@@ -1674,7 +1722,10 @@ def agency_zoom_link(
                 sibling.agency_zoom_customer_id = linked_id
                 sibling.agency_zoom_customer_type = linked_type
                 sibling.agency_zoom_customer_name = linked_name
-                sibling.crm_note = _stamp_client_on_note(sibling.crm_note, linked_name)
+                sibling.crm_note = _stamp_client_on_note(
+                    sibling.crm_note, linked_name, [sibling.client_name, sibling.from_name])
+                if linked_name:
+                    sibling.client_name = linked_name
                 also_updated += 1
 
     db.commit()

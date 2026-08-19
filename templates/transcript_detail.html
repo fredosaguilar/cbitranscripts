@@ -383,6 +383,12 @@
             document.getElementById("azResults").innerHTML = "";
             azLoadStatus();
 
+            // The note now names the linked customer, so show that rather than
+            // leaving the previous name on screen until someone reloads.
+            const noteField = document.getElementById("crmNoteInput");
+            if (noteField && typeof data.crm_note === "string") noteField.value = data.crm_note;
+            noteEmailLoad();
+
             // The note is headed with whoever the call is linked to, so the box
             // and the email built from it both follow the link straight away.
             if (data.crm_note !== undefined && data.crm_note !== null) {
