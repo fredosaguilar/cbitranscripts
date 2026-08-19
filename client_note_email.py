@@ -109,12 +109,32 @@ def has_note(transcript: Any) -> bool:
     return bool(_clean(getattr(transcript, "crm_note", None)))
 
 
-def compose(transcript: Any) -> str:
+def agent_name(transcript: Any, assigned_name: Optional[str] = None) -> Optional[str]:
+    """Who the client spoke to, named the way they would recognise.
+
+    The agent the call is assigned to comes first, since that is the person now
+    answerable for it. The RingCentral extension name is the fallback: on a call
+    that was never assigned it is still the name of whoever's line it came in
+    on, which is who the client actually talked to.
+    """
+    name = _clean(assigned_name) or _clean(getattr(transcript, "extension_name", None))
+    if not name:
+        return None
+    # Extension names are often "Fred Aguilar - Sales" or "Quincy Office (101)"
+    name = re.split(r"\s+[-–|(]", name)[0].strip()
+    return name or None
+
+
+def compose(transcript: Any, assigned_name: Optional[str] = None) -> str:
     """The message body, in the wording the agency asked for, signed off."""
     note = _clean(getattr(transcript, "crm_note", None)) or ""
+    who = agent_name(transcript, assigned_name)
+    # Without a name the sentence has to stand on its own rather than trail off
+    # into "your conversation with ." or name the agency twice over.
+    conversation = f"your conversation with {who} and the notes" if who else "the notes"
     return (
         f"Hello {greeting_name(transcript)},\n\n"
-        f"Here is a summary of the notes we added to your file for our record retention:\n\n"
+        f"Here is a summary of {conversation} we added to your file for our record retention:\n\n"
         f"{note}\n\n"
         f"{signature()}\n"
     )

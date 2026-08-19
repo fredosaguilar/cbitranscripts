@@ -281,7 +281,7 @@ subject "Notes Added to Your File" (`CLIENT_NOTE_EMAIL_SUBJECT`), and reads:
 ```
 Hello Maria,
 
-Here is a summary of the notes we added to your file for our record retention:
+Here is a summary of your conversation with Fred Aguilar and the notes we added to your file for our record retention:
 
 Client called to make a payment of $287.12 on the liability coverage. ...
 
@@ -292,6 +292,11 @@ Office: 21 D St SW, Suite A, Quincy, WA 98848
 
 Licensed in Washington. Coverage descriptions here are summaries only - your policy language governs.
 ```
+
+The agent named is the one the call is assigned to, by the name recorded against
+that user; failing that, the name on the RingCentral extension the call came in
+on, which is still who the client spoke to. A call with neither drops the clause
+rather than trailing off — "a summary of the notes we added to your file".
 
 The sign-off matches the one on the agency's other client mail. It is built from
 `AGENCY_NAME`, `AGENCY_PHONE`, `CLIENT_EMAIL_FROM` and `AGENCY_ADDRESS`, so
