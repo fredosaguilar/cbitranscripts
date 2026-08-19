@@ -2491,20 +2491,39 @@ def _note_email_blocker(transcript, to_email: str | None) -> str | None:
     return None
 
 
+def _note_email_body(db: Session, transcript, draft) -> str:
+    """What is in the box: the agent's own edits, or the note itself.
+
+    There is no drafting step. The CRM note is the message -- it goes in
+    verbatim, wrapped in the greeting and the sign-off -- so the email is ready
+    to send the moment the page opens, and nothing rewrites, shortens or
+    reinterprets what was written on the file.
+    """
+    if draft is not None and (draft.body or "").strip():
+        return draft.body
+    if not client_note_email.has_note(transcript):
+        return ""
+    return client_note_email.compose(transcript, _assigned_agent_name(db, transcript))
+
+
 def _note_email_state(db: Session, transcript) -> dict:
     history = _note_email_history(db, transcript.id)
     draft = history[0] if history and history[0].status == "draft" else None
     to_email = (draft.to_email if draft else None) or _linked_agency_zoom_email(transcript)
     blocker = _note_email_blocker(transcript, to_email)
+    body = _note_email_body(db, transcript, draft)
 
     return {
         "configured": alerts.is_smtp_configured(),
         "from_email": client_note_email.CLIENT_EMAIL_FROM,
-        "subject": client_note_email.SUBJECT,
+        "subject": (draft.subject if draft else None) or client_note_email.SUBJECT,
         "to_email": to_email,
         "has_note": client_note_email.has_note(transcript),
+        # The message as it stands, whether or not anyone has saved a draft
+        "body": body,
+        "edited": bool(draft),
         "draft": _note_email_json(draft),
-        "can_send": blocker is None and bool(draft and (draft.body or "").strip()),
+        "can_send": blocker is None and bool(body.strip()),
         "blocked_reason": blocker,
         "history": [_note_email_json(row) for row in history if row.status != "draft"],
     }
@@ -2554,31 +2573,6 @@ def get_note_email(id: str, request: Request, db: Session = Depends(get_db)):
     return JSONResponse(content=_note_email_state(db, transcript))
 
 
-@app.post("/api/transcripts/{id}/note-email/draft")
-# Compose the note email from the CRM note, replacing any unsent draft.
-def draft_note_email(id: str, request: Request, db: Session = Depends(get_db)):
-    _require_admin(request, db)
-    transcript = _load_transcript_or_404(db, id)
-
-    if not client_note_email.has_note(transcript):
-        raise HTTPException(status_code=400, detail="There is no CRM note on this call to send.")
-
-    body = client_note_email.compose(transcript, _assigned_agent_name(db, transcript))
-    draft = _open_note_email_draft(db, transcript.id)
-    if draft is None:
-        draft = models.ClientNoteEmail(
-            id=uuid.uuid4(), transcript_id=transcript.id,
-            subject=client_note_email.SUBJECT, body=body)
-        db.add(draft)
-    else:
-        draft.body = body
-        draft.subject = draft.subject or client_note_email.SUBJECT
-    draft.to_email = draft.to_email or _linked_agency_zoom_email(transcript)
-    db.commit()
-
-    return JSONResponse(content=_note_email_state(db, transcript))
-
-
 @app.put("/api/transcripts/{id}/note-email")
 # Save the agent's edits before the note email is sent.
 def save_note_email(id: str, data: ClientNoteEmailUpdate, request: Request, db: Session = Depends(get_db)):
@@ -2615,9 +2609,20 @@ def send_note_email(id: str, request: Request, db: Session = Depends(get_db)):
     admin_username = _require_admin(request, db)
     transcript = _load_transcript_or_404(db, id)
 
+    # Nobody has to press anything to compose this: with no saved edits, the
+    # note itself is the message, and the row is created here so that what was
+    # sent is still recorded exactly as it went.
     draft = _open_note_email_draft(db, transcript.id)
-    if draft is None or not (draft.body or "").strip():
-        raise HTTPException(status_code=400, detail="There is no draft to send")
+    if draft is None:
+        body = _note_email_body(db, transcript, None)
+        if not body.strip():
+            raise HTTPException(status_code=400, detail="There is no CRM note on this call to send.")
+        draft = models.ClientNoteEmail(
+            id=uuid.uuid4(), transcript_id=transcript.id,
+            subject=client_note_email.SUBJECT, body=body)
+        db.add(draft)
+    elif not (draft.body or "").strip():
+        raise HTTPException(status_code=400, detail="The email is empty.")
 
     draft.to_email = draft.to_email or _linked_agency_zoom_email(transcript)
     blocker = _note_email_blocker(transcript, draft.to_email)
