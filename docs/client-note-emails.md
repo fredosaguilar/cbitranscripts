@@ -311,13 +311,18 @@ changing the phone number in one place changes it here too;
 decoration — this email carries a summary of somebody's policy file, and it says
 in the same breath that the policy language governs.
 
+There is no drafting step. The CRM note **is** the message — it is put in
+verbatim, wrapped in the greeting and the sign-off, and the email is ready to
+send the moment the page opens. Nothing rewrites, shortens or reinterprets what
+was written on the file; no model is involved at any point.
+
 **Read it before it goes.** The note was written for the file, not for the
 client. A note meant for internal use can carry an assessment of the caller, a
 doubt about something they said, or an E&O flag raised for the agency's own
-benefit — none of which improves for being emailed to them. Nothing sends on its
-own: the note is composed into a draft, sits in an editable box, and goes only
-when someone has read it and pressed Send. Subject, body and address are all
-editable first.
+benefit — none of which improves for being emailed to them. Nothing sends on its own: it sits in an
+editable box and goes only when someone has read it and pressed Send. Subject,
+body and address are all editable first, and editing changes only the email —
+the note on the file is untouched.
 
 Send is blocked, with the reason shown, when the transcript is not approved,
 when the call has no CRM note, when there is no email address, or when SMTP is
@@ -357,8 +362,8 @@ What it shows depends on where that call has got to:
 | State | Shown |
 | --- | --- |
 | Already sent | Exactly what the client received, and when |
-| An unsent draft exists | The draft, edits included — what would go if sent |
-| Nothing drafted yet | What drafting would produce |
+| Edited but not sent | The edit, which is what would go |
+| Untouched | The note itself, which is what would go |
 | No CRM note on the call | Nothing to send, and says so |
 
 A sent email shows the stored body rather than recomposing it. Recomposing

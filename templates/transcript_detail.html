@@ -212,10 +212,11 @@
     <div class="section" id="noteEmailSection">
         <h3 class="section-title">Email the File Note</h3>
         <p class="recap-help">
-            Emails the client the CRM note kept on this call, from
-            <strong id="noteEmailFrom"></strong>. Read it before it goes — the note was written for
-            the file, not for the client, so anything in it that was meant for the agency's own
-            eyes needs taking out first.
+            Emails the client the CRM note kept on this call, word for word, from
+            <strong id="noteEmailFrom"></strong>. It is ready below — read it before it goes, because
+            the note was written for the file, not for the client, so anything in it meant for the
+            agency's own eyes needs taking out first. Editing here changes only the email; the note
+            on the file is untouched.
         </p>
 
         <div id="noteEmailStatus" class="recap-status">Loading…</div>
@@ -224,14 +225,13 @@
             <div class="recap-row">
                 <label class="field-label" style="margin:0;">Send to</label>
                 <input type="email" id="noteEmailTo" placeholder="client@example.com">
-                <button type="button" id="noteEmailDraftButton" onclick="noteEmailDraft()">Draft from note</button>
             </div>
 
             <label class="field-label">Subject</label>
             <input type="text" id="noteEmailSubject">
 
-            <textarea id="noteEmailBody" rows="10"
-                      placeholder="Draft it from the CRM note, or write it here…"></textarea>
+            <textarea id="noteEmailBody" rows="12"
+                      placeholder="There is no CRM note on this call yet."></textarea>
 
             <div class="recap-actions">
                 <button type="button" onclick="noteEmailSave()">Save Draft</button>
@@ -543,20 +543,20 @@
 
         document.getElementById("noteEmailFrom").textContent = state.from_email || "";
         status.textContent = state.configured
-            ? (state.has_note ? `Sending from ${state.from_email}.`
-                              : "There is no CRM note on this call yet.")
+            ? (state.has_note
+                ? `Sending from ${state.from_email}.`
+                  + (state.edited ? " Edited — the note itself has changed on the file since, if it changed."
+                                  : " This is the CRM note as it stands on the file.")
+                : "There is no CRM note on this call yet.")
             : "Email is not configured on the server.";
         status.classList.toggle("warn", !state.configured || !state.has_note);
         editor.hidden = false;
 
-        const draft = state.draft || {};
         const bodyField = document.getElementById("noteEmailBody");
-        if (document.activeElement !== bodyField) bodyField.value = draft.body || "";
+        if (document.activeElement !== bodyField) bodyField.value = state.body || "";
 
         const subjectField = document.getElementById("noteEmailSubject");
-        if (document.activeElement !== subjectField) {
-            subjectField.value = draft.subject || state.subject || "";
-        }
+        if (document.activeElement !== subjectField) subjectField.value = state.subject || "";
 
         const toField = document.getElementById("noteEmailTo");
         if (document.activeElement !== toField) toField.value = state.to_email || "";
@@ -639,15 +639,6 @@
         await noteEmailRequest("", {}, "Could not load the note email.");
     }
 
-    async function noteEmailDraft() {
-        const button = document.getElementById("noteEmailDraftButton");
-        button.disabled = true;
-        button.textContent = "Drafting…";
-        await noteEmailRequest("/draft", { method: "POST" }, "Could not draft the email.");
-        button.disabled = false;
-        button.textContent = "Draft from note";
-    }
-
     function noteEmailPayload() {
         return JSON.stringify({
             body: document.getElementById("noteEmailBody").value.trim(),
@@ -668,7 +659,7 @@
     async function noteEmailSend() {
         const body = document.getElementById("noteEmailBody").value.trim();
         if (!body) {
-            showToast("Draft the email before sending it.");
+            showToast("There is nothing to send.");
             return;
         }
         const to = document.getElementById("noteEmailTo").value || "this client";
