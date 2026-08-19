@@ -374,6 +374,18 @@ Send is blocked, with the reason shown, when the transcript is not approved,
 when the call has no CRM note, when there is no email address, or when SMTP is
 not configured.
 
+**The client is greeted by the name on the linked Agency Zoom record**, falling
+back to caller ID only when there is no link. That is the name the agency files
+them under and the one on any paperwork already sent them, where caller ID gives
+whatever the phone company published — on a business line often the account
+holder rather than the person, and on a mobile frequently "Wireless Caller".
+
+A person gets their given name, including when the record files them surname
+first: `Lopez, Maria` is greeted as Maria, not Lopez. A business is addressed in
+full, because half a company name is not a name — `Ochoa Farms LLC` stays whole
+rather than becoming "Hello Ochoa,". With nothing usable it falls back to "Hello
+there," rather than greeting somebody as Wireless.
+
 The client's address is not stored on a transcript, so it is prefilled from the
 linked Agency Zoom record when there is one and typed by the agent when there is
 not. Guessing an address for a letter about somebody's policy is not a thing to
