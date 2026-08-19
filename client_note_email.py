@@ -120,17 +120,53 @@ def normalize_email(value: Any) -> Optional[str]:
     return candidate if _EMAIL_PATTERN.match(candidate) else None
 
 
+# A first name is friendlier, but half of one is not a name at all: "Hello
+# Ochoa," to Ochoa Farms LLC reads as a mistake, because it is one. Anything
+# carrying a company marker is addressed in full.
+_BUSINESS_MARKERS = {
+    "llc", "l.l.c.", "llp", "pllc", "inc", "inc.", "incorporated", "corp", "corp.",
+    "corporation", "ltd", "ltd.", "limited", "co", "co.", "company", "&", "and",
+    "farms", "farm", "ranch", "ranches", "orchards", "dairy", "trucking", "transport",
+    "construction", "services", "enterprises", "holdings", "group", "partners",
+    "properties", "rentals", "landscaping", "contracting", "trust", "estate",
+}
+
+# Carrier labels and placeholders. None of these is anybody's name.
+_NOT_A_NAME = {"wireless", "unknown", "caller", "cell", "toll", "no", "anonymous",
+               "restricted", "private", "mobile", "spam", "unavailable"}
+
+
 def greeting_name(transcript: Any) -> str:
     """What to call the client, falling back to something that is never wrong.
 
-    A carrier label like "Wireless Caller" is not a name, and "Hello Wireless,"
-    on a letter about someone's policy reads as carelessly as it sounds.
+    The name on the linked Agency Zoom record comes first. That is the name the
+    agency itself files this client under, and the one on any paperwork they
+    have already been sent -- where caller ID gives whatever the phone company
+    happened to publish, which on a business line is often the account holder
+    rather than the person, and on a mobile is frequently "Wireless Caller".
     """
-    name = _clean(getattr(transcript, "client_name", None)) or _clean(getattr(transcript, "from_name", None))
+    name = (
+        _clean(getattr(transcript, "agency_zoom_customer_name", None))
+        or _clean(getattr(transcript, "client_name", None))
+        or _clean(getattr(transcript, "from_name", None))
+    )
     if not name:
         return "there"
-    first = name.replace(",", " ").split()[0]
-    if first.lower() in {"wireless", "unknown", "caller", "cell", "toll", "no", "anonymous"}:
+
+    words = name.replace(",", " ").split()
+    if any(word.lower().strip(".,") in _BUSINESS_MARKERS for word in words):
+        return name
+
+    # "Lopez, Maria" is a filing convention, not how anyone is addressed. The
+    # given name follows the comma, so taking the first word would greet a
+    # client by their surname.
+    if "," in name:
+        after_comma = name.split(",", 1)[1].split()
+        if after_comma:
+            words = after_comma
+
+    first = words[0]
+    if first.lower() in _NOT_A_NAME:
         return "there"
     return first.capitalize() if first.islower() or first.isupper() else first
 
