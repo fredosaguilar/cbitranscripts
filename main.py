@@ -26,12 +26,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from database import SessionLocal, engine
 import auth
 import models
-from schemas import (ClientNoteEmailUpdate, ClientRecapUpdate, TranscriptCreate,
-                     UpdateTranscriptRequest, FollowUpTaskUpdate)
+from schemas import (ClientNoteEmailUpdate, TranscriptCreate, UpdateTranscriptRequest,
+                     FollowUpTaskUpdate)
 from send_notification import send_push_notification
 import alerts
-import client_recap
-import client_sms
 import client_note_email
 import transcription
 from ringcentral_utils import (
@@ -75,7 +73,7 @@ def _build_fingerprint() -> str:
     """
     base = os.path.dirname(os.path.abspath(__file__))
     digest = hashlib.sha256()
-    for name in ("main.py", "client_sms.py", "client_recap.py", "transcription.py",
+    for name in ("main.py", "client_note_email.py", "transcription.py",
                  "ringcentral_utils.py", "templates/transcript_detail.html"):
         try:
             with open(os.path.join(base, name), "rb") as handle:
@@ -285,12 +283,6 @@ OWNER_ID_FROM_EXTENSION = _env_flag("OWNER_ID_FROM_EXTENSION")
 AUTO_ASSIGN_FROM_OWNER = _env_flag("AUTO_ASSIGN_FROM_OWNER")
 
 FRONTEND_BASE_URL = (os.getenv("FRONTEND_BASE_URL") or "").rstrip("/")
-
-# Text the client their recap the moment a call is approved, with no second
-# look. Off by default on purpose: the recap is worth having in a dispute
-# because an agent read it before it left, and an unread one can create the
-# exposure it is meant to close.
-CLIENT_RECAP_AUTO_SEND = _env_flag("CLIENT_RECAP_AUTO_SEND", "false")
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -2275,17 +2267,8 @@ def update_status(
                 status_code=502,
             )
 
-    became_approved = (
-        status == models.TranscriptStatus.approved.value
-        and previous_status != models.TranscriptStatus.approved.value
-    )
-
     transcript.status = status
     db.commit()
-
-    if became_approved and CLIENT_RECAP_AUTO_SEND:
-        admin = get_logged_in_admin(request, db)
-        _auto_send_client_recap(db, transcript, admin.username if admin else "auto")
 
     return RedirectResponse(url=f"/user/transcripts/{id}", status_code=303)
 
@@ -2402,15 +2385,6 @@ def update_follow_up_task(
 
 
 # ---------------------------------------------------------------------------
-# Client recap texts
-#
-# A written recap the client either corrects or lets stand is the point of this
-# feature, so every draft, send, and failure is kept. The gates below — approved
-# transcript, real mobile number, no opt-out — are what keep the recap useful as
-# evidence instead of turning it into a second liability.
-# ---------------------------------------------------------------------------
-
-
 def _require_admin(request: Request, db: Session) -> str:
     admin = get_logged_in_admin(request, db)
     if not admin:
@@ -2428,222 +2402,6 @@ def _load_transcript_or_404(db: Session, id: str):
     if transcript is None:
         raise HTTPException(status_code=404, detail="Transcript not found")
     return transcript
-
-
-def _recap_history(db: Session, transcript_id) -> list:
-    return (
-        db.query(models.ClientRecap)
-        .filter(models.ClientRecap.transcript_id == transcript_id)
-        .order_by(desc(models.ClientRecap.created_at))
-        .all()
-    )
-
-
-def _open_draft(db: Session, transcript_id):
-    """The editable draft, if the newest recap has not been sent yet."""
-    latest = (
-        db.query(models.ClientRecap)
-        .filter(models.ClientRecap.transcript_id == transcript_id)
-        .order_by(desc(models.ClientRecap.created_at))
-        .first()
-    )
-    return latest if latest is not None and latest.status == "draft" else None
-
-
-def _recap_json(recap) -> dict:
-    if recap is None:
-        return {}
-    return {
-        "id": str(recap.id),
-        "body": recap.body,
-        "language": recap.language or "en",
-        "language_name": client_recap.language_name(recap.language),
-        "english_gloss": recap.english_gloss,
-        "to_number": recap.to_number,
-        "from_number": recap.from_number,
-        "from_number_display": client_sms.format_phone_for_display(recap.from_number),
-        "status": recap.status,
-        "source": recap.source,
-        "provider": recap.provider,
-        "provider_message_id": recap.provider_message_id,
-        "provider_status": recap.provider_status,
-        "error": recap.error,
-        "sent_by": recap.sent_by,
-        "sent_at": recap.sent_at.isoformat() if recap.sent_at else None,
-        "created_at": recap.created_at.isoformat() if recap.created_at else None,
-        "characters": len(recap.body or ""),
-        "segments": client_recap.segment_count(recap.body or ""),
-    }
-
-
-def _is_opted_out(db: Session, number: str | None) -> bool:
-    normalized = client_sms.normalize_phone(number)
-    if not normalized:
-        return False
-    return db.query(models.SmsOptOut).filter(models.SmsOptOut.phone_e164 == normalized).first() is not None
-
-
-def _recap_blocker(db: Session, transcript, to_number: str | None) -> str | None:
-    """Why this recap cannot be sent yet, in words the agent can act on."""
-    status = transcript.status.value if hasattr(transcript.status, "value") else str(transcript.status)
-    if status != models.TranscriptStatus.approved.value:
-        return "Approve the transcript first — the recap should only go out once the notes have been checked."
-    if not client_sms.is_configured():
-        return client_sms.describe_configuration()
-    if not client_sms.normalize_phone(to_number):
-        return "No textable mobile number for this client. Add one before sending."
-    if _is_opted_out(db, to_number):
-        return "This number has opted out of texts from the agency."
-    return None
-
-
-def _recap_state(db: Session, transcript) -> dict:
-    history = _recap_history(db, transcript.id)
-    draft = history[0] if history and history[0].status == "draft" else None
-    to_number = (draft.to_number if draft else None) or client_recap.resolve_client_number(transcript)
-    blocker = _recap_blocker(db, transcript, to_number)
-
-    spoken = client_recap.resolve_language(transcript)
-    # The fixed lines follow the draft's language, not the call's: a draft that
-    # fell back to English must not be wrapped in Spanish ones.
-    written_in = (draft.language if draft and draft.language else spoken)
-
-    return {
-        "configured": client_sms.is_configured(),
-        "provider": client_sms.describe_configuration(),
-        "to_number": to_number,
-        "to_number_display": client_sms.format_phone_for_display(to_number),
-        "from_number": client_sms.sending_number(),
-        "from_number_display": client_sms.format_phone_for_display(client_sms.sending_number()),
-        "call_language": spoken,
-        "call_language_name": client_recap.language_name(spoken),
-        "draft_language": written_in,
-        "draft_language_name": client_recap.language_name(written_in),
-        "header": client_recap.header_for(written_in),
-        "opt_out": client_recap.opt_out_for(written_in),
-        "max_characters": client_recap.RECAP_MAX_CHARS,
-        "has_analysis": client_recap.has_enough_to_recap(transcript),
-        "draft": _recap_json(draft),
-        "can_send": blocker is None and bool(draft and (draft.body or "").strip()),
-        "blocked_reason": blocker,
-        "history": [_recap_json(recap) for recap in history if recap.status != "draft"],
-    }
-
-
-@app.get("/api/transcripts/{id}/client-recap")
-# Current recap draft, send history, and whether a text can go out.
-def get_client_recap(id: str, request: Request, db: Session = Depends(get_db)):
-    _require_admin(request, db)
-    transcript = _load_transcript_or_404(db, id)
-    return JSONResponse(content=_recap_state(db, transcript))
-
-
-@app.post("/api/transcripts/{id}/client-recap/draft")
-# Write a recap from the call analysis, replacing any unsent draft.
-def draft_client_recap(id: str, request: Request, db: Session = Depends(get_db)):
-    _require_admin(request, db)
-    transcript = _load_transcript_or_404(db, id)
-
-    written = client_recap.draft_recap(transcript)
-
-    draft = _open_draft(db, transcript.id)
-    if draft is None:
-        draft = models.ClientRecap(id=uuid.uuid4(), transcript_id=transcript.id, body=written.body)
-        db.add(draft)
-    else:
-        draft.body = written.body
-    draft.source = written.source
-    draft.language = written.language
-    draft.english_gloss = written.english_gloss
-    draft.to_number = draft.to_number or client_recap.resolve_client_number(transcript)
-    db.commit()
-
-    state = _recap_state(db, transcript)
-    state["warning"] = written.warning
-    return JSONResponse(content=state)
-
-
-@app.put("/api/transcripts/{id}/client-recap")
-# Save the agent's edits to the draft before it is sent.
-def save_client_recap(id: str, data: ClientRecapUpdate, request: Request, db: Session = Depends(get_db)):
-    _require_admin(request, db)
-    transcript = _load_transcript_or_404(db, id)
-
-    body = (data.body or "").strip()
-    if not body:
-        raise HTTPException(status_code=400, detail="The recap cannot be empty")
-
-    to_number = None
-    if data.to_number is not None and _clean_string(data.to_number):
-        to_number = client_sms.normalize_phone(data.to_number)
-        if not to_number:
-            raise HTTPException(status_code=400, detail=f"{data.to_number} is not a textable phone number")
-
-    draft = _open_draft(db, transcript.id)
-    if draft is None:
-        draft = models.ClientRecap(id=uuid.uuid4(), transcript_id=transcript.id, body=body)
-        db.add(draft)
-    draft.body = body
-    draft.source = "manual"
-    # Hand-edited wording is no longer what the model rendered into English
-    draft.english_gloss = None
-    draft.language = draft.language or client_recap.resolve_language(transcript)
-    draft.to_number = to_number or draft.to_number or client_recap.resolve_client_number(transcript)
-    db.commit()
-
-    # Hand-edited wording gets read for the same risky phrasing the drafted
-    # wording is checked for — the model's instructions do not reach an edit.
-    state = _recap_state(db, transcript)
-    state["warning"] = client_recap.risk_warning(body)
-    return JSONResponse(content=state)
-
-
-def _send_recap(db: Session, transcript, draft, sent_by: str) -> tuple[bool, str]:
-    """Text the draft and record the outcome. Returns (sent, message)."""
-    final_text = client_recap.compose(draft.body, draft.language or "en")
-    result = client_sms.send_sms(draft.to_number, final_text)
-
-    draft.body = final_text
-    draft.from_number = result.from_number
-    draft.provider = result.provider
-    draft.provider_message_id = result.message_id
-    draft.provider_status = result.status
-    draft.error = result.error
-    draft.sent_by = sent_by
-    if result.ok:
-        draft.status = "sent"
-        draft.sent_at = datetime.utcnow()
-    else:
-        draft.status = "failed"
-    db.commit()
-
-    if result.ok:
-        where = client_sms.format_phone_for_display(draft.to_number)
-        if result.provider == "dry-run":
-            return True, f"Dry run — the recap was logged, not delivered to {where}."
-        return True, f"Recap texted to {where}."
-    return False, result.error or "The text could not be sent."
-
-
-@app.post("/api/transcripts/{id}/client-recap/send")
-# Text the approved recap to the client and record what was sent.
-def send_client_recap(id: str, request: Request, db: Session = Depends(get_db)):
-    admin_username = _require_admin(request, db)
-    transcript = _load_transcript_or_404(db, id)
-
-    draft = _open_draft(db, transcript.id)
-    if draft is None or not (draft.body or "").strip():
-        raise HTTPException(status_code=400, detail="There is no draft recap to send")
-
-    draft.to_number = draft.to_number or client_recap.resolve_client_number(transcript)
-    blocker = _recap_blocker(db, transcript, draft.to_number)
-    if blocker:
-        raise HTTPException(status_code=409, detail=blocker)
-
-    sent, message = _send_recap(db, transcript, draft, admin_username)
-    state = _recap_state(db, transcript)
-    state["message"] = message
-    return JSONResponse(content=state, status_code=200 if sent else 502)
 
 
 def _note_email_history(db: Session, transcript_id) -> list:
@@ -2752,6 +2510,42 @@ def _note_email_state(db: Session, transcript) -> dict:
     }
 
 
+@app.get("/api/transcripts/{id}/note-email/preview")
+# What the client would receive, composed but not saved as a draft.
+def preview_note_email(id: str, request: Request, db: Session = Depends(get_db)):
+    _require_admin(request, db)
+    transcript = _load_transcript_or_404(db, id)
+
+    # An unsent draft is what would actually go, edits included; only when there
+    # is none does the preview show what drafting would produce.
+    draft = _open_note_email_draft(db, transcript.id)
+    sent = next((row for row in _note_email_history(db, transcript.id) if row.status == "sent"), None)
+
+    if draft is not None and (draft.body or "").strip():
+        body, subject, state = draft.body, draft.subject, "draft"
+    elif sent is not None:
+        # Already gone. What the client actually received is the only version
+        # worth showing; recomposing would display words nobody was ever sent,
+        # and the note may well have been edited since.
+        body, subject, state = sent.body, sent.subject, "sent"
+    elif client_note_email.has_note(transcript):
+        body = client_note_email.compose(transcript, _assigned_agent_name(db, transcript))
+        subject, state = client_note_email.SUBJECT, "not drafted yet"
+    else:
+        body, subject, state = "", client_note_email.SUBJECT, "no note on this call"
+
+    return JSONResponse(content={
+        "state": state,
+        "subject": subject,
+        "body": body,
+        "from_email": client_note_email.CLIENT_EMAIL_FROM,
+        "to_email": (draft.to_email if draft else None) or _linked_agency_zoom_email(transcript),
+        "already_sent": bool(sent),
+        "sent_at": sent.sent_at.isoformat() if sent and sent.sent_at else None,
+        "client_name": _clean_string(transcript.client_name) or "",
+    })
+
+
 @app.get("/api/transcripts/{id}/note-email")
 # Current note-email draft, send history, and whether it can go out.
 def get_note_email(id: str, request: Request, db: Session = Depends(get_db)):
@@ -2852,72 +2646,3 @@ def send_note_email(id: str, request: Request, db: Session = Depends(get_db)):
     return JSONResponse(content=state, status_code=200 if sent else 502)
 
 
-@app.post("/api/sms/opt-out")
-# Record that a number has asked not to be texted.
-def record_sms_opt_out(
-    request: Request,
-    phone: str = Form(...),
-    note: str = Form(""),
-    db: Session = Depends(get_db),
-):
-    admin_username = _require_admin(request, db)
-    normalized = client_sms.normalize_phone(phone)
-    if not normalized:
-        raise HTTPException(status_code=400, detail=f"{phone} is not a phone number we could store")
-
-    existing = db.query(models.SmsOptOut).filter(models.SmsOptOut.phone_e164 == normalized).first()
-    if existing is None:
-        db.add(models.SmsOptOut(
-            phone_e164=normalized,
-            note=_clean_string(note),
-            recorded_by=admin_username,
-        ))
-        db.commit()
-
-    return {"phone": normalized, "opted_out": True}
-
-
-def _auto_send_client_recap(db: Session, transcript, sent_by: str) -> None:
-    """Draft and text a recap on approval, when the agency has opted into that.
-
-    Failures are logged and left in the recap history rather than raised: an
-    unreachable phone must not undo an approval that has already posted notes
-    and tasks to Agency Zoom.
-    """
-    try:
-        to_number = client_recap.resolve_client_number(transcript)
-        blocker = _recap_blocker(db, transcript, to_number)
-        if blocker:
-            logger.info("Skipping the automatic recap for transcript %s: %s", transcript.id, blocker)
-            return
-        if not client_recap.has_enough_to_recap(transcript):
-            logger.info("Skipping the automatic recap for transcript %s: nothing analysed to recap", transcript.id)
-            return
-
-        written = client_recap.draft_recap(transcript)
-        draft = _open_draft(db, transcript.id)
-        if draft is None:
-            draft = models.ClientRecap(id=uuid.uuid4(), transcript_id=transcript.id, body=written.body)
-            db.add(draft)
-        draft.body = written.body
-        draft.source = written.source
-        draft.language = written.language
-        draft.english_gloss = written.english_gloss
-        draft.to_number = to_number
-        db.commit()
-
-        # A recap that came out in the wrong language is exactly the case an
-        # agent needs to see. Leave it as a draft rather than sending English
-        # to someone who called in Spanish.
-        if written.language != client_recap.resolve_language(transcript):
-            logger.warning(
-                "Leaving the recap for transcript %s as a draft: the call was in %s but the draft is in %s",
-                transcript.id,
-                client_recap.language_name(client_recap.resolve_language(transcript)),
-                client_recap.language_name(written.language),
-            )
-            return
-
-        _send_recap(db, transcript, draft, sent_by)
-    except Exception:
-        logger.exception("The automatic client recap failed for transcript %s", transcript.id)

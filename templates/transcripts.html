@@ -26,7 +26,14 @@
     .az-modal input[type=text] { width: 100%; padding: 8px; box-sizing: border-box; }
     .az-row { display: flex; gap: 10px; align-items: center; padding: 8px 0;
               border-bottom: 1px solid rgba(128,128,128,0.25); }
-    .az-actions { display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end; }
+    .az-actions { display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end; align-items: center; }
+    .email-preview-meta { font-size: 0.82rem; opacity: 0.85; line-height: 1.6; margin-bottom: 10px; }
+    .email-preview-meta .warn { color: #b45309; font-weight: 600; }
+    /* Pre, because what a client receives is plain text: the line breaks in it
+       are part of the message rather than something a browser should reflow. */
+    .email-preview-body { white-space: pre-wrap; word-wrap: break-word; font-family: inherit;
+                          font-size: 0.86rem; line-height: 1.5; margin: 0; padding: 12px;
+                          border-radius: 8px; background: rgba(128,128,128,0.10); }
 </style>
 {% endblock %}
 
@@ -187,6 +194,9 @@
 
                 <td>
                     <a href="/user/transcripts/{{ item.id }}" class="detail-link">View Details</a>
+                    <br>
+                    <button type="button" class="az-button"
+                            onclick="emailPreview('{{ item.id }}')">Preview email</button>
                 </td>
 
                 <td>
@@ -235,6 +245,17 @@
         <button type="button" onclick="azClose()">Close</button>
     </div>
     <div id="azModalResults" style="margin-top:12px;"></div>
+</div>
+
+<div class="az-overlay" id="emailOverlay" onclick="emailClose()"></div>
+<div class="az-modal" id="emailModal" role="dialog" aria-modal="true" aria-labelledby="emailModalTitle">
+    <h3 id="emailModalTitle">File note email</h3>
+    <div id="emailPreviewMeta" class="email-preview-meta"></div>
+    <pre id="emailPreviewBody" class="email-preview-body"></pre>
+    <div class="az-actions">
+        <a id="emailPreviewOpen" class="detail-link" href="#">Open the call to edit or send</a>
+        <button type="button" onclick="emailClose()">Close</button>
+    </div>
 </div>
 
 <script>
@@ -334,8 +355,66 @@
     }
 
     document.addEventListener('keydown', event => {
-        if (event.key === 'Escape') azClose();
+        if (event.key === 'Escape') { azClose(); emailClose(); }
     });
+
+    function emailClose() {
+        document.getElementById('emailOverlay').style.display = 'none';
+        document.getElementById('emailModal').style.display = 'none';
+    }
+
+    async function emailPreview(transcriptId) {
+        const meta = document.getElementById('emailPreviewMeta');
+        const body = document.getElementById('emailPreviewBody');
+        document.getElementById('emailPreviewOpen').href = `/user/transcripts/${transcriptId}`;
+        document.getElementById('emailOverlay').style.display = 'block';
+        document.getElementById('emailModal').style.display = 'block';
+        meta.textContent = '';
+        body.textContent = 'Loading…';
+
+        let data = null;
+        try {
+            const response = await fetch(`/api/transcripts/${transcriptId}/note-email/preview`);
+            if (!response.ok) {
+                body.textContent = response.status === 401
+                    ? 'Your session expired. Log in again to see the preview.'
+                    : `Could not load the preview (error ${response.status}).`;
+                return;
+            }
+            data = await response.json();
+        } catch (error) {
+            body.textContent = 'Could not reach the server to load the preview.';
+            return;
+        }
+
+        // Whether these words have already gone to the client is the first thing
+        // worth knowing, so it is said before the message rather than after it.
+        const lines = [];
+        if (data.state === 'sent') {
+            const when = data.sent_at ? new Date(data.sent_at + 'Z').toLocaleString() : '';
+            lines.push(`<span class="warn">Sent${when ? ' ' + when : ''}.</span> This is what the client received.`);
+        } else if (data.already_sent) {
+            const when = data.sent_at ? new Date(data.sent_at + 'Z').toLocaleString() : '';
+            lines.push(`<span class="warn">Already sent${when ? ' ' + when : ''}</span>, and there is a newer unsent draft below.`);
+        } else if (data.state === 'draft') {
+            lines.push('<span class="warn">Unsent draft.</span> This is what would go.');
+        } else if (data.state === 'no note on this call') {
+            lines.push('<span class="warn">No CRM note on this call yet, so there is nothing to send.</span>');
+        } else {
+            lines.push('Not drafted yet. This is what drafting would produce.');
+        }
+        lines.push(`<b>From:</b> ${escapeHtml(data.from_email || '')}`);
+        lines.push(`<b>To:</b> ${escapeHtml(data.to_email || 'no address on file — add one before sending')}`);
+        lines.push(`<b>Subject:</b> ${escapeHtml(data.subject || '')}`);
+        meta.innerHTML = lines.join('<br>');
+        body.textContent = data.body || '(nothing to preview)';
+    }
+
+    function escapeHtml(value) {
+        const holder = document.createElement('div');
+        holder.textContent = value;
+        return holder.innerHTML;
+    }
 
     async function azModalSearch() {
         if (!azCurrentTranscriptId) return;
