@@ -974,6 +974,11 @@ def create_agency_zoom_customer_note_for_transcript(
     if not note:
         raise ValueError("crm_note is required to create an Agency Zoom customer note.")
 
+    # The analysis's stock disclaimers never reach the CRM, whatever is stored
+    # here -- a customer file is for what happened on the call.
+    from client_note_email import strip_boilerplate
+    note = strip_boilerplate(note) or note
+
     jwt_token = zomm_agency_login()
     match = resolve_transcript_agency_zoom_match(transcript, jwt_token=jwt_token)
     if not match or not match.get("id"):

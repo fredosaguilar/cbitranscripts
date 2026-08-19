@@ -1599,6 +1599,29 @@ def agency_zoom_search(id: str, request: Request, db: Session = Depends(get_db))
     })
 
 
+def _clean_stored_note(db: Session, transcript) -> None:
+    """Take the analysis's stock disclaimers out of a note already on file.
+
+    Stripping at ingest only helps calls transcribed since. Every note written
+    before that still carried the wording, and would have gone on carrying it
+    until somebody happened to re-link the call -- so the note is cleaned when
+    it is looked at, once, and saved that way.
+    """
+    if transcript is None:
+        return
+    original = transcript.crm_note or ""
+    if not original.strip():
+        return
+    cleaned = client_note_email.strip_boilerplate(original)
+    if cleaned and cleaned != original:
+        transcript.crm_note = cleaned
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("Could not save the cleaned note for transcript %s", transcript.id)
+
+
 def _task_key(task_text: str) -> str:
     """Identifies a task by its words, so rewording it starts it afresh."""
     return hashlib.sha256(" ".join(task_text.lower().split()).encode("utf-8")).hexdigest()[:16]
@@ -2302,6 +2325,7 @@ def check_recording_id_exists(
 def transcript_detail(id: str, request: Request, db: Session = Depends(get_db)):
     transcript = db.query(models.TranscriptResponse).filter(models.TranscriptResponse.id == id).first()
     error_message = request.query_params.get("error")
+    _clean_stored_note(db, transcript)
     return render_template(
         request,
         "transcript_detail.html",

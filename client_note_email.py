@@ -199,13 +199,30 @@ def greeting_name(transcript: Any, staff_names: Optional[set[str]] = None) -> st
 # client reading their own file note does not need to be told what was not
 # discussed. The note is for what was.
 _BOILERPLATE = [
+    # What was not bound, changed, quoted or confirmed
     r"no coverages?\s+(?:was|were)\s+(?:bound|changed|added|removed|modified|altered)[^.]*\.",
     r"no\s+(?:specific\s+)?(?:coverages?|limits?|premiums?|rates?)[^.]{0,120}?"
     r"(?:was|were)\s+(?:discussed|confirmed|quoted|bound|provided|reviewed)[^.]*\.",
     r"no\s+(?:specific\s+)?(?:coverages?|limits?|premiums?)\s*,[^.]{0,120}\.",
-    r"(?:the\s+)?effective\s+dates?[^.]{0,80}?(?:was|were)\s+not\s+(?:confirmed|provided|discussed|set)[^.]*\.",
-    r"no\s+(?:new\s+)?(?:policy|policies)\s+(?:was|were)\s+(?:issued|bound|written)[^.]*\.",
-    r"this (?:call|note) (?:does not|doesn't) (?:constitute|confirm)[^.]*\.",
+    r"no\s+(?:new\s+)?(?:policy|policies|binders?|endorsements?)\s+(?:was|were)\s+"
+    r"(?:issued|bound|written|created|added)[^.]*\.",
+    r"no\s+changes?\s+(?:was|were)\s+(?:made|requested|applied|processed)[^.]*\.",
+    r"no\s+(?:quotes?|rates?)\s+(?:was|were)\s+(?:given|provided|quoted|offered)[^.]*\.",
+    r"nothing\s+(?:was|were)\s+(?:bound|changed|added|discussed|confirmed|quoted|agreed|finalized|finalised)[^.]*\.",
+
+    # What was not confirmed or decided
+    r"(?:the\s+)?effective\s+dates?[^.]{0,80}?(?:was|were)\s+not\s+(?:confirmed|provided|discussed|set|established)[^.]*\.",
+    r"no\s+(?:final\s+)?decisions?\s+(?:was|were)\s+(?:made|reached|taken)[^.]*\.",
+    r"(?:the\s+)?(?:client|customer|insured)\s+did\s+not\s+"
+    r"(?:request|require|make|authorize|authorise|confirm)\s+any[^.]*\.",
+
+    # What is not owed afterwards
+    r"no\s+(?:further\s+)?(?:follow[\s-]?ups?|actions?)\s+(?:is|are|was|were)\s+"
+    r"(?:required|needed|necessary|outstanding|pending)[^.]*\.",
+    r"no\s+further\s+(?:follow[\s-]?ups?|actions?|steps?)[^.]*\.",
+
+    # Disclaimers about the note itself
+    r"this (?:call|note|summary) (?:does not|doesn't|did not|didn't) (?:constitute|confirm|represent|serve)[^.]*\.",
 ]
 
 _BOILERPLATE_PATTERN = re.compile("|".join(f"(?:{p})" for p in _BOILERPLATE), re.IGNORECASE)
