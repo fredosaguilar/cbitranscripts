@@ -11,6 +11,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message
 import re
 import threading
 import time
+from urllib.parse import quote
 
 import requests
 from typing import List, Optional
@@ -176,6 +177,7 @@ def on_startup():
             updated_at TIMESTAMP
         )""",
         "CREATE INDEX IF NOT EXISTS ix_client_note_emails_transcript_id ON client_note_emails (transcript_id)",
+        "ALTER TABLE client_note_emails ADD COLUMN IF NOT EXISTS note_fingerprint VARCHAR",
         # A user may be email-only, with no Pushover key
         "ALTER TABLE users_tokens ALTER COLUMN token DROP NOT NULL",
     ]
@@ -2270,6 +2272,27 @@ def update_status(
     transcript.status = status
     db.commit()
 
+    # Approving is what sends the email. The button says so, and it is the same
+    # act: the agent has just read the notes and put their name to them, which
+    # is the review this email was always waiting on.
+    if status == models.TranscriptStatus.approved.value and previous_status != status:
+        admin = get_logged_in_admin(request, db)
+        try:
+            sent, message = _send_note_email(db, transcript, admin.username if admin else "approval")
+        except Exception:
+            logger.exception("The note email failed on approval of transcript %s", transcript.id)
+            sent, message = False, "The email could not be sent."
+
+        if not sent:
+            # The approval stands -- it has already posted to Agency Zoom, and
+            # undoing that because an address is missing would be worse than
+            # saying plainly that the email did not go.
+            reason = message.removeprefix("__blocked__")
+            logger.info("Approved transcript %s without emailing the client: %s", transcript.id, reason)
+            return RedirectResponse(
+                url=f"/user/transcripts/{id}?email_failed={quote(reason)}", status_code=303)
+        return RedirectResponse(url=f"/user/transcripts/{id}?emailed=1", status_code=303)
+
     return RedirectResponse(url=f"/user/transcripts/{id}", status_code=303)
 
 
@@ -2498,12 +2521,20 @@ def _note_email_body(db: Session, transcript, draft) -> str:
     verbatim, wrapped in the greeting and the sign-off -- so the email is ready
     to send the moment the page opens, and nothing rewrites, shortens or
     reinterprets what was written on the file.
+
+    A saved body is only kept while the note it was made from is unchanged.
+    Correcting a note and then emailing the client the version you just fixed
+    would be worse than not having the email at all, so a changed note wins over
+    a stale edit.
     """
-    if draft is not None and (draft.body or "").strip():
-        return draft.body
     if not client_note_email.has_note(transcript):
         return ""
-    return client_note_email.compose(transcript, _assigned_agent_name(db, transcript))
+
+    agent = _assigned_agent_name(db, transcript)
+    if (draft is not None and (draft.body or "").strip()
+            and draft.note_fingerprint == client_note_email.note_fingerprint(transcript, agent)):
+        return draft.body
+    return client_note_email.compose(transcript, agent)
 
 
 def _note_email_state(db: Session, transcript) -> dict:
@@ -2598,36 +2629,40 @@ def save_note_email(id: str, data: ClientNoteEmailUpdate, request: Request, db: 
     draft.body = body
     draft.subject = _clean_string(data.subject) or draft.subject or client_note_email.SUBJECT
     draft.to_email = to_email or draft.to_email or _linked_agency_zoom_email(transcript)
+    # Pinned to the note it was written against, so the edit survives until the
+    # note itself changes and then gives way to it
+    draft.note_fingerprint = client_note_email.note_fingerprint(
+        transcript, _assigned_agent_name(db, transcript))
     db.commit()
 
     return JSONResponse(content=_note_email_state(db, transcript))
 
 
-@app.post("/api/transcripts/{id}/note-email/send")
-# Email the file note to the client and record the outcome either way.
-def send_note_email(id: str, request: Request, db: Session = Depends(get_db)):
-    admin_username = _require_admin(request, db)
-    transcript = _load_transcript_or_404(db, id)
+def _send_note_email(db: Session, transcript, sent_by: str) -> tuple[bool, str]:
+    """Email the file note and record the outcome. Returns (sent, message).
 
-    # Nobody has to press anything to compose this: with no saved edits, the
-    # note itself is the message, and the row is created here so that what was
-    # sent is still recorded exactly as it went.
+    Nobody has to press anything to compose this: with no saved edits the note
+    itself is the message, and a row is written here either way, so what was
+    sent is stored exactly as it went and a refusal is stored as an attempt.
+    """
     draft = _open_note_email_draft(db, transcript.id)
+    body = _note_email_body(db, transcript, draft)
+    if not body.strip():
+        return False, "__blocked__There is no CRM note on this call to send."
+
     if draft is None:
-        body = _note_email_body(db, transcript, None)
-        if not body.strip():
-            raise HTTPException(status_code=400, detail="There is no CRM note on this call to send.")
         draft = models.ClientNoteEmail(
             id=uuid.uuid4(), transcript_id=transcript.id,
             subject=client_note_email.SUBJECT, body=body)
         db.add(draft)
-    elif not (draft.body or "").strip():
-        raise HTTPException(status_code=400, detail="The email is empty.")
+    else:
+        # A note corrected since the draft was written wins over the draft
+        draft.body = body
 
     draft.to_email = draft.to_email or _linked_agency_zoom_email(transcript)
     blocker = _note_email_blocker(transcript, draft.to_email)
     if blocker:
-        raise HTTPException(status_code=409, detail=blocker)
+        return False, f"__blocked__{blocker}"
 
     sent, message = alerts.send_email_result(
         subject=draft.subject or client_note_email.SUBJECT,
@@ -2636,15 +2671,27 @@ def send_note_email(id: str, request: Request, db: Session = Depends(get_db)):
         from_address=client_note_email.CLIENT_EMAIL_FROM,
     )
 
-    # Recorded either way: a refused send is part of the record of what was
-    # attempted, not something to retry until it disappears.
     draft.from_email = client_note_email.CLIENT_EMAIL_FROM
-    draft.sent_by = admin_username
+    draft.note_fingerprint = client_note_email.note_fingerprint(
+        transcript, _assigned_agent_name(db, transcript))
+    draft.sent_by = sent_by
     draft.error = None if sent else message
     draft.status = "sent" if sent else "failed"
     if sent:
         draft.sent_at = datetime.utcnow()
     db.commit()
+    return sent, message
+
+
+@app.post("/api/transcripts/{id}/note-email/send")
+# Email the file note to the client and record the outcome either way.
+def send_note_email(id: str, request: Request, db: Session = Depends(get_db)):
+    admin_username = _require_admin(request, db)
+    transcript = _load_transcript_or_404(db, id)
+
+    sent, message = _send_note_email(db, transcript, admin_username)
+    if message.startswith("__blocked__"):
+        raise HTTPException(status_code=409, detail=message.removeprefix("__blocked__"))
 
     state = _note_email_state(db, transcript)
     state["message"] = message

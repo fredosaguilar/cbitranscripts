@@ -124,6 +124,8 @@ class ClientNoteEmail(Base):
     body = Column(Text, nullable=False)
     to_email = Column(String, nullable=True)
     from_email = Column(String, nullable=True)
+    # What the body was made from, so a note corrected afterwards refreshes it
+    note_fingerprint = Column(String, nullable=True)
 
     # draft | sent | failed
     status = Column(String, default="draft", nullable=False)

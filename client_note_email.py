@@ -175,6 +175,23 @@ def has_note(transcript: Any) -> bool:
     return bool(_clean(getattr(transcript, "crm_note", None)))
 
 
+def note_fingerprint(transcript: Any, assigned_name: Optional[str] = None) -> str:
+    """Identifies the inputs the email is made from.
+
+    Stored against the draft so a note corrected after the email was composed
+    does not leave the client receiving the version the agent has since fixed.
+    Everything that changes the wording goes in: the note, who the call is
+    attributed to, the language, and the name the client is greeted by.
+    """
+    parts = [
+        _clean(getattr(transcript, "crm_note", None)) or "",
+        agent_name(transcript, assigned_name) or "",
+        resolve_language(transcript),
+        greeting_name(transcript),
+    ]
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:32]
+
+
 def agent_name(transcript: Any, assigned_name: Optional[str] = None) -> Optional[str]:
     """Who the client spoke to, named the way they would recognise.
 
