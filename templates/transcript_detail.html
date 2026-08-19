@@ -259,6 +259,42 @@
 
     <hr>
 
+    <div class="section" id="noteEmailSection">
+        <h3 class="section-title">Email the File Note</h3>
+        <p class="recap-help">
+            Emails the client the CRM note kept on this call, from
+            <strong id="noteEmailFrom"></strong>. Read it before it goes — the note was written for
+            the file, not for the client, so anything in it that was meant for the agency's own
+            eyes needs taking out first.
+        </p>
+
+        <div id="noteEmailStatus" class="recap-status">Loading…</div>
+
+        <div id="noteEmailEditor" class="recap-editor" hidden>
+            <div class="recap-row">
+                <label class="field-label" style="margin:0;">Send to</label>
+                <input type="email" id="noteEmailTo" placeholder="client@example.com">
+                <button type="button" id="noteEmailDraftButton" onclick="noteEmailDraft()">Draft from note</button>
+            </div>
+
+            <label class="field-label">Subject</label>
+            <input type="text" id="noteEmailSubject">
+
+            <textarea id="noteEmailBody" rows="10"
+                      placeholder="Draft it from the CRM note, or write it here…"></textarea>
+
+            <div class="recap-actions">
+                <button type="button" onclick="noteEmailSave()">Save Draft</button>
+                <button type="button" id="noteEmailSendButton" onclick="noteEmailSend()">Send Email</button>
+            </div>
+            <div id="noteEmailBlocked" class="recap-blocked" hidden></div>
+        </div>
+
+        <div id="noteEmailHistory" class="recap-history"></div>
+    </div>
+
+    <hr>
+
     <form method="post" action="/admin/transcripts/{{ transcript.id }}/delete"
         onsubmit="return confirm('Delete this transcript?');">
         <button type="submit" class="danger-button">Delete Transcript</button>
@@ -764,6 +800,167 @@
     }
 
     recapLoad();
+
+    // ---- Emailing the file note -------------------------------------------
+
+    let noteEmailState = null;
+
+    function noteEmailRender(state) {
+        noteEmailState = state;
+        const status = document.getElementById("noteEmailStatus");
+        const editor = document.getElementById("noteEmailEditor");
+        const blocked = document.getElementById("noteEmailBlocked");
+
+        document.getElementById("noteEmailFrom").textContent = state.from_email || "";
+        status.textContent = state.configured
+            ? (state.has_note ? `Sending from ${state.from_email}.`
+                              : "There is no CRM note on this call yet.")
+            : "Email is not configured on the server.";
+        status.classList.toggle("warn", !state.configured || !state.has_note);
+        editor.hidden = false;
+
+        const draft = state.draft || {};
+        const bodyField = document.getElementById("noteEmailBody");
+        if (document.activeElement !== bodyField) bodyField.value = draft.body || "";
+
+        const subjectField = document.getElementById("noteEmailSubject");
+        if (document.activeElement !== subjectField) {
+            subjectField.value = draft.subject || state.subject || "";
+        }
+
+        const toField = document.getElementById("noteEmailTo");
+        if (document.activeElement !== toField) toField.value = state.to_email || "";
+
+        document.getElementById("noteEmailSendButton").disabled = !state.can_send;
+        blocked.textContent = state.blocked_reason || "";
+        blocked.hidden = !state.blocked_reason;
+
+        noteEmailRenderHistory(state.history || []);
+    }
+
+    function noteEmailRenderHistory(history) {
+        const box = document.getElementById("noteEmailHistory");
+        box.textContent = "";
+        if (!history.length) return;
+
+        const heading = document.createElement("h4");
+        heading.textContent = "Sent";
+        box.appendChild(heading);
+
+        history.forEach(item => {
+            const entry = document.createElement("div");
+            entry.className = `recap-sent ${item.status}`;
+
+            const when = document.createElement("div");
+            when.className = "recap-sent-meta";
+            const stamp = item.sent_at || item.created_at || "";
+            const label = item.status === "sent" ? "Sent" : "Failed";
+            when.textContent = `${label} ${stamp ? new Date(stamp + "Z").toLocaleString() : ""}`
+                + (item.to_email ? ` to ${item.to_email}` : "")
+                + (item.from_email ? ` from ${item.from_email}` : "")
+                + (item.sent_by ? ` by ${item.sent_by}` : "");
+            entry.appendChild(when);
+
+            const subject = document.createElement("div");
+            subject.className = "recap-sent-meta";
+            subject.textContent = item.subject || "";
+            entry.appendChild(subject);
+
+            const body = document.createElement("div");
+            body.className = "recap-sent-body";
+            body.textContent = item.body;
+            entry.appendChild(body);
+
+            if (item.error) {
+                const error = document.createElement("div");
+                error.className = "recap-sent-error";
+                error.textContent = item.error;
+                entry.appendChild(error);
+            }
+            box.appendChild(entry);
+        });
+    }
+
+    async function noteEmailRequest(path, options, failureMessage) {
+        try {
+            const response = await fetch(`/api/transcripts/${AZ_TRANSCRIPT_ID}/note-email${path}`, options);
+            let data = null;
+            try { data = await response.json(); } catch (err) { /* no body */ }
+
+            if (!response.ok) {
+                if (response.status === 401) {
+                    showToast("Your session expired. Log in again, then send the email.");
+                } else {
+                    showToast((data && data.detail) || (data && data.message) || failureMessage);
+                }
+                // A refused send still returns the recorded attempt, so redraw
+                if (data && data.history) noteEmailRender(data);
+                return null;
+            }
+            if (data) noteEmailRender(data);
+            return data;
+        } catch (error) {
+            showToast(failureMessage);
+            return null;
+        }
+    }
+
+    async function noteEmailLoad() {
+        await noteEmailRequest("", {}, "Could not load the note email.");
+    }
+
+    async function noteEmailDraft() {
+        const button = document.getElementById("noteEmailDraftButton");
+        button.disabled = true;
+        button.textContent = "Drafting…";
+        await noteEmailRequest("/draft", { method: "POST" }, "Could not draft the email.");
+        button.disabled = false;
+        button.textContent = "Draft from note";
+    }
+
+    function noteEmailPayload() {
+        return JSON.stringify({
+            body: document.getElementById("noteEmailBody").value.trim(),
+            subject: document.getElementById("noteEmailSubject").value.trim(),
+            to_email: document.getElementById("noteEmailTo").value.trim(),
+        });
+    }
+
+    async function noteEmailSave() {
+        const data = await noteEmailRequest("", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: noteEmailPayload(),
+        }, "Could not save the email.");
+        if (data) showToast("Draft saved");
+    }
+
+    async function noteEmailSend() {
+        const body = document.getElementById("noteEmailBody").value.trim();
+        if (!body) {
+            showToast("Draft the email before sending it.");
+            return;
+        }
+        const to = document.getElementById("noteEmailTo").value || "this client";
+        if (!confirm(`Email these notes to ${to}?\n\n${body}`)) return;
+
+        // Send what is on screen, not what was last saved
+        const saved = await noteEmailRequest("", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: noteEmailPayload(),
+        }, "Could not save the email before sending.");
+        if (!saved) return;
+
+        const button = document.getElementById("noteEmailSendButton");
+        button.disabled = true;
+        button.textContent = "Sending…";
+        const data = await noteEmailRequest("/send", { method: "POST" }, "The email could not be sent.");
+        button.textContent = "Send Email";
+        if (data && data.message) showToast(data.message);
+    }
+
+    noteEmailLoad();
 
     function showToast(message) {
         const toast = document.getElementById("toast");

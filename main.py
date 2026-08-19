@@ -26,11 +26,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from database import SessionLocal, engine
 import auth
 import models
-from schemas import ClientRecapUpdate, TranscriptCreate, UpdateTranscriptRequest, FollowUpTaskUpdate
+from schemas import (ClientNoteEmailUpdate, ClientRecapUpdate, TranscriptCreate,
+                     UpdateTranscriptRequest, FollowUpTaskUpdate)
 from send_notification import send_push_notification
 import alerts
 import client_recap
 import client_sms
+import client_note_email
 import transcription
 from ringcentral_utils import (
     LOCAL_AUDIO_CACHE_DIR,
@@ -161,6 +163,21 @@ def on_startup():
         "ALTER TABLE client_recaps ADD COLUMN IF NOT EXISTS language VARCHAR",
         "ALTER TABLE client_recaps ADD COLUMN IF NOT EXISTS english_gloss TEXT",
         "CREATE TABLE IF NOT EXISTS sms_opt_outs (phone_e164 VARCHAR PRIMARY KEY, note TEXT, recorded_by VARCHAR, created_at TIMESTAMP)",
+        """CREATE TABLE IF NOT EXISTS client_note_emails (
+            id UUID PRIMARY KEY,
+            transcript_id UUID NOT NULL,
+            subject VARCHAR NOT NULL,
+            body TEXT NOT NULL,
+            to_email VARCHAR,
+            from_email VARCHAR,
+            status VARCHAR NOT NULL DEFAULT 'draft',
+            error TEXT,
+            sent_by VARCHAR,
+            sent_at TIMESTAMP,
+            created_at TIMESTAMP,
+            updated_at TIMESTAMP
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_client_note_emails_transcript_id ON client_note_emails (transcript_id)",
         # A user may be email-only, with no Pushover key
         "ALTER TABLE users_tokens ALTER COLUMN token DROP NOT NULL",
     ]
@@ -2625,6 +2642,195 @@ def send_client_recap(id: str, request: Request, db: Session = Depends(get_db)):
 
     sent, message = _send_recap(db, transcript, draft, admin_username)
     state = _recap_state(db, transcript)
+    state["message"] = message
+    return JSONResponse(content=state, status_code=200 if sent else 502)
+
+
+def _note_email_history(db: Session, transcript_id) -> list:
+    return (
+        db.query(models.ClientNoteEmail)
+        .filter(models.ClientNoteEmail.transcript_id == transcript_id)
+        .order_by(desc(models.ClientNoteEmail.created_at))
+        .all()
+    )
+
+
+def _open_note_email_draft(db: Session, transcript_id):
+    latest = (
+        db.query(models.ClientNoteEmail)
+        .filter(models.ClientNoteEmail.transcript_id == transcript_id)
+        .order_by(desc(models.ClientNoteEmail.created_at))
+        .first()
+    )
+    return latest if latest is not None and latest.status == "draft" else None
+
+
+def _note_email_json(record) -> dict:
+    if record is None:
+        return {}
+    return {
+        "id": str(record.id),
+        "subject": record.subject,
+        "body": record.body,
+        "to_email": record.to_email,
+        "from_email": record.from_email,
+        "status": record.status,
+        "error": record.error,
+        "sent_by": record.sent_by,
+        "sent_at": record.sent_at.isoformat() if record.sent_at else None,
+        "created_at": record.created_at.isoformat() if record.created_at else None,
+    }
+
+
+def _linked_agency_zoom_email(transcript) -> Optional[str]:
+    """The email on the Agency Zoom record this call is linked to, if any.
+
+    Best effort by design. A client's address is not on the transcript, and a
+    lookup that fails should leave the agent typing one rather than stopping
+    them sending.
+    """
+    customer_id = _clean_string(getattr(transcript, "agency_zoom_customer_id", None))
+    if not customer_id:
+        return None
+    try:
+        for finder in (search_agency_zoom_customers, search_agency_zoom_leads):
+            for record in finder(_clean_string(transcript.client_number) or "") or []:
+                if str(record.get("id")) == customer_id:
+                    return client_note_email.normalize_email(record.get("email"))
+    except Exception:
+        logger.exception("Could not read the Agency Zoom email for transcript %s", transcript.id)
+    return None
+
+
+def _note_email_blocker(transcript, to_email: str | None) -> str | None:
+    """Why this note email cannot go yet, in words the agent can act on."""
+    status = transcript.status.value if hasattr(transcript.status, "value") else str(transcript.status)
+    if status != models.TranscriptStatus.approved.value:
+        return "Approve the transcript first — the note should only go out once it has been checked."
+    if not alerts.is_smtp_configured():
+        return "Email is not configured on the server. Set SMTP_HOST, SMTP_USER and SMTP_PASSWORD in Railway."
+    if not client_note_email.has_note(transcript):
+        return "There is no CRM note on this call to send."
+    if not client_note_email.normalize_email(to_email):
+        return "No email address for this client. Add one before sending."
+    return None
+
+
+def _note_email_state(db: Session, transcript) -> dict:
+    history = _note_email_history(db, transcript.id)
+    draft = history[0] if history and history[0].status == "draft" else None
+    to_email = (draft.to_email if draft else None) or _linked_agency_zoom_email(transcript)
+    blocker = _note_email_blocker(transcript, to_email)
+
+    return {
+        "configured": alerts.is_smtp_configured(),
+        "from_email": client_note_email.CLIENT_EMAIL_FROM,
+        "subject": client_note_email.SUBJECT,
+        "to_email": to_email,
+        "has_note": client_note_email.has_note(transcript),
+        "draft": _note_email_json(draft),
+        "can_send": blocker is None and bool(draft and (draft.body or "").strip()),
+        "blocked_reason": blocker,
+        "history": [_note_email_json(row) for row in history if row.status != "draft"],
+    }
+
+
+@app.get("/api/transcripts/{id}/note-email")
+# Current note-email draft, send history, and whether it can go out.
+def get_note_email(id: str, request: Request, db: Session = Depends(get_db)):
+    _require_admin(request, db)
+    transcript = _load_transcript_or_404(db, id)
+    return JSONResponse(content=_note_email_state(db, transcript))
+
+
+@app.post("/api/transcripts/{id}/note-email/draft")
+# Compose the note email from the CRM note, replacing any unsent draft.
+def draft_note_email(id: str, request: Request, db: Session = Depends(get_db)):
+    _require_admin(request, db)
+    transcript = _load_transcript_or_404(db, id)
+
+    if not client_note_email.has_note(transcript):
+        raise HTTPException(status_code=400, detail="There is no CRM note on this call to send.")
+
+    body = client_note_email.compose(transcript)
+    draft = _open_note_email_draft(db, transcript.id)
+    if draft is None:
+        draft = models.ClientNoteEmail(
+            id=uuid.uuid4(), transcript_id=transcript.id,
+            subject=client_note_email.SUBJECT, body=body)
+        db.add(draft)
+    else:
+        draft.body = body
+        draft.subject = draft.subject or client_note_email.SUBJECT
+    draft.to_email = draft.to_email or _linked_agency_zoom_email(transcript)
+    db.commit()
+
+    return JSONResponse(content=_note_email_state(db, transcript))
+
+
+@app.put("/api/transcripts/{id}/note-email")
+# Save the agent's edits before the note email is sent.
+def save_note_email(id: str, data: ClientNoteEmailUpdate, request: Request, db: Session = Depends(get_db)):
+    _require_admin(request, db)
+    transcript = _load_transcript_or_404(db, id)
+
+    body = (data.body or "").strip()
+    if not body:
+        raise HTTPException(status_code=400, detail="The email cannot be empty")
+
+    to_email = None
+    if data.to_email is not None and _clean_string(data.to_email):
+        to_email = client_note_email.normalize_email(data.to_email)
+        if not to_email:
+            raise HTTPException(status_code=400, detail=f"{data.to_email} is not an email address")
+
+    draft = _open_note_email_draft(db, transcript.id)
+    if draft is None:
+        draft = models.ClientNoteEmail(
+            id=uuid.uuid4(), transcript_id=transcript.id,
+            subject=client_note_email.SUBJECT, body=body)
+        db.add(draft)
+    draft.body = body
+    draft.subject = _clean_string(data.subject) or draft.subject or client_note_email.SUBJECT
+    draft.to_email = to_email or draft.to_email or _linked_agency_zoom_email(transcript)
+    db.commit()
+
+    return JSONResponse(content=_note_email_state(db, transcript))
+
+
+@app.post("/api/transcripts/{id}/note-email/send")
+# Email the file note to the client and record the outcome either way.
+def send_note_email(id: str, request: Request, db: Session = Depends(get_db)):
+    admin_username = _require_admin(request, db)
+    transcript = _load_transcript_or_404(db, id)
+
+    draft = _open_note_email_draft(db, transcript.id)
+    if draft is None or not (draft.body or "").strip():
+        raise HTTPException(status_code=400, detail="There is no draft to send")
+
+    draft.to_email = draft.to_email or _linked_agency_zoom_email(transcript)
+    blocker = _note_email_blocker(transcript, draft.to_email)
+    if blocker:
+        raise HTTPException(status_code=409, detail=blocker)
+
+    sent, message = alerts.send_email_result(
+        subject=draft.subject or client_note_email.SUBJECT,
+        body_text=draft.body,
+        to_addresses=[draft.to_email],
+        from_address=client_note_email.CLIENT_EMAIL_FROM,
+    )
+
+    # Recorded either way: a refused send is part of the record of what was
+    # attempted, not something to retry until it disappears.
+    draft.from_email = client_note_email.CLIENT_EMAIL_FROM
+    draft.sent_by = admin_username
+    draft.error = None if sent else message
+    draft.status = "sent" if sent else "failed"
+    if sent:
+        draft.sent_at = datetime.utcnow()
+    db.commit()
+
+    state = _note_email_state(db, transcript)
     state["message"] = message
     return JSONResponse(content=state, status_code=200 if sent else 502)
 

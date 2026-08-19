@@ -117,6 +117,12 @@ CLIENT_RECAP_MODEL=gpt-4.1-mini        # reuses OPENAI_API_KEY
 CLIENT_RECAP_MAX_CHARS=480             # ~4 SMS segments, fixed lines included
 CLIENT_RECAP_AUTO_SEND=false           # text on approval with no second look
 
+# --- emailing the file note ------------------------------------------------
+# The address the client sees and would write back to. The SMTP account must
+# be allowed to send as it; see "The From address" below.
+CLIENT_EMAIL_FROM=info@columbiabasininsurance.com
+CLIENT_NOTE_EMAIL_SUBJECT=Notes Added to Your File
+
 # The opening and closing lines for a language the code does NOT already carry.
 # English and Spanish are written into client_recap.py and cannot be changed
 # from here: those two lines do the legal work, so what they say belongs in the
@@ -126,8 +132,8 @@ CLIENT_RECAP_AUTO_SEND=false           # text on approval with no second look
 # CLIENT_RECAP_OPT_OUT_VI=...
 ```
 
-Nothing else needs installing. The tables (`client_recaps`, `sms_opt_outs`) are
-created by the startup migrations.
+Nothing else needs installing. The tables (`client_recaps`, `client_note_emails`,
+`sms_opt_outs`) are created by the startup migrations.
 
 ### The sending number
 
@@ -259,3 +265,55 @@ All routes require an admin session.
 
 A failed send is kept, not discarded. "We tried and the carrier rejected it" is
 part of the record too.
+
+## Emailing the file note
+
+The recap text is a short summary written for a phone screen. The **Email the
+File Note** panel on the same page sends something different: the CRM note
+itself, the words that go on the file, so what the agency wrote down and what
+the client was told are provably the same.
+
+It goes from `info@columbiabasininsurance.com` (`CLIENT_EMAIL_FROM`) with the
+subject "Notes Added to Your File" (`CLIENT_NOTE_EMAIL_SUBJECT`), and reads:
+
+```
+Hello Maria,
+
+Here is a summary of the notes we added to your file for our record retention:
+
+Client called to make a payment of $287.12 on the liability coverage. ...
+```
+
+**Read it before it goes.** The note was written for the file, not for the
+client. A note meant for internal use can carry an assessment of the caller, a
+doubt about something they said, or an E&O flag raised for the agency's own
+benefit — none of which improves for being emailed to them. Nothing sends on its
+own: the note is composed into a draft, sits in an editable box, and goes only
+when someone has read it and pressed Send. Subject, body and address are all
+editable first.
+
+Send is blocked, with the reason shown, when the transcript is not approved,
+when the call has no CRM note, when there is no email address, or when SMTP is
+not configured.
+
+The client's address is not stored on a transcript, so it is prefilled from the
+linked Agency Zoom record when there is one and typed by the agent when there is
+not. Guessing an address for a letter about somebody's policy is not a thing to
+do quietly.
+
+Every draft and send is kept in `client_note_emails`, the same way recap texts
+are kept — a refused send is recorded as `failed` with the reason, because what
+was attempted is part of the record too.
+
+### The From address
+
+`CLIENT_EMAIL_FROM` only sets the header. The SMTP account still has to be
+permitted to send as that address; a provider that refuses an unauthorised From
+returns an error, which the page shows rather than silently rewriting the sender:
+
+> The mail server refused to send as info@columbiabasininsurance.com. The SMTP
+> account has to be allowed to send from that address.
+
+In Google Workspace or Microsoft 365 that means adding the address as a
+send-as alias on the mailbox in `SMTP_USER`, or authenticating as that mailbox
+directly.
