@@ -370,6 +370,32 @@ editable box and goes only when someone has read it and pressed Send. Subject,
 body and address are all editable first, and editing changes only the email —
 the note on the file is untouched.
 
+### Approving is what sends it
+
+**Approve CRM Note and Email**, at the foot of the transcript page, posts the
+note and any follow-ups to Agency Zoom and emails the client, in one act. That
+is the review this email was always waiting on: the agent has just read the
+notes and put their name to them. The button says what it does, and it asks once
+more, naming the address, before anything leaves — an email to a client cannot
+be recalled, and the wrong one is worse than a slow one.
+
+A send that cannot happen does not undo the approval. The approval has already
+posted to Agency Zoom, and reversing that because an address is missing would be
+worse than saying plainly that the email did not go, which the page then does in
+amber.
+
+The Send Email button is still there for a call approved before this existed, or
+one whose address was added afterwards.
+
+### A corrected note refreshes the email
+
+The body is pinned to the note it was made from. Correct the CRM note and the
+email follows it — including over an agent's own edit, because emailing a client
+the version you have just fixed would be worse than losing the edit. Saving an
+edit re-pins it, so it survives until the note itself changes again. Changing
+who the call is assigned to, the language, or the client's name has the same
+effect, since all of them change the wording.
+
 Send is blocked, with the reason shown, when the transcript is not approved,
 when the call has no CRM note, when there is no email address, or when SMTP is
 not configured.

@@ -16,6 +16,15 @@
 <div class="error">{{ error_message }}</div>
 {% endif %}
 
+{% if request.query_params.get("emailed") %}
+<div class="notice success">Approved, and the note was emailed to the client.</div>
+{% endif %}
+{% if request.query_params.get("email_failed") %}
+<div class="notice" style="background:#fef3c7; color:#92400e; padding:10px 14px; border-radius:6px; margin:12px 0;">
+    Approved, but the client was not emailed: {{ request.query_params.get("email_failed") }}
+</div>
+{% endif %}
+
 <div class="card surface">
 
     <div class="section">
@@ -196,19 +205,6 @@
 
     <hr>
 
-    <form method="post" action="/user/transcripts/{{ transcript.id }}/update" onsubmit="return validateApprovalForm();">
-        <label>Update Status</label>
-        <select name="status" id="statusSelect">
-            <option value="pending" {% if transcript.status.value=="pending" %}selected{% endif %}>Pending</option>
-            <option value="approved" {% if transcript.status.value=="approved" %}selected{% endif %}>Approved</option>
-        </select>
-
-        <input type="hidden" id="followUpTaskExists" value="{{ '1' if transcript.follow_up_task else '0' }}">
-        <button type="submit">Update</button>
-    </form>
-
-    <hr>
-
     <div class="section" id="noteEmailSection">
         <h3 class="section-title">Email the File Note</h3>
         <p class="recap-help">
@@ -241,6 +237,28 @@
         </div>
 
         <div id="noteEmailHistory" class="recap-history"></div>
+    </div>
+
+    <hr>
+
+    <div class="section" id="approvalSection">
+        <h3 class="section-title">Approve</h3>
+        <p class="recap-help">
+            Approving posts the note and any follow-ups to Agency Zoom and emails the client the
+            note above, in one step. Read both before you approve — the email goes as soon as you do.
+        </p>
+
+        <form method="post" action="/user/transcripts/{{ transcript.id }}/update"
+              onsubmit="return validateApprovalForm();">
+            <label>Status</label>
+            <select name="status" id="statusSelect">
+                <option value="pending" {% if transcript.status.value=="pending" %}selected{% endif %}>Pending</option>
+                <option value="approved" {% if transcript.status.value=="approved" %}selected{% endif %}>Approved</option>
+            </select>
+
+            <input type="hidden" id="followUpTaskExists" value="{{ '1' if transcript.follow_up_task else '0' }}">
+            <button type="submit" id="approveButton">Approve CRM Note and Email</button>
+        </form>
     </div>
 
     <hr>
@@ -405,6 +423,9 @@
             const data = await response.json();
 
             showToast("Transcript updated successfully");
+            // The email is made from the note, so a saved note reloads it
+            // rather than leaving wording on screen that has been superseded.
+            noteEmailLoad();
 
         } catch (error) {
             showToast("Error updating transcription");
@@ -524,6 +545,17 @@
         if (status === "approved" && !followUpTaskExists && !crmNote) {
             showToast("CRM note is required to approve this transcript.");
             return false;
+        }
+
+        // Naming the address before it goes, because an email to a client
+        // cannot be recalled and the wrong one is worse than a slow one.
+        const alreadyApproved = {{ 'true' if transcript.status.value == "approved" else 'false' }};
+        if (status === "approved" && !alreadyApproved) {
+            const to = (noteEmailState && noteEmailState.to_email) || "";
+            const question = to
+                ? `Approve this call and email the note to ${to}?`
+                : "Approve this call? There is no email address on file, so nothing will be emailed.";
+            if (!confirm(question)) return false;
         }
 
         return true;
