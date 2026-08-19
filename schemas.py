@@ -7,6 +7,12 @@ class ClientRecapUpdate(BaseModel):
     body: str
     to_number: Optional[str] = None
 
+
+class ClientNoteEmailUpdate(BaseModel):
+    body: str
+    subject: Optional[str] = None
+    to_email: Optional[str] = None
+
 # User schema
 class UserCreate(BaseModel):
     user_id: str

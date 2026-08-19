@@ -28,12 +28,18 @@ def is_email_configured() -> bool:
 
 
 def send_email(subject: str, body_text: str, body_html: str | None = None,
-               to_addresses: list[str] | None = None) -> bool:
+               to_addresses: list[str] | None = None, from_address: str | None = None) -> bool:
     """Send to explicitly named recipients only.
 
     There is deliberately no fallback recipient: every message goes to the
     person it concerns, so a stray ALERT_EMAIL_TO cannot pull mail into a
     shared inbox.
+
+    from_address exists for mail to clients, which should come from the address
+    they would write back to rather than the mailbox the app authenticates as.
+    The SMTP account still has to be allowed to send as it -- a provider that
+    refuses an unauthorised From shows up here as a failed send, not a silent
+    rewrite.
     """
     recipients = [address.strip() for address in (to_addresses or []) if address and address.strip()]
     if not is_smtp_configured():
@@ -43,9 +49,10 @@ def send_email(subject: str, body_text: str, body_html: str | None = None,
         logger.info("No recipient for message; skipping: %s", subject)
         return False
 
+    sender = (from_address or "").strip() or ALERT_EMAIL_FROM
     message = MIMEMultipart("alternative")
     message["Subject"] = subject
-    message["From"] = ALERT_EMAIL_FROM
+    message["From"] = sender
     message["To"] = ", ".join(recipients)
     message.attach(MIMEText(body_text, "plain", "utf-8"))
     if body_html:
@@ -56,12 +63,54 @@ def send_email(subject: str, body_text: str, body_html: str | None = None,
             server.ehlo()
             server.starttls()
             server.login(SMTP_USER, SMTP_PASSWORD)
-            server.sendmail(ALERT_EMAIL_FROM, recipients, message.as_string())
+            server.sendmail(sender, recipients, message.as_string())
         logger.info("Sent email: %s", subject)
         return True
     except Exception:
         logger.exception("Failed to send email: %s", subject)
         return False
+
+
+def send_email_result(subject: str, body_text: str, to_addresses: list[str],
+                      from_address: str | None = None) -> tuple[bool, str]:
+    """Send one email and say why if it did not go.
+
+    The fire-and-forget version is right for notifying staff, where a failure
+    belongs in the log. Mail to a client is not that: someone is standing at the
+    screen having pressed Send, and needs to be told it did not go.
+    """
+    if not is_smtp_configured():
+        return False, ("Email is not configured on the server. Set SMTP_HOST, SMTP_USER "
+                       "and SMTP_PASSWORD in Railway.")
+    recipients = [address.strip() for address in to_addresses if address and address.strip()]
+    if not recipients:
+        return False, "No email address to send to."
+
+    sender = (from_address or "").strip() or ALERT_EMAIL_FROM
+    message = MIMEMultipart("alternative")
+    message["Subject"] = subject
+    message["From"] = sender
+    message["To"] = ", ".join(recipients)
+    message.attach(MIMEText(body_text, "plain", "utf-8"))
+
+    try:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.sendmail(sender, recipients, message.as_string())
+        logger.info("Sent email to %s: %s", ", ".join(recipients), subject)
+        return True, f"Emailed {', '.join(recipients)}."
+    except smtplib.SMTPSenderRefused as exc:
+        logger.exception("Sender %s refused", sender)
+        return False, (f"The mail server refused to send as {sender}. The SMTP account has to be "
+                       f"allowed to send from that address. ({exc.smtp_code})")
+    except smtplib.SMTPRecipientsRefused:
+        logger.exception("Recipient refused: %s", recipients)
+        return False, f"The mail server would not accept {', '.join(recipients)} as an address."
+    except Exception as exc:
+        logger.exception("Failed to send email: %s", subject)
+        return False, f"The email could not be sent: {type(exc).__name__}: {exc}"
 
 
 def send_email_async(subject: str, body_text: str, body_html: str | None = None,

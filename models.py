@@ -107,6 +107,34 @@ class ClientRecap(Base):
     updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class ClientNoteEmail(Base):
+    """The file-note email sent to a client, and what became of it.
+
+    Kept for the same reason the recap texts are: what matters in a dispute is
+    being able to show the exact words that left the office, to which address,
+    and when. Rows are not rewritten once sent.
+    """
+
+    __tablename__ = "client_note_emails"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    transcript_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+
+    subject = Column(String, nullable=False)
+    body = Column(Text, nullable=False)
+    to_email = Column(String, nullable=True)
+    from_email = Column(String, nullable=True)
+
+    # draft | sent | failed
+    status = Column(String, default="draft", nullable=False)
+    error = Column(Text, nullable=True)
+
+    sent_by = Column(String, nullable=True)
+    sent_at = Column(TIMESTAMP, nullable=True)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class SmsOptOut(Base):
     """A number that has asked not to be texted.
 
