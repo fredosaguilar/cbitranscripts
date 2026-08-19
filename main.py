@@ -2500,6 +2500,66 @@ def _assigned_agent_name(db: Session, transcript) -> Optional[str]:
     return _clean_string(getattr(user, "agency_zoom_employee_name", None))
 
 
+def _staff_names(db: Session) -> set[str]:
+    """Every name that belongs to the agency rather than to a client.
+
+    Drawn from the users registered here, by their Agency Zoom name and by the
+    name on their RingCentral extension. Both full names and first names go in,
+    so a note or a caller-ID field carrying either is recognised.
+    """
+    names: set[str] = set()
+
+    def add(value):
+        cleaned = (_clean_string(value) or "").replace(",", " ").strip().lower()
+        if not cleaned:
+            return
+        names.add(cleaned)
+        first = cleaned.split()[0]
+        if len(first) > 2:
+            names.add(first)
+
+    try:
+        for user in db.query(models.UserToken).all():
+            add(getattr(user, "agency_zoom_employee_name", None))
+        # Extension names name the person whose line it is, which on an outbound
+        # call is exactly the name caller ID reports
+        for row in db.query(models.TranscriptResponse.extension_name).distinct().limit(200):
+            add(row[0])
+    except Exception:
+        logger.exception("Could not build the list of agency names")
+    return names
+
+
+def _note_names_staff_as_client(transcript, staff_names: set[str]) -> Optional[str]:
+    """A staff name appearing in the note where the client's name should be.
+
+    The analysis occasionally writes up the agent as though they were the
+    caller. It cannot be corrected automatically without rewriting the note,
+    which is the one thing this must not do -- so it is reported, and a person
+    decides.
+    """
+    note = (_clean_string(getattr(transcript, "crm_note", None)) or "").lower()
+    if not note or not staff_names:
+        return None
+    client = (_clean_string(getattr(transcript, "agency_zoom_customer_name", None)) or "").lower()
+    if client and client.split()[0] in note:
+        return None
+    found = sorted({name for name in staff_names if len(name) > 2 and name in note})
+    return found[0].title() if found else None
+
+
+def _misattribution_warning(transcript, staff_names: set[str]) -> Optional[str]:
+    who = _note_names_staff_as_client(transcript, staff_names)
+    if not who:
+        return None
+    client = _clean_string(getattr(transcript, "agency_zoom_customer_name", None))
+    return (
+        f"This note names {who}, who works at the agency, and does not name "
+        f"{client or 'the client'}. Check it is not describing the agent as the caller before "
+        f"this goes out, and correct the note above if it is."
+    )
+
+
 def _note_email_blocker(transcript, to_email: str | None) -> str | None:
     """Why this note email cannot go yet, in words the agent can act on."""
     status = transcript.status.value if hasattr(transcript.status, "value") else str(transcript.status)
@@ -2531,10 +2591,11 @@ def _note_email_body(db: Session, transcript, draft) -> str:
         return ""
 
     agent = _assigned_agent_name(db, transcript)
+    staff = _staff_names(db)
     if (draft is not None and (draft.body or "").strip()
-            and draft.note_fingerprint == client_note_email.note_fingerprint(transcript, agent)):
+            and draft.note_fingerprint == client_note_email.note_fingerprint(transcript, agent, staff)):
         return draft.body
-    return client_note_email.compose(transcript, agent)
+    return client_note_email.compose(transcript, agent, staff)
 
 
 def _note_email_state(db: Session, transcript) -> dict:
@@ -2543,6 +2604,7 @@ def _note_email_state(db: Session, transcript) -> dict:
     to_email = (draft.to_email if draft else None) or _linked_agency_zoom_email(transcript)
     blocker = _note_email_blocker(transcript, to_email)
     body = _note_email_body(db, transcript, draft)
+    staff = _staff_names(db)
 
     return {
         "configured": alerts.is_smtp_configured(),
@@ -2556,6 +2618,7 @@ def _note_email_state(db: Session, transcript) -> dict:
         "draft": _note_email_json(draft),
         "can_send": blocker is None and bool(body.strip()),
         "blocked_reason": blocker,
+        "warning": _misattribution_warning(transcript, staff),
         "history": [_note_email_json(row) for row in history if row.status != "draft"],
     }
 
@@ -2579,7 +2642,8 @@ def preview_note_email(id: str, request: Request, db: Session = Depends(get_db))
         # and the note may well have been edited since.
         body, subject, state = sent.body, sent.subject, "sent"
     elif client_note_email.has_note(transcript):
-        body = client_note_email.compose(transcript, _assigned_agent_name(db, transcript))
+        body = client_note_email.compose(
+            transcript, _assigned_agent_name(db, transcript), _staff_names(db))
         subject, state = client_note_email.SUBJECT, "not drafted yet"
     else:
         body, subject, state = "", client_note_email.SUBJECT, "no note on this call"
@@ -2632,7 +2696,7 @@ def save_note_email(id: str, data: ClientNoteEmailUpdate, request: Request, db: 
     # Pinned to the note it was written against, so the edit survives until the
     # note itself changes and then gives way to it
     draft.note_fingerprint = client_note_email.note_fingerprint(
-        transcript, _assigned_agent_name(db, transcript))
+        transcript, _assigned_agent_name(db, transcript), _staff_names(db))
     db.commit()
 
     return JSONResponse(content=_note_email_state(db, transcript))
@@ -2673,7 +2737,7 @@ def _send_note_email(db: Session, transcript, sent_by: str) -> tuple[bool, str]:
 
     draft.from_email = client_note_email.CLIENT_EMAIL_FROM
     draft.note_fingerprint = client_note_email.note_fingerprint(
-        transcript, _assigned_agent_name(db, transcript))
+        transcript, _assigned_agent_name(db, transcript), _staff_names(db))
     draft.sent_by = sent_by
     draft.error = None if sent else message
     draft.status = "sent" if sent else "failed"

@@ -136,7 +136,25 @@ _NOT_A_NAME = {"wireless", "unknown", "caller", "cell", "toll", "no", "anonymous
                "restricted", "private", "mobile", "spam", "unavailable"}
 
 
-def greeting_name(transcript: Any) -> str:
+def _is_staff(name: str | None, staff_names: Optional[set[str]]) -> bool:
+    """Whether this name belongs to somebody who works at the agency.
+
+    Caller ID on an outbound call is the agency's own line, and the analysis
+    sometimes reports the agent as the caller, so without this a client can be
+    greeted by the name of the person who rang them. Matched on the full name
+    and on the first name alone, because "Alfredo" and "Alfredo Aguilar" are the
+    same problem.
+    """
+    if not name or not staff_names:
+        return False
+    cleaned = name.replace(",", " ").strip().lower()
+    if cleaned in staff_names:
+        return True
+    words = cleaned.split()
+    return bool(words) and words[0] in staff_names
+
+
+def greeting_name(transcript: Any, staff_names: Optional[set[str]] = None) -> str:
     """What to call the client, falling back to something that is never wrong.
 
     The name on the linked Agency Zoom record comes first. That is the name the
@@ -144,12 +162,17 @@ def greeting_name(transcript: Any) -> str:
     have already been sent -- where caller ID gives whatever the phone company
     happened to publish, which on a business line is often the account holder
     rather than the person, and on a mobile is frequently "Wireless Caller".
+
+    An agency name is never used, whichever field it came from. Opening a letter
+    to a client with the name of the agent who called them is not a cosmetic
+    slip: it is the agency's own record saying the wrong person was on the phone.
     """
-    name = (
-        _clean(getattr(transcript, "agency_zoom_customer_name", None))
-        or _clean(getattr(transcript, "client_name", None))
-        or _clean(getattr(transcript, "from_name", None))
-    )
+    candidates = [
+        _clean(getattr(transcript, "agency_zoom_customer_name", None)),
+        _clean(getattr(transcript, "client_name", None)),
+        _clean(getattr(transcript, "from_name", None)),
+    ]
+    name = next((c for c in candidates if c and not _is_staff(c, staff_names)), None)
     if not name:
         return "there"
 
@@ -175,7 +198,8 @@ def has_note(transcript: Any) -> bool:
     return bool(_clean(getattr(transcript, "crm_note", None)))
 
 
-def note_fingerprint(transcript: Any, assigned_name: Optional[str] = None) -> str:
+def note_fingerprint(transcript: Any, assigned_name: Optional[str] = None,
+                     staff_names: Optional[set[str]] = None) -> str:
     """Identifies the inputs the email is made from.
 
     Stored against the draft so a note corrected after the email was composed
@@ -187,7 +211,7 @@ def note_fingerprint(transcript: Any, assigned_name: Optional[str] = None) -> st
         _clean(getattr(transcript, "crm_note", None)) or "",
         agent_name(transcript, assigned_name) or "",
         resolve_language(transcript),
-        greeting_name(transcript),
+        greeting_name(transcript, staff_names),
     ]
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:32]
 
@@ -271,7 +295,8 @@ def translate(text: str, language: str) -> Optional[str]:
     return translated or None
 
 
-def _message(transcript: Any, assigned_name: Optional[str]) -> str:
+def _message(transcript: Any, assigned_name: Optional[str],
+             staff_names: Optional[set[str]] = None) -> str:
     """The client-facing wording, without the sign-off."""
     note = _clean(getattr(transcript, "crm_note", None)) or ""
     who = agent_name(transcript, assigned_name)
@@ -279,13 +304,14 @@ def _message(transcript: Any, assigned_name: Optional[str]) -> str:
     # into "your conversation with ." or name the agency twice over.
     conversation = f"your conversation with {who} and the notes" if who else "the notes"
     return (
-        f"Hello {greeting_name(transcript)},\n\n"
+        f"Hello {greeting_name(transcript, staff_names)},\n\n"
         f"Here is a summary of {conversation} we added to your file for our record retention:\n\n"
         f"{note}"
     )
 
 
-def compose(transcript: Any, assigned_name: Optional[str] = None) -> str:
+def compose(transcript: Any, assigned_name: Optional[str] = None,
+            staff_names: Optional[set[str]] = None) -> str:
     """The message body, signed off, in both languages when the call was not English.
 
     The client's own language goes first because that is the copy they will
@@ -294,7 +320,7 @@ def compose(transcript: Any, assigned_name: Optional[str] = None) -> str:
     translation would mean the agency's record and the client's copy are not the
     same words. Both together, and either one can be checked against the other.
     """
-    english = _message(transcript, assigned_name)
+    english = _message(transcript, assigned_name, staff_names)
     language = resolve_language(transcript)
 
     # An English call gets one copy, and never asks a model for anything

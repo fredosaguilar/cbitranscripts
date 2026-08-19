@@ -387,6 +387,22 @@ amber.
 The Send Email button is still there for a call approved before this existed, or
 one whose address was added afterwards.
 
+### When the note names an agent instead of the client
+
+If the CRM note names somebody who works at the agency and does not name the
+linked client, the panel says so above the Send button:
+
+> This note names Alfredo, who works at the agency, and does not name Maria
+> Lopez. Check it is not describing the agent as the caller before this goes
+> out, and correct the note above if it is.
+
+It warns rather than rewriting. Correcting the note is the fix — the note is the
+record, and a record silently altered to look right is worth nothing.
+
+The note posted to Agency Zoom now opens with `Client: <name from the linked
+record>` and still closes with `Call handled by <agent>`, so who called and who
+took the call are both stated outright rather than left to the wording.
+
 ### A corrected note refreshes the email
 
 The body is pinned to the note it was made from. Correct the CRM note and the
@@ -405,6 +421,18 @@ back to caller ID only when there is no link. That is the name the agency files
 them under and the one on any paperwork already sent them, where caller ID gives
 whatever the phone company published — on a business line often the account
 holder rather than the person, and on a mobile frequently "Wireless Caller".
+
+**An agency name is never used as the client's**, whichever field it came from.
+The analysis sometimes writes the agent up as the caller, and on an outbound
+call caller ID is the agency's own line — so without this a client can be
+greeted by the name of the person who rang them, which is the agency's own
+record saying the wrong person was on the phone. Staff names are taken from the
+registered users and their RingCentral extensions, matched on the full name and
+the first name alike.
+
+The cost is deliberate: a genuine client whose caller ID reads only "Jesus",
+when Jesus works at the agency, is greeted "Hello there," instead. Linking the
+call in Agency Zoom fixes it, because the linked record then supplies the name.
 
 A person gets their given name, including when the record files them surname
 first: `Lopez, Maria` is greeted as Maria, not Lopez. A business is addressed in

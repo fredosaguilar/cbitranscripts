@@ -924,8 +924,18 @@ def create_agency_zoom_customer_note_for_transcript(
             "transcript page to link the right record, then approve again."
         )
 
+    # Name the client at the top, from the record this call is linked to. The
+    # analysis sometimes writes a note that reads as though the agent were the
+    # caller, and a note on a customer file that names the wrong person as the
+    # client is worse than one that names nobody.
+    client = _clean_string(match.get("name"))
+    if client:
+        note = f"Client: {client}\n\n{note}"
+
     # The API posts notes as the integration user, so the agent is named in the
-    # note itself and passed as an author id where the API accepts one.
+    # note itself and passed as an author id where the API accepts one. Between
+    # this line and the one above, who called and who took the call are both
+    # stated rather than left to the wording.
     author = _clean_string(agent_name)
     if author:
         note = f"{note}\n\nCall handled by {author}."
