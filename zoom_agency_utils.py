@@ -929,7 +929,7 @@ def create_agency_zoom_customer_note_for_transcript(
     # caller, and a note on a customer file that names the wrong person as the
     # client is worse than one that names nobody.
     client = _clean_string(match.get("name"))
-    if client:
+    if client and not note.lower().startswith("client:"):
         note = f"Client: {client}\n\n{note}"
 
     # The API posts notes as the integration user, so the agent is named in the
