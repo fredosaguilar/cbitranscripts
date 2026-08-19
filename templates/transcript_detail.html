@@ -382,6 +382,14 @@
             showToast((data.linked ? `Linked to ${data.customer_name || "Agency Zoom"}` : "Agency Zoom link cleared") + extra);
             document.getElementById("azResults").innerHTML = "";
             azLoadStatus();
+
+            // The note is headed with whoever the call is linked to, so the box
+            // and the email built from it both follow the link straight away.
+            if (data.crm_note !== undefined && data.crm_note !== null) {
+                const noteField = document.getElementById("crmNoteInput");
+                if (noteField && document.activeElement !== noteField) noteField.value = data.crm_note;
+            }
+            noteEmailLoad();
         } catch (e) {
             showToast("Could not reach the server to save the Agency Zoom link.");
         }

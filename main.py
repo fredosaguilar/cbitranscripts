@@ -1601,6 +1601,26 @@ def agency_zoom_search(id: str, request: Request, db: Session = Depends(get_db))
     })
 
 
+_CLIENT_LINE = re.compile(r"^\s*Client:.*(?:\r?\n)+", re.IGNORECASE)
+
+
+def _stamp_client_on_note(note: str | None, linked_name: str | None) -> str | None:
+    """Head the note with the customer whose file it belongs on.
+
+    The analysis names whoever spoke, which is often not who the account is
+    under -- a call about the Curiel policy can be made by Andres, and the note
+    will say Andres. Both facts are true and the note needs both, so the account
+    is stamped at the top rather than the speaker's name being overwritten in
+    the prose. Rewriting "Andres called" to "Mauro called" would make the file
+    say a person phoned who did not, which is a worse record than an unclear one.
+    """
+    body = _CLIENT_LINE.sub("", _clean_string(note) or "", count=1).strip()
+    if not body:
+        return _clean_string(note)
+    cleaned_name = _clean_string(linked_name)
+    return f"Client: {cleaned_name}\n\n{body}" if cleaned_name else body
+
+
 @app.post("/api/transcripts/{id}/agencyzoom/link")
 # Link a transcript to a specific Agency Zoom customer or lead.
 def agency_zoom_link(
@@ -1627,6 +1647,9 @@ def agency_zoom_link(
     transcript.agency_zoom_customer_id = linked_id
     transcript.agency_zoom_customer_type = linked_type
     transcript.agency_zoom_customer_name = linked_name
+    # The note follows the link immediately: the page shows the change, and the
+    # email built from the note is right before anybody presses send.
+    transcript.crm_note = _stamp_client_on_note(transcript.crm_note, linked_name)
 
     # Optionally apply the same link to every other call from this number
     also_updated = 0
@@ -1651,6 +1674,7 @@ def agency_zoom_link(
                 sibling.agency_zoom_customer_id = linked_id
                 sibling.agency_zoom_customer_type = linked_type
                 sibling.agency_zoom_customer_name = linked_name
+                sibling.crm_note = _stamp_client_on_note(sibling.crm_note, linked_name)
                 also_updated += 1
 
     db.commit()
@@ -1661,6 +1685,7 @@ def agency_zoom_link(
         "customer_id": transcript.agency_zoom_customer_id,
         "customer_type": transcript.agency_zoom_customer_type,
         "customer_name": transcript.agency_zoom_customer_name,
+        "crm_note": transcript.crm_note,
         "also_updated": also_updated,
     })
 
