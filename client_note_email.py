@@ -194,6 +194,40 @@ def greeting_name(transcript: Any, staff_names: Optional[set[str]] = None) -> st
     return first.capitalize() if first.islower() or first.isupper() else first
 
 
+# Sentences the analysis adds to cover itself rather than to record the call.
+# They say nothing about what happened, they are identical on every note, and a
+# client reading their own file note does not need to be told what was not
+# discussed. The note is for what was.
+_BOILERPLATE = [
+    r"no coverages?\s+(?:was|were)\s+(?:bound|changed|added|removed|modified|altered)[^.]*\.",
+    r"no\s+(?:specific\s+)?(?:coverages?|limits?|premiums?|rates?)[^.]{0,120}?"
+    r"(?:was|were)\s+(?:discussed|confirmed|quoted|bound|provided|reviewed)[^.]*\.",
+    r"no\s+(?:specific\s+)?(?:coverages?|limits?|premiums?)\s*,[^.]{0,120}\.",
+    r"(?:the\s+)?effective\s+dates?[^.]{0,80}?(?:was|were)\s+not\s+(?:confirmed|provided|discussed|set)[^.]*\.",
+    r"no\s+(?:new\s+)?(?:policy|policies)\s+(?:was|were)\s+(?:issued|bound|written)[^.]*\.",
+    r"this (?:call|note) (?:does not|doesn't) (?:constitute|confirm)[^.]*\.",
+]
+
+_BOILERPLATE_PATTERN = re.compile("|".join(f"(?:{p})" for p in _BOILERPLATE), re.IGNORECASE)
+
+
+def strip_boilerplate(note: str | None) -> str:
+    """Remove the analysis's stock disclaimers, keeping the account of the call.
+
+    Only sentences that state what did NOT happen in these fixed forms go. A
+    sentence recording something real -- a premium that was quoted, a change the
+    client asked for -- says what happened and does not match.
+    """
+    if not note:
+        return ""
+    cleaned = _BOILERPLATE_PATTERN.sub("", note)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    # A removed sentence can leave a dangling connector or a doubled space
+    cleaned = re.sub(r"\s+([.,;])", r"\1", cleaned)
+    return "\n".join(line.strip() for line in cleaned.splitlines()).strip()
+
+
 def has_note(transcript: Any) -> bool:
     return bool(_clean(getattr(transcript, "crm_note", None)))
 
@@ -298,7 +332,8 @@ def translate(text: str, language: str) -> Optional[str]:
 def _message(transcript: Any, assigned_name: Optional[str],
              staff_names: Optional[set[str]] = None) -> str:
     """The client-facing wording, without the sign-off."""
-    note = _clean(getattr(transcript, "crm_note", None)) or ""
+    # Stripped here too, for notes written before it was stripped at ingest
+    note = strip_boilerplate(_clean(getattr(transcript, "crm_note", None)))
     who = agent_name(transcript, assigned_name)
     # Without a name the sentence has to stand on its own rather than trail off
     # into "your conversation with ." or name the agency twice over.

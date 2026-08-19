@@ -184,6 +184,10 @@ class TranscriptResponse(Base):
     agency_zoom_customer_type = Column(String, nullable=True)
     agency_zoom_customer_name = Column(String, nullable=True)
     agency_zoom_due_date = Column(String, nullable=True)
+    # Per follow-up task: its own due date, and the Agency Zoom task id once it
+    # has been added. Keyed by the task's text, so a task that is reworded is a
+    # different task rather than inheriting the old one's state.
+    follow_up_task_state = Column(Text, nullable=True)
     # Set once the call write-up reaches Agency Zoom, so retrying a failed
     # approval does not post the same note a second time
     agency_zoom_note_posted_at = Column(TIMESTAMP, nullable=True)
