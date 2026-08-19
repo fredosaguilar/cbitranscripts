@@ -32,6 +32,38 @@ CLIENT_EMAIL_FROM = (os.getenv("CLIENT_EMAIL_FROM") or "info@columbiabasininsura
 
 SUBJECT = os.getenv("CLIENT_NOTE_EMAIL_SUBJECT", "Notes Added to Your File").strip()
 
+AGENCY_PHONE = os.getenv("AGENCY_PHONE", "509-765-8839").strip()
+AGENCY_ADDRESS = os.getenv("AGENCY_ADDRESS", "21 D St SW, Suite A, Quincy, WA 98848").strip()
+
+# The licensing line is not decoration. This email carries the file note, and a
+# client reading a summary of their own policy should be told in the same breath
+# that the policy language is what governs -- the same sentence the agency's
+# other mail already closes with.
+_LICENCE_LINE = (
+    "Licensed in Washington. Coverage descriptions here are summaries only - "
+    "your policy language governs."
+)
+
+
+def signature() -> str:
+    """The agency's sign-off, matching the one on its other client mail.
+
+    Set CLIENT_EMAIL_SIGNATURE to replace the whole block; otherwise it is built
+    from the same agency details the rest of the app already knows, so changing
+    the phone number in one place changes it here too.
+    """
+    override = (os.getenv("CLIENT_EMAIL_SIGNATURE") or "").strip()
+    if override:
+        return override
+    return "\n".join([
+        AGENCY_NAME,
+        f"Phone: {AGENCY_PHONE}",
+        f"Email: {CLIENT_EMAIL_FROM}",
+        f"Office: {AGENCY_ADDRESS}",
+        "",
+        _LICENCE_LINE,
+    ])
+
 _EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
 
 _NO_DATA_VALUES = {
@@ -78,12 +110,13 @@ def has_note(transcript: Any) -> bool:
 
 
 def compose(transcript: Any) -> str:
-    """The message body, in the wording the agency asked for."""
+    """The message body, in the wording the agency asked for, signed off."""
     note = _clean(getattr(transcript, "crm_note", None)) or ""
     return (
         f"Hello {greeting_name(transcript)},\n\n"
         f"Here is a summary of the notes we added to your file for our record retention:\n\n"
-        f"{note}\n"
+        f"{note}\n\n"
+        f"{signature()}\n"
     )
 
 
