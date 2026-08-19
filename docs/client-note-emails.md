@@ -311,6 +311,52 @@ changing the phone number in one place changes it here too;
 decoration — this email carries a summary of somebody's policy file, and it says
 in the same breath that the policy language governs.
 
+### Both languages when the call was not in English
+
+A call taken in Spanish produces an email in Spanish **and** English, the
+client's own language first:
+
+```
+Hola Maria,
+
+Aquí tiene un resumen de su conversación con Fred Aguilar y las notas que
+agregamos a su archivo para nuestro registro:
+
+El cliente llamó para hacer un pago de $287.12 en la cobertura de
+responsabilidad. Solicitó el recibo por mensaje de texto.
+
+----------------------------------------
+
+Hello Maria,
+
+Here is a summary of your conversation with Fred Aguilar and the notes we added
+to your file for our record retention:
+
+Client called to make a payment of $287.12 on the liability coverage. Requested
+the receipt by text.
+
+Columbia Basin Insurance
+...
+```
+
+The English is not replaced by the translation, it follows it. The note was
+written in English and that is the wording on the file, so sending only a
+machine translation would leave the agency's record and the client's copy as
+different words — which is the one thing this feature exists to prevent. With
+both, either can be checked against the other, by the client now or by anyone
+later.
+
+Whisper's detected language decides. An English call gets one copy and never
+asks a model for anything. If the translation cannot be produced, the email
+still goes in English rather than not going: a missing second copy is worth less
+than a missing email.
+
+Translations are cached per wording for the life of the process, so opening the
+panel or the preview repeatedly costs one model call, not one per page load.
+`CLIENT_EMAIL_TRANSLATE_MODEL` sets the model (default `gpt-4.1-mini`).
+
+### The note goes in verbatim
+
 There is no drafting step. The CRM note **is** the message — it is put in
 verbatim, wrapped in the greeting and the sign-off, and the email is ready to
 send the moment the page opens. Nothing rewrites, shortens or reinterprets what

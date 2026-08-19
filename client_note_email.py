@@ -13,11 +13,13 @@ note is composed into a message, put in front of an agent, and goes only when
 someone has read it and pressed Send.
 """
 
+import hashlib
 import logging
 import os
 import re
 from typing import Any, Optional
 
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -25,6 +27,34 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 AGENCY_NAME = os.getenv("AGENCY_NAME", "Columbia Basin Insurance")
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+TRANSLATE_MODEL = os.getenv("CLIENT_EMAIL_TRANSLATE_MODEL", os.getenv("TRANSLATE_MODEL", "gpt-4.1-mini"))
+TRANSLATE_TIMEOUT = int(os.getenv("CLIENT_EMAIL_TRANSLATE_TIMEOUT", "60"))
+
+# Whisper reports the spoken language as a name or a code depending on the
+# model, so both are accepted.
+_LANGUAGE_CODES = {
+    "en": "en", "eng": "en", "english": "en",
+    "es": "es", "spa": "es", "spanish": "es", "espanol": "es", "español": "es", "castellano": "es",
+    "pt": "pt", "por": "pt", "portuguese": "pt", "portugues": "pt", "português": "pt",
+    "fr": "fr", "fra": "fr", "french": "fr", "francais": "fr", "français": "fr",
+    "ru": "ru", "rus": "ru", "russian": "ru",
+    "uk": "uk", "ukr": "uk", "ukrainian": "uk",
+    "vi": "vi", "vie": "vi", "vietnamese": "vi",
+    "ar": "ar", "ara": "ar", "arabic": "ar",
+    "zh": "zh", "chi": "zh", "chinese": "zh", "mandarin": "zh",
+    "tl": "tl", "tgl": "tl", "tagalog": "tl", "filipino": "tl",
+    "de": "de", "deu": "de", "german": "de",
+    "pa": "pa", "pan": "pa", "punjabi": "pa",
+}
+
+LANGUAGE_NAMES = {
+    "en": "English", "es": "Spanish", "pt": "Portuguese", "fr": "French",
+    "ru": "Russian", "uk": "Ukrainian", "vi": "Vietnamese", "ar": "Arabic",
+    "zh": "Chinese", "tl": "Tagalog", "de": "German", "pa": "Punjabi",
+}
 
 # The address a client would reasonably write back to, which is not the mailbox
 # the app authenticates as.
@@ -125,8 +155,71 @@ def agent_name(transcript: Any, assigned_name: Optional[str] = None) -> Optional
     return name or None
 
 
-def compose(transcript: Any, assigned_name: Optional[str] = None) -> str:
-    """The message body, in the wording the agency asked for, signed off."""
+def resolve_language(transcript: Any) -> str:
+    """The language the call was spoken in, as a short code. Defaults to English."""
+    spoken = (_clean(getattr(transcript, "original_language", None)) or "").lower()
+    return _LANGUAGE_CODES.get(spoken, "en")
+
+
+def language_name(code: str | None) -> str:
+    return LANGUAGE_NAMES.get((code or "en").lower(), (code or "en"))
+
+
+# One translation per wording, kept for as long as the process lives. The panel
+# and the list preview both ask for this text, and on every page load -- paying
+# a model call each time to render the same unchanged note would be absurd.
+_translations: dict[str, str] = {}
+
+_TRANSLATE_RULES = (
+    "Translate this message from an insurance agency to their client into {language}. "
+    "It is a record of a phone call, so accuracy matters more than fluency: keep every "
+    "name, date, amount, policy number and coverage term exactly as given, translate "
+    "nothing into a claim that was not made, and never state that coverage exists where "
+    "the original does not. Keep the line breaks and the paragraph structure. Reply with "
+    "the translated message only."
+)
+
+
+def translate(text: str, language: str) -> Optional[str]:
+    """The message in the client's language, or None if it could not be made.
+
+    Returning None rather than raising is deliberate: a translation that cannot
+    be produced should cost the client the second copy, not the email.
+    """
+    if not text or language == "en" or not OPENAI_API_KEY:
+        return None
+
+    key = hashlib.sha256(f"{language}\n{text}".encode("utf-8")).hexdigest()
+    if key in _translations:
+        return _translations[key]
+
+    try:
+        response = requests.post(
+            f"{OPENAI_BASE_URL}/chat/completions",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+            json={
+                "model": TRANSLATE_MODEL,
+                "temperature": 0,
+                "messages": [
+                    {"role": "system", "content": _TRANSLATE_RULES.format(language=language_name(language))},
+                    {"role": "user", "content": text},
+                ],
+            },
+            timeout=TRANSLATE_TIMEOUT,
+        )
+        response.raise_for_status()
+        translated = (response.json()["choices"][0]["message"]["content"] or "").strip()
+    except Exception:
+        logger.exception("Could not translate a client note email into %s", language)
+        return None
+
+    if translated:
+        _translations[key] = translated
+    return translated or None
+
+
+def _message(transcript: Any, assigned_name: Optional[str]) -> str:
+    """The client-facing wording, without the sign-off."""
     note = _clean(getattr(transcript, "crm_note", None)) or ""
     who = agent_name(transcript, assigned_name)
     # Without a name the sentence has to stand on its own rather than trail off
@@ -135,7 +228,32 @@ def compose(transcript: Any, assigned_name: Optional[str] = None) -> str:
     return (
         f"Hello {greeting_name(transcript)},\n\n"
         f"Here is a summary of {conversation} we added to your file for our record retention:\n\n"
-        f"{note}\n\n"
+        f"{note}"
+    )
+
+
+def compose(transcript: Any, assigned_name: Optional[str] = None) -> str:
+    """The message body, signed off, in both languages when the call was not English.
+
+    The client's own language goes first because that is the copy they will
+    read. The English follows it rather than replacing it: the note was written
+    in English and that is the wording on the file, so sending only a machine
+    translation would mean the agency's record and the client's copy are not the
+    same words. Both together, and either one can be checked against the other.
+    """
+    english = _message(transcript, assigned_name)
+    language = resolve_language(transcript)
+
+    # An English call gets one copy, and never asks a model for anything
+    translated = translate(english, language) if language != "en" else None
+
+    if not translated:
+        return f"{english}\n\n{signature()}\n"
+
+    return (
+        f"{translated}\n\n"
+        f"{'-' * 40}\n\n"
+        f"{english}\n\n"
         f"{signature()}\n"
     )
 
