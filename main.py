@@ -2771,15 +2771,37 @@ def _note_names_staff_as_client(transcript, staff_names: set[str]) -> Optional[s
 
 
 def _misattribution_warning(transcript, staff_names: set[str]) -> Optional[str]:
+    warnings = []
+
     who = _note_names_staff_as_client(transcript, staff_names)
-    if not who:
-        return None
-    client = _clean_string(getattr(transcript, "agency_zoom_customer_name", None))
-    return (
-        f"This note names {who}, who works at the agency, and does not name "
-        f"{client or 'the client'}. Check it is not describing the agent as the caller before "
-        f"this goes out, and correct the note above if it is."
+    if who:
+        client = _clean_string(getattr(transcript, "agency_zoom_customer_name", None))
+        warnings.append(
+            f"This note names {who}, who works at the agency, and does not name "
+            f"{client or 'the client'}. Check it is not describing the agent as the caller."
+        )
+
+    # The analysis fills gaps: a call that only ever said "el 24" comes back as
+    # "June 24th". Anything it states that cannot be found in the recording is
+    # worth a second look before it reaches a customer's file.
+    known = {name for name in staff_names}
+    for field in ("agency_zoom_customer_name", "client_name", "from_name"):
+        value = _clean_string(getattr(transcript, field, None))
+        if value:
+            known.update(part.lower() for part in value.replace(",", " ").split())
+    invented = client_note_email.unsupported_details(
+        getattr(transcript, "crm_note", None),
+        getattr(transcript, "transcription", None),
+        getattr(transcript, "transcription_original", None),
+        known_names=known,
     )
+    if invented:
+        warnings.append(
+            f"This note mentions {', '.join(invented)}, which does not appear anywhere in the "
+            f"call. Check it against the recording before this goes out."
+        )
+
+    return " ".join(warnings) if warnings else None
 
 
 def _note_email_blocker(transcript, to_email: str | None) -> str | None:
