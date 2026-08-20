@@ -245,6 +245,69 @@ def strip_boilerplate(note: str | None) -> str:
     return "\n".join(line.strip() for line in cleaned.splitlines()).strip()
 
 
+_MONTHS = {
+    "january": "enero", "february": "febrero", "march": "marzo", "april": "abril",
+    "may": "mayo", "june": "junio", "july": "julio", "august": "agosto",
+    "september": "septiembre", "october": "octubre", "november": "noviembre",
+    "december": "diciembre",
+}
+
+# Words that begin a sentence or are simply common, so finding one capitalised
+# in the note says nothing about whether it was invented.
+_NOT_EVIDENCE = {
+    "the", "a", "an", "he", "she", "they", "it", "this", "that", "there", "client",
+    "customer", "agent", "policy", "coverage", "premium", "call", "caller", "insured",
+    "yes", "no", "ok", "okay", "monday", "tuesday", "wednesday", "thursday", "friday",
+    "saturday", "sunday", "autopay", "vin", "cdl", "once", "when", "if", "and", "but",
+    "she", "his", "her", "their", "both", "one", "two", "three", "after", "before",
+    "during", "please", "thank", "thanks", "correct", "also", "well", "so", "then",
+    "however", "additionally", "furthermore", "finally", "following", "regarding",
+    "these", "those", "each", "another", "several", "since", "while", "because",
+    "confirmed", "requested", "explained", "discussed", "advised", "provided",
+    "billing", "payment", "renewal", "account", "certificate", "trailer", "truck",
+}
+
+
+def unsupported_details(note: str | None, *transcripts: str | None,
+                        known_names: Optional[set[str]] = None) -> list[str]:
+    """Specifics in the note that do not appear anywhere in the call.
+
+    The analysis fills gaps. A call that only ever says "el 24" comes back as
+    "Monday, June 24th", and a caller with no name given becomes "Maria" -- both
+    read as facts, and both go on a customer's file and into an email to them.
+
+    This does not judge the summary, only whether a month or a name it states
+    can be found in what was actually said. Everything it reports is something
+    a person should look at; nothing is changed automatically.
+    """
+    if not note:
+        return []
+
+    spoken = " ".join(t for t in transcripts if t).lower()
+    if not spoken:
+        return []
+
+    safe = {name.lower() for name in (known_names or set())}
+    found: list[str] = []
+
+    for english, spanish in _MONTHS.items():
+        if re.search(rf"\b{english}\b", note, re.IGNORECASE) and english not in spoken and spanish not in spoken:
+            found.append(english.capitalize())
+
+    # A capitalised word is usually a name. Sentence position is not used to
+    # decide that: an invented name is most often the subject of the sentence --
+    # "Maria called to request..." -- so skipping the first word would miss the
+    # very case this exists for. Ordinary openers are handled by the stop list.
+    for word in re.findall(r"\b([A-Z][a-z]{2,})\b", note):
+        lowered = word.lower()
+        if lowered in _NOT_EVIDENCE or lowered in safe or lowered in _MONTHS:
+            continue
+        if lowered not in spoken and word not in found:
+            found.append(word)
+
+    return found[:6]
+
+
 def has_note(transcript: Any) -> bool:
     return bool(_clean(getattr(transcript, "crm_note", None)))
 
@@ -307,6 +370,22 @@ _TRANSLATE_RULES = (
     "the translated message only."
 )
 
+# The agency's clients are in central Washington and overwhelmingly Mexican, so
+# a Castilian translation reads as though it came from somewhere else. Address
+# them as usted: this is a business writing about somebody's policy, and tú from
+# an insurer is too familiar for the register.
+_SPANISH_RULES = (
+    " Use Mexican Spanish as spoken in the United States, and address the client "
+    "formally as usted throughout -- never tú or vosotros. Use the vocabulary a "
+    "Mexican client would use for insurance: póliza, cobertura, prima, deducible, "
+    "aseguranza, remolque, plataforma. Avoid wording that reads as Castilian."
+)
+
+
+def _translation_rules(language: str) -> str:
+    rules = _TRANSLATE_RULES.format(language=language_name(language))
+    return rules + _SPANISH_RULES if language == "es" else rules
+
 
 def translate(text: str, language: str) -> Optional[str]:
     """The message in the client's language, or None if it could not be made.
@@ -329,7 +408,7 @@ def translate(text: str, language: str) -> Optional[str]:
                 "model": TRANSLATE_MODEL,
                 "temperature": 0,
                 "messages": [
-                    {"role": "system", "content": _TRANSLATE_RULES.format(language=language_name(language))},
+                    {"role": "system", "content": _translation_rules(language)},
                     {"role": "user", "content": text},
                 ],
             },
