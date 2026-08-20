@@ -226,7 +226,8 @@
         <div id="noteEmailEditor" class="recap-editor" hidden>
             <div class="recap-row">
                 <label class="field-label" style="margin:0;">Send to</label>
-                <input type="email" id="noteEmailTo" placeholder="client@example.com">
+                <input type="email" id="noteEmailTo" placeholder="client@example.com"
+                       oninput="noteEmailRefreshSendButton()">
             </div>
 
             <label class="field-label">Subject</label>
@@ -694,11 +695,30 @@
         warning.textContent = state.warning || "";
         warning.hidden = !state.warning;
 
-        document.getElementById("noteEmailSendButton").disabled = !state.can_send;
+        noteEmailRefreshSendButton();
         blocked.textContent = state.blocked_reason || "";
         blocked.hidden = !state.blocked_reason;
 
         noteEmailRenderHistory(state.history || []);
+    }
+
+    // The address may have just been typed, and the server's view of whether
+    // this can send was formed before that. Anything else blocking a send is
+    // the server's call and still stands.
+    function noteEmailLooksSendable() {
+        if (!noteEmailState) return false;
+        const typed = document.getElementById("noteEmailTo").value.trim();
+        const hasAddress = /^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$/.test(typed);
+        const body = document.getElementById("noteEmailBody").value.trim();
+        if (!hasAddress || !body) return false;
+        const blocker = noteEmailState.blocked_reason || "";
+        // Only the missing-address blocker is one the agent can clear here
+        return noteEmailState.can_send || blocker.startsWith("No email address");
+    }
+
+    function noteEmailRefreshSendButton() {
+        const button = document.getElementById("noteEmailSendButton");
+        if (button) button.disabled = !noteEmailLooksSendable();
     }
 
     function noteEmailRenderHistory(history) {
@@ -795,7 +815,11 @@
             showToast("There is nothing to send.");
             return;
         }
-        const to = document.getElementById("noteEmailTo").value || "this client";
+        const to = document.getElementById("noteEmailTo").value.trim();
+        if (!to) {
+            showToast("Add an email address before sending.");
+            return;
+        }
         if (!confirm(`Email these notes to ${to}?\n\n${body}`)) return;
 
         // Send what is on screen, not what was last saved

@@ -351,6 +351,10 @@ def _message(transcript: Any, assigned_name: Optional[str],
     """The client-facing wording, without the sign-off."""
     # Stripped here too, for notes written before it was stripped at ingest
     note = strip_boilerplate(_clean(getattr(transcript, "crm_note", None)))
+    # The "Client: <name>" line heads the note so the agency can file it. The
+    # client already knows who they are, and a letter to them opening with their
+    # own name as a field label reads like a database row.
+    note = re.sub(r"^\s*Client:.*(?:\r?\n)+", "", note, count=1, flags=re.IGNORECASE).strip()
     who = agent_name(transcript, assigned_name)
     # Without a name the sentence has to stand on its own rather than trail off
     # into "your conversation with ." or name the agency twice over.
