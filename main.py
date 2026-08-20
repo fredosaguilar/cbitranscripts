@@ -2667,18 +2667,39 @@ def _note_email_json(record) -> dict:
 def _linked_agency_zoom_email(transcript) -> Optional[str]:
     """The email on the Agency Zoom record this call is linked to, if any.
 
-    Best effort by design. A client's address is not on the transcript, and a
-    lookup that fails should leave the agent typing one rather than stopping
-    them sending.
+    Searched by the linked record's own name first. Looking it up by the call's
+    phone number found nothing whenever that number was not the client's -- an
+    outbound call to a carrier's 1-800 line is filed against the customer it
+    concerns, and searching Agency Zoom for the carrier's number returns her not
+    at all.
+
+    Best effort by design. A lookup that fails should leave the agent typing an
+    address rather than stopping them sending.
     """
     customer_id = _clean_string(getattr(transcript, "agency_zoom_customer_id", None))
     if not customer_id:
         return None
+
+    # The name identifies the record; the numbers are a fallback for a link made
+    # before names were stored against it.
+    queries = [
+        _clean_string(getattr(transcript, "agency_zoom_customer_name", None)),
+        _clean_string(getattr(transcript, "client_number", None)),
+        _clean_string(getattr(transcript, "caller_number", None)),
+    ]
+    seen: set[str] = set()
     try:
-        for finder in (search_agency_zoom_customers, search_agency_zoom_leads):
-            for record in finder(_clean_string(transcript.client_number) or "") or []:
-                if str(record.get("id")) == customer_id:
-                    return client_note_email.normalize_email(record.get("email"))
+        for query in queries:
+            if not query or query in seen:
+                continue
+            seen.add(query)
+            for finder in (search_agency_zoom_customers, search_agency_zoom_leads):
+                for record in finder(query) or []:
+                    if str(record.get("id")) != customer_id:
+                        continue
+                    email = client_note_email.normalize_email(record.get("email"))
+                    if email:
+                        return email
     except Exception:
         logger.exception("Could not read the Agency Zoom email for transcript %s", transcript.id)
     return None
@@ -2771,7 +2792,8 @@ def _note_email_blocker(transcript, to_email: str | None) -> str | None:
     if not client_note_email.has_note(transcript):
         return "There is no CRM note on this call to send."
     if not client_note_email.normalize_email(to_email):
-        return "No email address for this client. Add one before sending."
+        return ("No email address on the linked Agency Zoom record. Type one in Send to, "
+                "then press Send Email.")
     return None
 
 
