@@ -1,7 +1,13 @@
-# Payment page header — Columbia Basin Insurance
+# Payment page branding — Columbia Basin Insurance
 
-Header images for the Simply Easier Payments payment page. Open `preview.html`
-to see them all on the page background each one suits.
+**Simply Easier Payments' "Payment Headers" are text, not images** — two
+plain-text blocks you type in, shown on the payment pages and receipts you tick
+on the grid. That copy is in **`payment-header-text.md`**, which is what to use
+for the header boxes.
+
+The images below are for the separate branding settings, where a logo can be
+uploaded. Open `preview.html` to see them on the page background each one
+suits.
 
 | File | Size | Use |
 | --- | --- | --- |
