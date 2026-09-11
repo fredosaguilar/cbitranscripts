@@ -27,8 +27,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from database import SessionLocal, engine
 import auth
 import models
-from schemas import (ClientNoteEmailUpdate, TranscriptCreate, UpdateTranscriptRequest,
-                     FollowUpTaskUpdate)
+from schemas import (ClientNoteEmailSend, ClientNoteEmailUpdate, TranscriptCreate,
+                     UpdateTranscriptRequest, FollowUpTaskUpdate)
 from send_notification import send_push_notification
 import alerts
 import client_note_email
@@ -2415,6 +2415,11 @@ def update_status(
     id: str,
     request: Request,
     status: str = Form(...),
+    # Typed by the agent when the CRM holds no email for this client. Approving
+    # is what sends the email, so the address has to travel with the approval --
+    # otherwise a client with no address on file gets approved past silently and
+    # someone has to remember to come back and send it.
+    client_email: str = Form(""),
     db: Session = Depends(get_db),
 ):
     transcript = db.query(models.TranscriptResponse).filter(models.TranscriptResponse.id == id).first()
@@ -2478,11 +2483,18 @@ def update_status(
     # is the review this email was always waiting on.
     if status == models.TranscriptStatus.approved.value and previous_status != status:
         admin = get_logged_in_admin(request, db)
-        try:
-            sent, message = _send_note_email(db, transcript, admin.username if admin else "approval")
-        except Exception:
-            logger.exception("The note email failed on approval of transcript %s", transcript.id)
-            sent, message = False, "The email could not be sent."
+        typed_email = _clean_string(client_email)
+        if typed_email and not client_note_email.normalize_email(typed_email):
+            # Said rather than swallowed: falling back to the address on file
+            # would send a typo's worth of doubt to whoever is on that record
+            sent, message = False, f"{typed_email} is not an email address, so nothing was emailed."
+        else:
+            try:
+                sent, message = _send_note_email(
+                    db, transcript, admin.username if admin else "approval", to_email=typed_email)
+            except Exception:
+                logger.exception("The note email failed on approval of transcript %s", transcript.id)
+                sent, message = False, "The email could not be sent."
 
         if not sent:
             # The approval stands -- it has already posted to Agency Zoom, and
@@ -2647,6 +2659,21 @@ def _open_note_email_draft(db: Session, transcript_id):
     return latest if latest is not None and latest.status == "draft" else None
 
 
+def _last_note_email_address(db: Session, transcript_id) -> Optional[str]:
+    """The address this call's note was last emailed to, if any.
+
+    An address the agent typed exists nowhere else -- not on the transcript, not
+    in Agency Zoom, which is why it had to be typed at all. Once the row
+    carrying it is marked sent it is no longer an open draft, so without this
+    the box empties and a correction has to be addressed from memory.
+    """
+    for row in _note_email_history(db, transcript_id):
+        address = client_note_email.normalize_email(row.to_email)
+        if address:
+            return address
+    return None
+
+
 def _note_email_json(record) -> dict:
     if record is None:
         return {}
@@ -2804,8 +2831,21 @@ def _misattribution_warning(transcript, staff_names: set[str]) -> Optional[str]:
     return " ".join(warnings) if warnings else None
 
 
+# The one blocker an agent can clear where they stand, by typing an address.
+# Held as a constant because both the panel and the list preview have to tell it
+# apart from the blockers that mean "not from here" -- and because a client the
+# CRM has no email for is still a client the agency may need to write to.
+NO_ADDRESS_BLOCKER = ("No email address on file for this client. Type one in Send to, "
+                      "then press Send Email.")
+
+
 def _note_email_blocker(transcript, to_email: str | None) -> str | None:
-    """Why this note email cannot go yet, in words the agent can act on."""
+    """Why this note email cannot go yet, in words the agent can act on.
+
+    The address is checked last so that a missing one is the blocker reported
+    only when everything else is already in order -- which is what lets the
+    pages offer the agent a box to type one into rather than a dead end.
+    """
     status = transcript.status.value if hasattr(transcript.status, "value") else str(transcript.status)
     if status != models.TranscriptStatus.approved.value:
         return "Approve the transcript first — the note should only go out once it has been checked."
@@ -2814,8 +2854,7 @@ def _note_email_blocker(transcript, to_email: str | None) -> str | None:
     if not client_note_email.has_note(transcript):
         return "There is no CRM note on this call to send."
     if not client_note_email.normalize_email(to_email):
-        return ("No email address on the linked Agency Zoom record. Type one in Send to, "
-                "then press Send Email.")
+        return NO_ADDRESS_BLOCKER
     return None
 
 
@@ -2846,7 +2885,11 @@ def _note_email_body(db: Session, transcript, draft) -> str:
 def _note_email_state(db: Session, transcript) -> dict:
     history = _note_email_history(db, transcript.id)
     draft = history[0] if history and history[0].status == "draft" else None
-    to_email = (draft.to_email if draft else None) or _linked_agency_zoom_email(transcript)
+    # The CRM is the authority where it holds an address; where it does not, the
+    # one an agent typed to send this note is the only one anybody has.
+    to_email = ((draft.to_email if draft else None)
+                or _linked_agency_zoom_email(transcript)
+                or _last_note_email_address(db, transcript.id))
     blocker = _note_email_blocker(transcript, to_email)
     body = _note_email_body(db, transcript, draft)
     staff = _staff_names(db)
@@ -2863,6 +2906,8 @@ def _note_email_state(db: Session, transcript) -> dict:
         "draft": _note_email_json(draft),
         "can_send": blocker is None and bool(body.strip()),
         "blocked_reason": blocker,
+        # Nothing stands in the way but an address, which the agent can type
+        "needs_address": blocker == NO_ADDRESS_BLOCKER,
         "warning": _misattribution_warning(transcript, staff),
         "history": [_note_email_json(row) for row in history if row.status != "draft"],
     }
@@ -2893,15 +2938,25 @@ def preview_note_email(id: str, request: Request, db: Session = Depends(get_db))
     else:
         body, subject, state = "", client_note_email.SUBJECT, "no note on this call"
 
+    to_email = ((draft.to_email if draft else None)
+                or _linked_agency_zoom_email(transcript)
+                or _last_note_email_address(db, transcript.id))
+    # The preview is where an afternoon of calls gets checked, so it carries
+    # what the panel carries: whether this one could go, and what is stopping it
+    blocker = _note_email_blocker(transcript, to_email)
+
     return JSONResponse(content={
         "state": state,
         "subject": subject,
         "body": body,
         "from_email": client_note_email.CLIENT_EMAIL_FROM,
-        "to_email": (draft.to_email if draft else None) or _linked_agency_zoom_email(transcript),
+        "to_email": to_email,
         "already_sent": bool(sent),
         "sent_at": sent.sent_at.isoformat() if sent and sent.sent_at else None,
         "client_name": _clean_string(transcript.client_name) or "",
+        "can_send": blocker is None and bool(body.strip()),
+        "blocked_reason": blocker,
+        "needs_address": blocker == NO_ADDRESS_BLOCKER,
     })
 
 
@@ -2947,14 +3002,24 @@ def save_note_email(id: str, data: ClientNoteEmailUpdate, request: Request, db: 
     return JSONResponse(content=_note_email_state(db, transcript))
 
 
-def _send_note_email(db: Session, transcript, sent_by: str) -> tuple[bool, str]:
+def _send_note_email(db: Session, transcript, sent_by: str,
+                     to_email: str | None = None) -> tuple[bool, str]:
     """Email the file note and record the outcome. Returns (sent, message).
 
     Nobody has to press anything to compose this: with no saved edits the note
     itself is the message, and a row is written here either way, so what was
     sent is stored exactly as it went and a refusal is stored as an attempt.
+
+    An address typed by the agent wins over anything already on the draft or the
+    linked record. A client the CRM holds no email for is still a client, and
+    the address the agent has in front of them is newer than the one the CRM
+    does not have; it is kept on the row, so the record shows where this
+    actually went.
     """
     draft = _open_note_email_draft(db, transcript.id)
+    # Read before a row is written for this send, so it is the address of an
+    # earlier email rather than the empty one this send is about to fill in
+    previous = _last_note_email_address(db, transcript.id)
     body = _note_email_body(db, transcript, draft)
     if not body.strip():
         return False, "__blocked__There is no CRM note on this call to send."
@@ -2968,7 +3033,9 @@ def _send_note_email(db: Session, transcript, sent_by: str) -> tuple[bool, str]:
         # A note corrected since the draft was written wins over the draft
         draft.body = body
 
-    draft.to_email = draft.to_email or _linked_agency_zoom_email(transcript)
+    typed = client_note_email.normalize_email(to_email)
+    draft.to_email = (typed or draft.to_email
+                      or _linked_agency_zoom_email(transcript) or previous)
     blocker = _note_email_blocker(transcript, draft.to_email)
     if blocker:
         return False, f"__blocked__{blocker}"
@@ -2993,12 +3060,18 @@ def _send_note_email(db: Session, transcript, sent_by: str) -> tuple[bool, str]:
 
 
 @app.post("/api/transcripts/{id}/note-email/send")
-# Email the file note to the client and record the outcome either way.
-def send_note_email(id: str, request: Request, db: Session = Depends(get_db)):
+# Email the file note to the client and record the outcome either way. An
+# address may be typed here for a client the CRM has no email for.
+def send_note_email(id: str, request: Request, db: Session = Depends(get_db),
+                    data: Optional[ClientNoteEmailSend] = None):
     admin_username = _require_admin(request, db)
     transcript = _load_transcript_or_404(db, id)
 
-    sent, message = _send_note_email(db, transcript, admin_username)
+    typed = _clean_string(data.to_email) if data else None
+    if typed and not client_note_email.normalize_email(typed):
+        raise HTTPException(status_code=400, detail=f"{typed} is not an email address")
+
+    sent, message = _send_note_email(db, transcript, admin_username, to_email=typed)
     if message.startswith("__blocked__"):
         raise HTTPException(status_code=409, detail=message.removeprefix("__blocked__"))
 

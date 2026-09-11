@@ -8,6 +8,13 @@ class ClientNoteEmailUpdate(BaseModel):
     subject: Optional[str] = None
     to_email: Optional[str] = None
 
+
+# Sending it. The address is optional because most calls already carry one from
+# the linked Agency Zoom record; it is here for the client the CRM has no email
+# for, whose address the agent types at the moment of sending.
+class ClientNoteEmailSend(BaseModel):
+    to_email: Optional[str] = None
+
 # User schema
 class UserCreate(BaseModel):
     user_id: str

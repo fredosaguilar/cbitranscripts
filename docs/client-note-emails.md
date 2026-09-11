@@ -254,6 +254,7 @@ All routes require an admin session.
 | `POST` | `/api/transcripts/{id}/client-recap/draft` | Write a draft from the call analysis |
 | `PUT` | `/api/transcripts/{id}/client-recap` | Save edits (`body`, `to_number`) |
 | `POST` | `/api/transcripts/{id}/client-recap/send` | Send it and record the outcome |
+| `POST` | `/api/transcripts/{id}/note-email/send` | Email the file note. Takes an optional `to_email` for a client with no address on file |
 | `POST` | `/api/sms/opt-out` | Record a number that must not be texted |
 
 ## What is stored
@@ -384,6 +385,13 @@ posted to Agency Zoom, and reversing that because an address is missing would be
 worse than saying plainly that the email did not go, which the page then does in
 amber.
 
+**A client with no address on file is asked about, not skipped.** Approving a
+call the CRM holds no email for opens a box to type one into, and the email goes
+as you approve. Leaving it blank approves without emailing, which is still a
+choice someone made rather than something that happened quietly. A typo is said
+plainly — the approval stands and nothing is emailed, rather than the note going
+to whoever happens to be on the record instead.
+
 The Send Email button is still there for a call approved before this existed, or
 one whose address was added afterwards.
 
@@ -413,8 +421,9 @@ who the call is assigned to, the language, or the client's name has the same
 effect, since all of them change the wording.
 
 Send is blocked, with the reason shown, when the transcript is not approved,
-when the call has no CRM note, when there is no email address, or when SMTP is
-not configured.
+when the call has no CRM note, or when SMTP is not configured. A missing address
+is the one of these an agent can clear where they stand, so it is put as an
+instruction — type one in *Send to* — rather than as a refusal.
 
 **The client is greeted by the name on the linked Agency Zoom record**, falling
 back to caller ID only when there is no link. That is the name the agency files
@@ -445,6 +454,14 @@ linked Agency Zoom record when there is one and typed by the agent when there is
 not. Guessing an address for a letter about somebody's policy is not a thing to
 do quietly.
 
+**A typed address sends, and is remembered.** No address in the CRM is not a
+reason the client cannot be written to — it is a reason somebody has to type
+one, which the panel, the list preview and the approval all now let them do. It
+is kept on the row that was sent, so the next time that call is opened the box
+holds the address the note actually went to rather than being empty again, and a
+correction does not have to be addressed from memory. A linked Agency Zoom
+record still wins, since the CRM is the authority whenever it has an answer.
+
 Every draft and send is kept in `client_note_emails`, the same way recap texts
 are kept — a refused send is recorded as `failed` with the reason, because what
 was attempted is part of the record too.
@@ -465,9 +482,17 @@ directly.
 ### Previewing from the transcripts list
 
 Every row on the transcripts page has a **Preview email** link beside *View
-Details*. It shows the From, To and Subject, and the message itself, without
-saving anything or sending anything — so a whole afternoon of calls can be
-checked without opening each one.
+Details*. It shows the From, To and Subject, and the message itself — so a whole
+afternoon of calls can be checked without opening each one.
+
+It sends, too. The address sits in an editable **Send to** box under the
+message, prefilled with whatever is on file and typed in when nothing is, and
+**Send Email** sends exactly the message shown after asking once and naming the
+address. That is the whole point of it being here: a client the CRM has no email
+for used to mean opening the call in another tab to type an address that was
+already in front of you. Everything else that can stop a send still stops it —
+an unapproved call, a call with no note, SMTP not configured — and the reason is
+shown under the box rather than left to be discovered.
 
 What it shows depends on where that call has got to:
 

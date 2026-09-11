@@ -218,7 +218,8 @@
             <strong id="noteEmailFrom"></strong>. It is ready below — read it before it goes, because
             the note was written for the file, not for the client, so anything in it meant for the
             agency's own eyes needs taking out first. Editing here changes only the email; the note
-            on the file is untouched.
+            on the file is untouched. The address comes from the linked Agency Zoom record — when
+            there is none, type one in <em>Send to</em> and it sends to that.
         </p>
 
         <div id="noteEmailStatus" class="recap-status">Loading…</div>
@@ -265,6 +266,10 @@
             </select>
 
             <input type="hidden" id="followUpTaskExists" value="{{ '1' if transcript.follow_up_task else '0' }}">
+            <!-- An address typed at the moment of approving, for a client the
+                 CRM holds no email for. Empty on every call that already has
+                 one, which is the ordinary case. -->
+            <input type="hidden" name="client_email" id="approvalClientEmail" value="">
             <button type="submit" id="approveButton">Approve CRM Note and Email</button>
         </form>
     </div>
@@ -649,11 +654,46 @@
         // cannot be recalled and the wrong one is worse than a slow one.
         const alreadyApproved = {{ 'true' if transcript.status.value == "approved" else 'false' }};
         if (status === "approved" && !alreadyApproved) {
-            const to = (noteEmailState && noteEmailState.to_email) || "";
+            const emailPattern = /^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$/;
+            const box = document.getElementById("noteEmailTo");
+            // What is in the box beats what the server last knew: an address
+            // typed into the panel and not yet saved is still the address the
+            // agent means, and approving is what sends the email
+            const typedInPanel = box ? box.value.trim() : "";
+            const hasNote = Boolean(noteEmailState && noteEmailState.has_note);
+            document.getElementById("approvalClientEmail").value = "";
+
+            if (typedInPanel && !emailPattern.test(typedInPanel)) {
+                showToast(`${typedInPanel} is not an email address.`);
+                return false;
+            }
+
+            let to = typedInPanel || (noteEmailState && noteEmailState.to_email) || "";
+            if (!to && hasNote) {
+                // Nothing on file is not the same as nothing to send. The agent
+                // is here with the note in front of them, which is the moment
+                // they are most likely to know the address -- so ask for it now
+                // rather than approving past it and leaving the email owed.
+                const answer = prompt(
+                    "There is no email address on file for this client.\n\n"
+                    + "Type one to email the note as you approve, or leave it blank "
+                    + "to approve without emailing.", "");
+                if (answer === null) return false;
+                to = answer.trim();
+                if (to && !emailPattern.test(to)) {
+                    showToast(`${to} is not an email address.`);
+                    return false;
+                }
+            }
+
             const question = to
                 ? `Approve this call and email the note to ${to}?`
-                : "Approve this call? There is no email address on file, so nothing will be emailed.";
+                : (hasNote ? "Approve this call? Nothing will be emailed."
+                           : "Approve this call? There is no CRM note, so nothing will be emailed.");
             if (!confirm(question)) return false;
+            // Sent with the approval, so it goes to what is on screen rather
+            // than to whatever was last saved against the draft
+            document.getElementById("approvalClientEmail").value = to;
         }
 
         return true;
@@ -711,9 +751,9 @@
         const hasAddress = /^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$/.test(typed);
         const body = document.getElementById("noteEmailBody").value.trim();
         if (!hasAddress || !body) return false;
-        const blocker = noteEmailState.blocked_reason || "";
-        // Only the missing-address blocker is one the agent can clear here
-        return noteEmailState.can_send || blocker.startsWith("No email address");
+        // Only the missing-address blocker is one the agent can clear here, by
+        // typing one -- every other reason is the server's and still stands
+        return noteEmailState.can_send || Boolean(noteEmailState.needs_address);
     }
 
     function noteEmailRefreshSendButton() {
