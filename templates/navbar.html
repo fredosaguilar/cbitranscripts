@@ -7,11 +7,16 @@
     </div>
 
     <div class="nav-right">
+        <a href="https://columbia-basin-eo-forms-production.up.railway.app/">Forms Portal</a>
+        {% if request.state.portal_role|default('admin') == 'admin' %}
         <a href="/admin/dashboard" class="{{ 'active' if request.url.path == '/admin/dashboard' else '' }}">Dashboard</a>
         <a href="/admin/add-user" class="{{ 'active' if request.url.path == '/admin/add-user' else '' }}">Add User</a>
+        {% endif %}
         <a href="/admin/transcripts" class="{{ 'active' if request.url.path == '/admin/transcripts' else '' }}">Transcriptions</a>
         <a href="/admin/analytics" class="{{ 'active' if request.url.path == '/admin/analytics' else '' }}">Analytics</a>
+        {% if request.state.portal_role|default('admin') == 'admin' %}
         <a href="/admin/admins" class="{{ 'active' if request.url.path == '/admin/admins' else '' }}">Admins</a>
+        {% endif %}
         <a href="/logout" class="logout">Logout</a>
     </div>
 </nav>
