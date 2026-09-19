@@ -723,8 +723,17 @@ def get_logged_in_admin(request: Request, db: Session):
     username = _clean_string(payload.get("sub"))
     if not username:
         return None
-
+    request.state.portal_role = _clean_string(payload.get("portal_role")) or "admin"
+    request.state.portal_name = _clean_string(payload.get("portal_name")) or username
     return db.query(models.Admin).filter(models.Admin.username == username).first()
+
+
+def get_logged_in_transcript_admin(request: Request, db: Session):
+    """Local transcript admins and portal admins may change configuration."""
+    admin = get_logged_in_admin(request, db)
+    if not admin or getattr(request.state, "portal_role", "admin") != "admin":
+        return None
+    return admin
 
 
 @app.on_event("startup")
@@ -988,6 +997,55 @@ def login_page(request: Request):
     return templates.TemplateResponse(request, "login.html", context)
 
 
+@app.get("/sso")
+def portal_sso(request: Request, code: str = "", db: Session = Depends(get_db)):
+    """Exchange a one-time portal code and create the transcript session."""
+    if not code:
+        return RedirectResponse(url="/", status_code=303)
+    portal = (os.getenv("PORTAL_BASE_URL") or
+              "https://columbia-basin-eo-forms-production.up.railway.app").rstrip("/")
+    try:
+        exchange = requests.post(
+            f"{portal}/api/sso/transcripts/exchange",
+            json={"code": code}, timeout=10,
+        )
+        exchange.raise_for_status()
+        user = exchange.json().get("user") or {}
+        email = _clean_string(user.get("email")).lower()
+        if not email:
+            raise ValueError("Portal did not return an email address")
+        admin = db.query(models.Admin).filter(models.Admin.username == email).first()
+        if not admin:
+            # Portal users authenticate only through the one-time handoff. A
+            # random unknown password keeps the legacy local login unusable.
+            admin = models.Admin(
+                admin_id=str(uuid.uuid4()), username=email,
+                password_hash=auth.hash_password(uuid.uuid4().hex + uuid.uuid4().hex),
+            )
+            db.add(admin)
+            db.commit()
+        role = "admin" if _clean_string(user.get("role")) == "admin" else "agent"
+        access_token = auth.create_access_token(data={
+            "sub": email,
+            "portal_role": role,
+            "portal_name": _clean_string(user.get("agent_name")) or email,
+        })
+        destination = "/admin/dashboard" if role == "admin" else "/admin/transcripts"
+        response = RedirectResponse(url=destination, status_code=303)
+        response.set_cookie(
+            key="access_token", value=access_token, httponly=True,
+            secure=True, samesite="lax", max_age=auth.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        )
+        return response
+    except Exception:
+        logger.exception("Portal single sign-on failed")
+        return render_template(
+            request, "error.html",
+            {"error_message": "Portal sign-in could not be completed. Return to the portal and try again.",
+             "back_url": portal}, status_code=401,
+        )
+
+
 @app.post("/admin/login")
 # Authenticate an admin user and start the dashboard session.
 def login(
@@ -1003,7 +1061,8 @@ def login(
 
     access_token = auth.create_access_token(data={"sub": admin.username})
     response = RedirectResponse(url="/admin/dashboard", status_code=303)
-    response.set_cookie(key="access_token", value=access_token)
+    response.set_cookie(key="access_token", value=access_token, httponly=True,
+                        secure=True, samesite="lax", max_age=auth.ACCESS_TOKEN_EXPIRE_MINUTES * 60)
     return response
 
 
@@ -1018,7 +1077,7 @@ def logout():
 @app.get("/admin/dashboard")
 # Render the dashboard with all registered notification users.
 def dashboard(request: Request, db: Session = Depends(get_db)):
-    if not get_logged_in_admin(request, db):
+    if not get_logged_in_transcript_admin(request, db):
         return RedirectResponse(url="/", status_code=303)
 
     users_tokens = db.query(models.UserToken).all()
@@ -1079,7 +1138,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
 @app.get("/admin/add-user", response_class=HTMLResponse)
 # Render the add-user form page.
 def add_user_page(request: Request, db: Session = Depends(get_db)):
-    if not get_logged_in_admin(request, db):
+    if not get_logged_in_transcript_admin(request, db):
         return RedirectResponse(url="/", status_code=303)
 
     employees, employee_error = list_agency_zoom_employees_with_error()
@@ -1111,7 +1170,7 @@ def add_user(
     agency_zoom_employee_id_manual: str = Form(""),
     db: Session = Depends(get_db),
 ):
-    if not get_logged_in_admin(request, db):
+    if not get_logged_in_transcript_admin(request, db):
         return RedirectResponse(url="/", status_code=303)
 
     chosen = _clean_string(agency_zoom_employee_id_manual) or _clean_string(agency_zoom_employee_id)
@@ -1131,7 +1190,7 @@ def add_user(
 @app.get("/admin/delete-user/{token_id}")
 # Delete a stored notification user token.
 def delete_user(token_id: str, request: Request, db: Session = Depends(get_db)):
-    if not get_logged_in_admin(request, db):
+    if not get_logged_in_transcript_admin(request, db):
         return RedirectResponse(url="/", status_code=303)
 
     user = db.query(models.UserToken).filter(models.UserToken.token_id == token_id).first()
@@ -1149,6 +1208,8 @@ def delete_user(token_id: str, request: Request, db: Session = Depends(get_db)):
 @app.get("/admin/edit-user/{token_id}", response_class=HTMLResponse)
 # Render the edit page for a stored user token.
 def edit_user_page(token_id: str, request: Request, db: Session = Depends(get_db)):
+    if not get_logged_in_transcript_admin(request, db):
+        return RedirectResponse(url="/admin/transcripts", status_code=303)
     user = db.query(models.UserToken).filter(models.UserToken.token_id == token_id).first()
     employees, employee_error = list_agency_zoom_employees_with_error()
     return templates.TemplateResponse(request, "edit_user.html", {
@@ -1160,6 +1221,7 @@ def edit_user_page(token_id: str, request: Request, db: Session = Depends(get_db
 # Update an existing notification user token.
 def update_user(
     token_id: str,
+    request: Request,
     user_id: str = Form(""),
     email: str = Form(""),
     user_token: str = Form(""),
@@ -1167,6 +1229,8 @@ def update_user(
     agency_zoom_employee_id_manual: str = Form(""),
     db: Session = Depends(get_db),
 ):
+    if not get_logged_in_transcript_admin(request, db):
+        return RedirectResponse(url="/admin/transcripts", status_code=303)
     user = db.query(models.UserToken).filter(models.UserToken.token_id == token_id).first()
     if user:
         # Editable because a user saved with an email here matches no call at
@@ -1359,7 +1423,7 @@ def analytics_page(request: Request, db: Session = Depends(get_db)):
 @app.get("/admin/admins")
 # Render the admin account management page.
 def admins_page(request: Request, db: Session = Depends(get_db)):
-    current_admin = get_logged_in_admin(request, db)
+    current_admin = get_logged_in_transcript_admin(request, db)
     if not current_admin:
         return RedirectResponse(url="/", status_code=303)
 
@@ -1381,7 +1445,7 @@ def add_admin(
     password: str = Form(...),
     db: Session = Depends(get_db),
 ):
-    if not get_logged_in_admin(request, db):
+    if not get_logged_in_transcript_admin(request, db):
         return RedirectResponse(url="/", status_code=303)
 
     cleaned_username = _clean_string(username)
@@ -1405,7 +1469,7 @@ def add_admin(
 @app.post("/admin/admins/{admin_id}/delete")
 # Delete an admin login (cannot delete yourself or the last remaining admin).
 def delete_admin(admin_id: str, request: Request, db: Session = Depends(get_db)):
-    current_admin = get_logged_in_admin(request, db)
+    current_admin = get_logged_in_transcript_admin(request, db)
     if not current_admin:
         return RedirectResponse(url="/", status_code=303)
 
@@ -3005,5 +3069,4 @@ def send_note_email(id: str, request: Request, db: Session = Depends(get_db)):
     state = _note_email_state(db, transcript)
     state["message"] = message
     return JSONResponse(content=state, status_code=200 if sent else 502)
-
 
