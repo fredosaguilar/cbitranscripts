@@ -2368,6 +2368,10 @@ def transcribe_recording_endpoint(payload: dict, db: Session = Depends(get_db)):
 
     try:
         result = transcription.transcribe_audio(audio, audio_seconds, audio_url)
+    except transcription.OpenAIQuotaError as exc:
+        _release_transcription_claim(db, recording_id)
+        logger.error("OpenAI quota unavailable while transcribing %s: %s", recording_id, exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except requests.HTTPError as exc:
         _release_transcription_claim(db, recording_id)
         detail = getattr(exc.response, "text", str(exc))[:400]
