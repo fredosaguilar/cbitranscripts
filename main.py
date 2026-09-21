@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, JSON
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import desc, func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -274,6 +275,10 @@ AUDIO_CACHE_RETENTION_DAYS = int(os.getenv("AUDIO_CACHE_RETENTION_DAYS", "90"))
 # How many times to refuse a poor transcript before accepting it, so one
 # unintelligible recording cannot be retried on every sync forever.
 MAX_TRANSCRIBE_ATTEMPTS = int(os.getenv("MAX_TRANSCRIBE_ATTEMPTS", "3"))
+
+# A claim remains while n8n transcribes, analyzes, and stores a call. If an
+# execution crashes before saving, the lease expires so a later sync can retry.
+TRANSCRIPTION_CLAIM_TTL_MINUTES = int(os.getenv("TRANSCRIPTION_CLAIM_TTL_MINUTES", "30"))
 
 # Use the RingCentral extension as owner_id when the workflow reports one, so
 # agents sharing a phone number are told apart. Set false to keep phone numbers.
@@ -2092,6 +2097,7 @@ def create_transcript(
             .first()
         )
         if existing_transcript:
+            _release_transcription_claim(db, normalized_recording_id)
             return JSONResponse(
                 content={
                     "message": "Transcript with this recordingID already exists",
@@ -2170,6 +2176,7 @@ def create_transcript(
     db.add(new_transcript)
     db.commit()
     db.refresh(new_transcript)
+    _release_transcription_claim(db, normalized_recording_id)
 
     # Released before moving the cursor, so this call stops holding it back
     was_reprocess = _clear_reprocess_request(normalized_recording_id)
@@ -2264,6 +2271,53 @@ def _existing_transcription(db: Session, recording_id: Optional[str]) -> Optiona
     }
 
 
+def _release_transcription_claim(db: Session, recording_id: Optional[str]) -> None:
+    """Release the lease after a save or a failed transcription attempt."""
+    cleaned = _clean_string(recording_id)
+    if not cleaned:
+        return
+    deleted = (
+        db.query(models.TranscriptionClaim)
+        .filter(models.TranscriptionClaim.recording_id == cleaned)
+        .delete(synchronize_session=False)
+    )
+    if deleted:
+        db.commit()
+
+
+def _acquire_transcription_claim(db: Session, recording_id: Optional[str]) -> Optional[str]:
+    """Atomically claim a recording, returning a token only to the winner."""
+    cleaned = _clean_string(recording_id)
+    if not cleaned:
+        # RingCentral recordings always have IDs. Keep the endpoint usable for
+        # manual URL-only troubleshooting without creating a fake global lock.
+        return str(uuid.uuid4())
+
+    cutoff = datetime.utcnow() - timedelta(minutes=max(1, TRANSCRIPTION_CLAIM_TTL_MINUTES))
+    (
+        db.query(models.TranscriptionClaim)
+        .filter(
+            models.TranscriptionClaim.recording_id == cleaned,
+            models.TranscriptionClaim.claimed_at < cutoff,
+        )
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+
+    token = str(uuid.uuid4())
+    db.add(models.TranscriptionClaim(
+        recording_id=cleaned,
+        claim_token=token,
+        claimed_at=datetime.utcnow(),
+    ))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return None
+    return token
+
+
 @app.post("/api/transcribe-recording")
 # Download a recording and transcribe it here, rather than in the workflow.
 def transcribe_recording_endpoint(payload: dict, db: Session = Depends(get_db)):
@@ -2279,12 +2333,19 @@ def transcribe_recording_endpoint(payload: dict, db: Session = Depends(get_db)):
     # call again; the stored text is what would be produced anyway.
     existing = _existing_transcription(db, recording_id)
     if existing is not None:
+        _release_transcription_claim(db, recording_id)
         logger.info("Reusing the stored transcript for %s instead of transcribing again", recording_id)
         return JSONResponse(content=existing)
+
+    claim_token = _acquire_transcription_claim(db, recording_id)
+    if claim_token is None:
+        logger.info("Recording %s is already being processed by another execution", recording_id)
+        raise HTTPException(status_code=409, detail="Recording is already being processed")
 
     try:
         audio, audio_seconds = transcription.load_recording(audio_url)
     except Exception as exc:
+        _release_transcription_claim(db, recording_id)
         logger.exception("Could not download %s", audio_url)
         raise HTTPException(status_code=502, detail=f"Could not download the recording: {exc}") from exc
 
@@ -2295,6 +2356,7 @@ def transcribe_recording_endpoint(payload: dict, db: Session = Depends(get_db)):
         attempts = _record_transcription_attempt(db, recording_id, {
             "audio_bytes": len(audio), "audio_seconds": round(audio_seconds, 1), "word_count": 0})
         if attempts < MAX_TRANSCRIBE_ATTEMPTS:
+            _release_transcription_claim(db, recording_id)
             logger.warning(
                 "Recording %s is only %s bytes (%.0fs); attempt %s of %s, not transcribing yet",
                 recording_id or audio_url, len(audio), audio_seconds, attempts, MAX_TRANSCRIBE_ATTEMPTS,
@@ -2307,10 +2369,12 @@ def transcribe_recording_endpoint(payload: dict, db: Session = Depends(get_db)):
     try:
         result = transcription.transcribe_audio(audio, audio_seconds, audio_url)
     except requests.HTTPError as exc:
+        _release_transcription_claim(db, recording_id)
         detail = getattr(exc.response, "text", str(exc))[:400]
         logger.error("Transcription failed for %s: %s", audio_url, detail)
         raise HTTPException(status_code=502, detail=f"Transcription failed: {detail}") from exc
     except Exception as exc:
+        _release_transcription_claim(db, recording_id)
         logger.exception("Transcription failed for %s", audio_url)
         raise HTTPException(status_code=502, detail=f"Transcription failed: {exc}") from exc
 
@@ -2320,6 +2384,7 @@ def transcribe_recording_endpoint(payload: dict, db: Session = Depends(get_db)):
     if result["short_download"] or result["word_count"] < 15:
         attempts = _record_transcription_attempt(db, recording_id, result)
         if attempts < MAX_TRANSCRIBE_ATTEMPTS:
+            _release_transcription_claim(db, recording_id)
             logger.warning(
                 "Recording %s produced only %s bytes (%ss) / %s words; attempt %s of %s, will retry",
                 recording_id or audio_url, result["audio_bytes"], result["audio_seconds"],
@@ -3069,4 +3134,3 @@ def send_note_email(id: str, request: Request, db: Session = Depends(get_db)):
     state = _note_email_state(db, transcript)
     state["message"] = message
     return JSONResponse(content=state, status_code=200 if sent else 502)
-
