@@ -253,9 +253,19 @@ BUSINESS_DAYS = {
 }
 BUSINESS_TZ = os.getenv("BUSINESS_TZ", "America/Los_Angeles")
 
-# Every message goes to the agent the call is assigned to. There is no shared
-# recipient and no digest, so nothing can reach a group inbox.
+# Every review message goes to the agent the Agency Zoom task is assigned to.
+# Shared inboxes are never valid review recipients, even if one was previously
+# saved on an extension record.
 RED_FLAG_MIN_CONFIDENCE = int(os.getenv("RED_FLAG_MIN_CONFIDENCE", "40"))
+
+ASSIGNMENT_EMAIL_BLOCKLIST = {
+    address.strip().lower()
+    for address in (
+        os.getenv("ASSIGNMENT_EMAIL_BLOCKLIST")
+        or "info@columbiabasininsurance.com"
+    ).split(",")
+    if address.strip()
+}
 
 # Email the assigned agent when a call lands on their extension
 ASSIGNMENT_EMAILS_ENABLED = _env_flag("ASSIGNMENT_EMAILS_ENABLED")
@@ -1541,8 +1551,7 @@ def assign_transcript(id: str, assigned_to: str = Form(""), db: Session = Depend
     # Assigning by hand should notify the agent, same as an automatic assignment
     emailed = False
     if ASSIGNMENT_EMAILS_ENABLED and changed and new_assignee:
-        user = db.query(models.UserToken).filter(models.UserToken.user_id == new_assignee).first()
-        recipient_email = _clean_string(getattr(user, "email", None))
+        recipient_email = _assigned_review_email(db, transcript)
         if recipient_email:
             try:
                 _send_assignment_email(transcript, recipient_email)
@@ -1550,7 +1559,10 @@ def assign_transcript(id: str, assigned_to: str = Form(""), db: Session = Depend
             except Exception:
                 logger.exception("Failed to send assignment email for transcript %s", transcript.id)
         else:
-            logger.info("No email on file for user %s; assignment email skipped", new_assignee)
+            logger.info(
+                "No direct email for the Agency Zoom assignee on user %s; assignment email skipped",
+                new_assignee,
+            )
 
     return JSONResponse(content={"status": "ok", "emailed": emailed})
 
@@ -2198,6 +2210,63 @@ def _assigned_agency_zoom_agent(db: Session, transcript) -> tuple[Optional[str],
     return employee_id, employee_name
 
 
+def _assigned_review_email(db: Session, transcript) -> Optional[str]:
+    """Direct email for the employee who will own this call's Agency Zoom task.
+
+    The extension record can contain an old shared mailbox. Task ownership is
+    decided by the mapped Agency Zoom employee, so review mail follows that
+    same mapping instead of blindly using the extension record's email.
+    """
+    assignee = _clean_string(getattr(transcript, "assigned_to", None)) or _clean_string(
+        getattr(transcript, "extension_number", None))
+    if not assignee:
+        return None
+
+    user = db.query(models.UserToken).filter(models.UserToken.user_id == assignee).first()
+    if user is None:
+        return None
+
+    employee_id, _ = _assigned_agency_zoom_agent(db, transcript)
+    if employee_id:
+        try:
+            employee = next(
+                (
+                    item for item in list_agency_zoom_employees()
+                    if _clean_string(item.get("id")) == _clean_string(employee_id)
+                ),
+                None,
+            )
+        except Exception:
+            logger.exception(
+                "Could not look up the review email for Agency Zoom employee %s", employee_id)
+            employee = None
+
+        agency_zoom_email = _clean_string((employee or {}).get("email"))
+        if agency_zoom_email:
+            if agency_zoom_email.lower() in ASSIGNMENT_EMAIL_BLOCKLIST:
+                logger.warning(
+                    "Review email skipped: Agency Zoom employee %s uses blocked shared mailbox %s",
+                    employee_id, agency_zoom_email,
+                )
+                return None
+            return agency_zoom_email
+
+        # An explicit Agency Zoom assignee without a direct address should not
+        # fall back to a shared extension mailbox and notify the wrong person.
+        logger.warning(
+            "Review email skipped: Agency Zoom employee %s has no direct email", employee_id)
+        return None
+
+    # Older users without an Agency Zoom mapping may still have a direct email
+    # saved locally. Keep that working, but never use a shared mailbox.
+    local_email = _clean_string(getattr(user, "email", None))
+    if local_email and local_email.lower() not in ASSIGNMENT_EMAIL_BLOCKLIST:
+        return local_email
+    if local_email:
+        logger.warning("Review email skipped: %s is a blocked shared mailbox", local_email)
+    return None
+
+
 @app.post("/api/transcripts")
 # Store a new transcript and notify the assigned user.
 def create_transcript(
@@ -2293,7 +2362,6 @@ def create_transcript(
 
     # Auto-assign to the user registered for this extension (or owner id), so
     # calls land on the right agent's plate without manual triage.
-    assigned_user = None
     if AUTO_ASSIGN_FROM_OWNER and not new_transcript.assigned_to:
         for candidate in (extension_number, resolved_owner_id):
             if not candidate:
@@ -2305,7 +2373,6 @@ def create_transcript(
             )
             if registered_user:
                 new_transcript.assigned_to = registered_user.user_id
-                assigned_user = registered_user
                 break
 
     db.add(new_transcript)
@@ -2326,14 +2393,7 @@ def create_transcript(
 
     # Tell the assigned agent their call is ready to review
     if ASSIGNMENT_EMAILS_ENABLED:
-        recipient = assigned_user or (
-            db.query(models.UserToken)
-            .filter(models.UserToken.user_id == new_transcript.assigned_to)
-            .first()
-            if new_transcript.assigned_to
-            else None
-        )
-        recipient_email = _clean_string(getattr(recipient, "email", None))
+        recipient_email = _assigned_review_email(db, new_transcript)
         if recipient_email:
             try:
                 _send_assignment_email(new_transcript, recipient_email)
