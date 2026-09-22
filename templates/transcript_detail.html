@@ -8,7 +8,14 @@
 
 {% block content %}
 
-<h2>Transcript Detail</h2>
+<header class="review-page-header">
+    <div>
+        <span class="eyebrow">CALL REVIEW WORKSPACE</span>
+        <h1>Review and complete this call</h1>
+        <p>Follow each step so the client record, note, tasks, and email are accurate before approval.</p>
+    </div>
+    <span class="save-state" id="saveState">All changes saved</span>
+</header>
 
 {% if transcript %}
 
@@ -25,150 +32,91 @@
 </div>
 {% endif %}
 
-<div class="card surface">
+<div class="review-shell surface" data-initial-step="{{ 5 if transcript.status.value == 'approved' else 1 }}">
+    <nav class="review-stepper" aria-label="Call review progress">
+        {% for label in ["Client match", "CRM note", "HawkSoft tasks", "File-note email", "Approve & send"] %}
+        <button class="stepper-item" type="button" data-step-target="{{ loop.index }}">
+            <span class="stepper-number">{{ loop.index }}</span>
+            <span>{{ label }}</span>
+        </button>
+        {% endfor %}
+    </nav>
 
-    <div class="section">
-        <h3 class="section-title">Call Audio</h3>
-        {% if transcript.file_link or transcript.recordingID %}
-        <div class="audio-player-card">
-            <audio controls preload="none" class="audio-player" src="/api/transcripts/{{ transcript.id }}/audio">
-                Your browser does not support audio playback.
-            </audio>
-            <p class="audio-help">
-                Audio is streamed through the app so RingCentral recording links and recording content endpoints can be
-                played here.
-                {% if transcript.file_link %}
-                <a href="{{ transcript.file_link }}" target="_blank" rel="noopener noreferrer">Open source file</a>
-                {% endif %}
-            </p>
+    <section class="review-step" data-review-step="1">
+        <div class="step-heading">
+            <span class="eyebrow">STEP 1 OF 5</span>
+            <h2>Match the client</h2>
+            <p>Confirm the correct AgencyZoom client before anything is saved or sent.</p>
         </div>
-        {% else %}
-        <p class="audio-help">No audio file is attached to this transcript.</p>
-        {% endif %}
-    </div>
-
-    <div class="section">
-        <h3 class="section-title">Display</h3>
-        <div class="meta-grid">
-            <p><b>ID:</b> {{ transcript.id }}</p>
-            <p><b>Owner ID:</b> {{ transcript.owner_id }}</p>
-            <p><b>Client Name:</b> {{ transcript.client_name or "-" }}</p>
-            <p><b>Client Number:</b> {{ transcript.client_number or "-" }}</p>
-            <p><b>Policy Type:</b> {{ transcript.policy_type or "-" }}</p>
-            <p><b>Customer Sentiment:</b> {{ transcript.customer_sentiment or "-" }}</p>
-            <p><b>Follow Up Needed:</b>
-                {% if transcript.follow_up_needed is not none %}
-                {{ "Yes" if transcript.follow_up_needed else "No" }}
-                {% else %}
-                -
-                {% endif %}
-            </p>
-            <p><b>Recording ID:</b> {{ transcript.recordingID or "-" }}</p>
-            <p>
-                <b>Agency Zoom Task IDs:</b>
-                {% if transcript.agency_zoom_task_ids %}
-                {{ transcript.agency_zoom_task_ids.replace('\n', ', ') }}
-                {% else %}
-                -
-                {% endif %}
-            </p>
-            <p>
-                <b>File:</b>
-                <a href="{{ transcript.file_link }}" target="_blank">Open File</a>
-            </p>
-            <p>
-                <b>Status:</b>
-                <span class="status {{ transcript.status.value }}">
-                    {{ transcript.status.value|capitalize }}
-                </span>
-            </p>
-        </div>
-    </div>
-
-    <div class="section">
-        <h3 class="section-title">Call Metadata</h3>
-        <div class="meta-grid">
-            <p><b>Caller Number:</b> {{ transcript.caller_number or "-" }}</p>
-            <p><b>From Name:</b> {{ transcript.from_name or "-" }}</p>
-            <p><b>Handled By (Extension):</b>
-                {% if transcript.extension_number %}
-                {{ transcript.extension_name or "" }} (ext. {{ transcript.extension_number }})
-                {% else %}-{% endif %}
-            </p>
-            <p><b>Arrived Via Queue:</b> {{ transcript.queue_name or "-" }}</p>
-            <p><b>Usage Type:</b> {{ transcript.usage_type or "-" }}</p>
-            <p><b>Usage Seconds:</b> {{ transcript.usage_sec if transcript.usage_sec is not none else "-" }}</p>
-            <p><b>Start Time:</b> {{ transcript.start_time or "-" }}</p>
-            <p><b>Call Type:</b> {{ transcript.call_type or "-" }}</p>
-            <p><b>Direction:</b> {{ transcript.direction or "-" }}</p>
-            <p><b>To Phone Number:</b> {{ transcript.to_phoneNumber or "-" }}</p>
-            <p><b>To Name:</b> {{ transcript.to_name or "-" }}</p>
-            <p><b>Created At:</b> {{ transcript.created_at or "-" }}</p>
-        </div>
-    </div>
-
-    <div class="section">
-        <h3 class="section-title">Transcription Problem?</h3>
-        <p style="margin:0 0 10px; font-size:0.9rem; opacity:0.85;">
-            If the transcript missed the conversation or the notes are wrong, run the call again.
-            This deletes the current record and re-transcribes from the original recording on the
-            next sync, which takes a few minutes.
-        </p>
-        <form method="post" action="/admin/transcripts/{{ transcript.id }}/reprocess"
-              onsubmit="return confirm('Delete this transcript and transcribe the call again?');">
-            <button type="submit">Reprocess this call</button>
-        </form>
-    </div>
-
-    <div class="section">
-        <h3 class="section-title">Agency Zoom Match</h3>
+        <div class="review-grid">
+            <div class="step-card">
+                <h3>Find the client record</h3>
         <div id="azStatus" style="margin-bottom:10px;">Checking…</div>
-
-        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                <div class="search-row">
             <input type="text" id="azQuery" placeholder="Search by phone, name, or email…"
-                   value="{{ transcript.client_number or '' }}" style="flex:1; min-width:240px;">
-            <button type="button" onclick="azSearch()">Search Agency Zoom</button>
+                           value="{{ transcript.client_number or '' }}">
+                    <button type="button" onclick="azSearch()">Search AgencyZoom</button>
             {% if transcript.agency_zoom_customer_id %}
-            <button type="button" onclick="azLink('', '', '')">Unlink</button>
+                    <button type="button" class="btn-secondary" onclick="azLink('', '', '')">Unlink</button>
             {% endif %}
-        </div>
-
-        <label style="display:block; margin-top:8px; font-size:0.85rem;">
+                </div>
+                <label class="apply-all-option">
             <input type="checkbox" id="azApplyAll">
             Also link every other call from this number (leave off to link only this call)
         </label>
-
         <div id="azResults" style="margin-top:12px;"></div>
-    </div>
+            </div>
+            <aside class="step-card context-card">
+                <span class="eyebrow">CALL CONTEXT</span>
+                <h3>{{ transcript.client_name or transcript.from_name or "Unknown caller" }}</h3>
+                <dl class="context-list">
+                    <div><dt>Phone</dt><dd>{{ transcript.client_number or transcript.caller_number or "-" }}</dd></div>
+                    <div><dt>Policy</dt><dd>{{ transcript.policy_type or "-" }}</dd></div>
+                    <div><dt>Direction</dt><dd>{{ transcript.direction or "-" }}</dd></div>
+                    <div><dt>Assigned to</dt><dd>{{ transcript.extension_name or transcript.assigned_to or "Unassigned" }}</dd></div>
+                </dl>
+                {% if transcript.file_link or transcript.recordingID %}
+                <audio controls preload="none" class="audio-player" src="/api/transcripts/{{ transcript.id }}/audio"></audio>
+                {% endif %}
+            </aside>
+        </div>
+    </section>
 
-    {% if transcript.transcription_original %}
-    <div class="section">
-        <h3 class="section-title">
-            Original Language Transcript
-            {% if transcript.original_language %}({{ transcript.original_language|title }}){% endif %}
-        </h3>
-        <div class="transcription-box">{{ transcript.transcription_original }}</div>
-    </div>
-    {% elif transcript.original_language in ["english", "en"] %}
-    <div class="section">
-        <h3 class="section-title">Original Language Transcript</h3>
-        <div class="transcription-box">This call was spoken in English, so the transcript above is the original.</div>
-    </div>
-    {% endif %}
+    <section class="review-step" data-review-step="2" hidden>
+        <div class="step-heading">
+            <span class="eyebrow">STEP 2 OF 5</span>
+            <h2>Review the CRM note</h2>
+            <p>Compare the generated note with the call, correct inaccuracies, and save it to the review.</p>
+        </div>
+        <div class="review-grid">
+            <div class="step-card">
+                <label class="field-label" for="crmNoteInput">CRM note</label>
+                <textarea id="crmNoteInput" rows="12">{{ transcript.crm_note }}</textarea>
+                <label class="field-label" for="reasonForCallInput">Reason for call</label>
+                <textarea id="reasonForCallInput" rows="3">{{ transcript.reason_for_call }}</textarea>
+            </div>
+            <aside class="step-card transcript-reference">
+                <div class="reference-heading">
+                    <h3>Call transcript</h3>
+                    <span class="badge warning">Reference</span>
+                </div>
+                <div class="transcription-box">{{ transcript.transcription_original or transcript.transcription or "No transcript is available." }}</div>
+                <details>
+                    <summary>Edit the full transcription</summary>
+                    <textarea id="transcriptionInput" rows="6">{{ transcript.transcription }}</textarea>
+                </details>
+            </aside>
+        </div>
+    </section>
 
-    <div class="section">
-        <h3 class="section-title">Edit</h3>
-        <label class="field-label">Transcription</label>
-        <textarea id="transcriptionInput" rows="6">{{ transcript.transcription }}</textarea>
-
-        <label class="field-label">Reason For Call</label>
-        <textarea id="reasonForCallInput" rows="4">{{ transcript.reason_for_call }}</textarea>
-
-        <label class="field-label">Follow Up Task</label>
-        <p style="margin:0 0 8px; font-size:0.85rem; opacity:0.8;">
-            Written from the call, but nothing reaches Agency Zoom until you schedule it. A future
-            task stays in this portal and is sent to Agency Zoom on its due date.
-        </p>
+    <section class="review-step" data-review-step="3" hidden>
+        <div class="step-heading">
+            <span class="eyebrow">STEP 3 OF 5</span>
+            <h2>Review HawkSoft tasks</h2>
+            <p>Schedule useful automated follow-ups, edit or remove them, and add any manual tasks the call needs.</p>
+        </div>
+        <div class="step-card">
+        <p class="step-help">Nothing is sent to the task workflow until you schedule it. Future tasks stay here and are created on their actual due date.</p>
         {# Numbered the same way the server numbers them, so a button always
            acts on the task it sits next to, whatever the text contains. #}
         {% set follow_up_tasks = (transcript.follow_up_task or "").splitlines()
@@ -180,7 +128,7 @@
                 <span class="task-text">{{ task }}</span>
                 <div class="task-actions">
                     <input type="date" class="task-due" title="Due date for this task">
-                    <button type="button" class="task-add">Schedule for Agency Zoom</button>
+                    <button type="button" class="task-add">Schedule task</button>
                     <button type="button" class="task-edit">Edit</button>
                     <button type="button" class="task-delete">Delete</button>
                 </div>
@@ -194,32 +142,25 @@
             <input id="followUpTaskInput" type="text" placeholder="Add follow-up task">
             <button type="button" onclick="addFollowUpTask()">Add Task</button>
         </div>
-        <div style="display:flex; gap:8px; align-items:center; margin-top:8px; flex-wrap:wrap;">
-            <label class="field-label" style="margin:0;">Agency Zoom due date</label>
+        <div class="default-date-row">
+            <label class="field-label" style="margin:0;">Default task due date</label>
             <input type="date" id="dueDateInput" value="{{ transcript.agency_zoom_due_date or '' }}"
                    onchange="saveDueDate()">
             <small style="opacity:0.75;">
                 Used for any task scheduled without a date of its own. Defaults to tomorrow.
             </small>
         </div>
+        </div>
+    </section>
 
-        <label class="field-label">CRM Note</label>
-        <textarea id="crmNoteInput" rows="4">{{ transcript.crm_note }}</textarea>
-
-        <button onclick="updateTranscription()">Save Updates</button>
-    </div>
-
-    <hr>
-
-    <div class="section" id="noteEmailSection">
-        <h3 class="section-title">Email the File Note</h3>
-        <p class="recap-help">
-            Emails the client the CRM note kept on this call, word for word, from
-            <strong id="noteEmailFrom"></strong>. It is ready below — read it before it goes, because
-            the note was written for the file, not for the client, so anything in it meant for the
-            agency's own eyes needs taking out first. Editing here changes only the email; the note
-            on the file is untouched.
-        </p>
+    <section class="review-step" data-review-step="4" id="noteEmailSection" hidden>
+        <div class="step-heading">
+            <span class="eyebrow">STEP 4 OF 5</span>
+            <h2>Review the file-note email</h2>
+            <p>Edit the client-facing copy without changing the CRM note kept on the file.</p>
+        </div>
+        <div class="step-card">
+        <p class="recap-help">This email sends from <strong id="noteEmailFrom"></strong>. Remove any internal-only wording before continuing.</p>
 
         <div id="noteEmailStatus" class="recap-status">Loading…</div>
 
@@ -238,45 +179,73 @@
 
             <div class="recap-actions">
                 <button type="button" onclick="noteEmailSave()">Save Draft</button>
-                <button type="button" id="noteEmailSendButton" onclick="noteEmailSend()">Send Email</button>
             </div>
             <div id="noteEmailWarning" class="recap-warning" hidden></div>
             <div id="noteEmailBlocked" class="recap-blocked" hidden></div>
         </div>
 
         <div id="noteEmailHistory" class="recap-history"></div>
-    </div>
+        </div>
+    </section>
 
-    <hr>
-
-    <div class="section" id="approvalSection">
-        <h3 class="section-title">Approve</h3>
-        <p class="recap-help">
-            Approving posts the note and any follow-ups to Agency Zoom and emails the client the
-            note above, in one step. Read both before you approve — the email goes as soon as you do.
-        </p>
-
+    <section class="review-step" data-review-step="5" id="approvalSection" hidden>
+        <div class="step-heading">
+            <span class="eyebrow">STEP 5 OF 5</span>
+            <h2>Approve and send</h2>
+            <p>Review the completed package once more. This final action saves the note and sends the client email.</p>
+        </div>
+        <div class="review-grid approval-grid">
+            <div class="step-card approval-summary">
+                <h3>Review summary</h3>
+                <div class="summary-row"><span>Client</span><strong id="summaryClient">{{ transcript.agency_zoom_customer_name or "Not matched" }}</strong><em>Ready</em></div>
+                <div class="summary-row"><span>CRM note</span><strong id="summaryNote">Review required</strong><em>Ready</em></div>
+                <div class="summary-row"><span>HawkSoft tasks</span><strong id="summaryTasks">{{ follow_up_tasks|length }} suggested</strong><em>Reviewed</em></div>
+                <div class="summary-row"><span>Client email</span><strong id="summaryEmail">Loading…</strong><em>Ready</em></div>
+            </div>
+            <div class="step-card final-approval-card">
+                <h3>One action completes the review</h3>
+                <ol>
+                    <li>Save the approved CRM note</li>
+                    <li>Keep scheduled tasks queued for their due dates</li>
+                    <li>Send one email to the client</li>
+                </ol>
         <form method="post" action="/user/transcripts/{{ transcript.id }}/update"
               onsubmit="return validateApprovalForm();">
-            <label>Status</label>
-            <select name="status" id="statusSelect">
-                <option value="pending" {% if transcript.status.value=="pending" %}selected{% endif %}>Pending</option>
-                <option value="approved" {% if transcript.status.value=="approved" %}selected{% endif %}>Approved</option>
-            </select>
-
+                    <input type="hidden" name="status" id="statusSelect" value="approved">
             <input type="hidden" id="followUpTaskExists" value="{{ '1' if transcript.follow_up_task else '0' }}">
-            <button type="submit" id="approveButton">Approve CRM Note and Email</button>
+                    <label class="approval-check"><input type="checkbox" id="approvalConfirm"> I reviewed the client, CRM note, tasks, and email and confirm they are accurate.</label>
+                    <button type="submit" id="approveButton">Approve &amp; send email</button>
         </form>
-    </div>
+            </div>
+        </div>
+    </section>
 
-    <hr>
-
-    <form method="post" action="/admin/transcripts/{{ transcript.id }}/delete"
-        onsubmit="return confirm('Delete this transcript?');">
-        <button type="submit" class="danger-button">Delete Transcript</button>
-    </form>
-
+    <footer class="review-actions">
+        <button type="button" class="btn-secondary" id="reviewBack" onclick="reviewBack()">← Back</button>
+        <p id="reviewActionHint">Confirm the correct client before continuing.</p>
+        <button type="button" id="reviewNext" onclick="reviewNext()">Confirm &amp; continue →</button>
+    </footer>
 </div>
+
+<details class="record-details surface">
+    <summary>Call details and maintenance</summary>
+    <div class="record-details-body">
+        <div class="meta-grid">
+            <p><b>ID:</b> {{ transcript.id }}</p><p><b>Owner ID:</b> {{ transcript.owner_id }}</p>
+            <p><b>Caller:</b> {{ transcript.from_name or "-" }}</p><p><b>Number:</b> {{ transcript.caller_number or "-" }}</p>
+            <p><b>Started:</b> {{ transcript.start_time or "-" }}</p><p><b>Queue:</b> {{ transcript.queue_name or "-" }}</p>
+            <p><b>Status:</b> <span class="status {{ transcript.status.value }}">{{ transcript.status.value|capitalize }}</span></p>
+        </div>
+        <div class="maintenance-actions">
+            <form method="post" action="/admin/transcripts/{{ transcript.id }}/reprocess" onsubmit="return confirm('Delete this transcript and transcribe the call again?');">
+                <button type="submit" class="btn-secondary">Reprocess this call</button>
+            </form>
+            <form method="post" action="/admin/transcripts/{{ transcript.id }}/delete" onsubmit="return confirm('Delete this transcript?');">
+                <button type="submit" class="danger-button">Delete transcript</button>
+            </form>
+        </div>
+    </div>
+</details>
 
 {% else %}
 
@@ -288,6 +257,98 @@
 
 <script>
     const AZ_TRANSCRIPT_ID = "{{ transcript.id }}";
+    const reviewShell = document.querySelector(".review-shell");
+    let reviewCurrentStep = Number(reviewShell?.dataset.initialStep || 1);
+    let reviewMaxStep = reviewCurrentStep === 5 ? 5 : 1;
+    let clientMatchReady = false;
+
+    const reviewCopy = {
+        1: ["Confirm the correct client before continuing.", "Confirm & continue →"],
+        2: ["Read the note against the transcript and save your corrections.", "Save note & continue →"],
+        3: ["Confirm, schedule, edit, or remove each follow-up.", "Tasks reviewed & continue →"],
+        4: ["Confirm the recipient and client-facing wording.", "Save email & continue →"],
+        5: ["Everything is ready for final approval.", ""]
+    };
+
+    function goToReviewStep(step, force = false) {
+        if (!reviewShell || step < 1 || step > 5) return;
+        if (!force && step > reviewMaxStep) return;
+        reviewCurrentStep = step;
+        reviewMaxStep = Math.max(reviewMaxStep, step);
+        document.querySelectorAll("[data-review-step]").forEach(section => {
+            section.hidden = Number(section.dataset.reviewStep) !== step;
+        });
+        document.querySelectorAll("[data-step-target]").forEach(button => {
+            const target = Number(button.dataset.stepTarget);
+            button.classList.toggle("active", target === step);
+            button.classList.toggle("complete", target < step || (target === 1 && clientMatchReady && step > 1));
+            button.disabled = target > reviewMaxStep;
+            const number = button.querySelector(".stepper-number");
+            if (number) number.textContent = target < step ? "✓" : String(target);
+        });
+        const back = document.getElementById("reviewBack");
+        const next = document.getElementById("reviewNext");
+        const hint = document.getElementById("reviewActionHint");
+        if (back) back.hidden = step === 1;
+        if (next) {
+            next.hidden = step === 5;
+            next.textContent = reviewCopy[step][1];
+            next.disabled = step === 1 && !clientMatchReady;
+        }
+        if (hint) {
+            hint.textContent = reviewCopy[step][0];
+            hint.hidden = step === 5;
+        }
+        if (step === 5) refreshApprovalSummary();
+        window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function reviewBack() {
+        goToReviewStep(reviewCurrentStep - 1, true);
+    }
+
+    async function reviewNext() {
+        if (reviewCurrentStep === 1) {
+            if (!clientMatchReady) {
+                showToast("Match the correct client before continuing.");
+                return;
+            }
+            goToReviewStep(2, true);
+            return;
+        }
+        if (reviewCurrentStep === 2) {
+            if (!document.getElementById("crmNoteInput").value.trim()) {
+                showToast("Review and complete the CRM note before continuing.");
+                return;
+            }
+            if (await updateTranscription()) goToReviewStep(3, true);
+            return;
+        }
+        if (reviewCurrentStep === 3) {
+            goToReviewStep(4, true);
+            return;
+        }
+        if (reviewCurrentStep === 4) {
+            if (!noteEmailLooksSendable()) {
+                showToast("Add a valid recipient and email message before continuing.");
+                return;
+            }
+            if (await noteEmailSave()) goToReviewStep(5, true);
+        }
+    }
+
+    document.querySelectorAll("[data-step-target]").forEach(button => {
+        button.addEventListener("click", () => goToReviewStep(Number(button.dataset.stepTarget)));
+    });
+
+    document.querySelectorAll("textarea, input[type='text'], input[type='email']").forEach(field => {
+        field.addEventListener("input", () => {
+            const state = document.getElementById("saveState");
+            if (state) state.textContent = "Unsaved changes";
+        });
+    });
+
+    goToReviewStep(reviewCurrentStep, true);
 
     async function azLoadStatus() {
         const box = document.getElementById("azStatus");
@@ -297,12 +358,24 @@
             if (data.match && data.match.id) {
                 const m = data.match;
                 const how = m.source === "linked" ? "manually linked" : "matched automatically";
-                box.innerHTML = `<b>Linked:</b> ${m.name || "(no name)"} — ${m.type} #${m.id} <i>(${how})</i>`;
+                box.className = "match-status ready";
+                box.innerHTML = `<b>✓ ${m.name || "Matched client"}</b><span>${m.type} #${m.id} · ${how}</span>`;
+                clientMatchReady = true;
+                reviewMaxStep = Math.max(reviewMaxStep, 2);
+                document.getElementById("summaryClient").textContent = m.name || "Matched client";
             } else {
-                box.innerHTML = `<b>No match found.</b> Search below and link the correct customer or lead.`;
+                box.className = "match-status warning";
+                box.innerHTML = `<b>No client matched</b><span>Search below and link the correct customer or lead.</span>`;
+                clientMatchReady = false;
             }
+            goToReviewStep(reviewCurrentStep, true);
+            return clientMatchReady;
         } catch (e) {
+            box.className = "match-status warning";
             box.textContent = "Could not check Agency Zoom.";
+            clientMatchReady = false;
+            goToReviewStep(reviewCurrentStep, true);
+            return false;
         }
     }
 
@@ -388,7 +461,7 @@
             const extra = data.also_updated ? ` (and ${data.also_updated} other call${data.also_updated === 1 ? "" : "s"})` : "";
             showToast((data.linked ? `Linked to ${data.customer_name || "Agency Zoom"}` : "Agency Zoom link cleared") + extra);
             document.getElementById("azResults").innerHTML = "";
-            azLoadStatus();
+            await azLoadStatus();
 
             // The note now names the linked customer, so show that rather than
             // leaving the previous name on screen until someone reloads.
@@ -445,12 +518,16 @@
             const data = await response.json();
 
             showToast("Transcript updated successfully");
+            const state = document.getElementById("saveState");
+            if (state) state.textContent = "All changes saved";
             // The email is made from the note, so a saved note reloads it
             // rather than leaving wording on screen that has been superseded.
             noteEmailLoad();
+            return true;
 
         } catch (error) {
             showToast("Error updating transcription");
+            return false;
         }
     }
 
@@ -666,6 +743,11 @@
         const crmNote = document.getElementById("crmNoteInput").value.trim();
         const followUpTaskExists = document.getElementById("followUpTaskExists").value === "1";
 
+        if (!document.getElementById("approvalConfirm").checked) {
+            showToast("Confirm that you reviewed every section before approving.");
+            return false;
+        }
+
         if (status === "approved" && !followUpTaskExists && !crmNote) {
             showToast("CRM note is required to approve this transcript.");
             return false;
@@ -716,6 +798,8 @@
 
         const toField = document.getElementById("noteEmailTo");
         if (document.activeElement !== toField) toField.value = state.to_email || "";
+        const summaryEmail = document.getElementById("summaryEmail");
+        if (summaryEmail) summaryEmail.textContent = state.to_email || "No recipient";
 
         const warning = document.getElementById("noteEmailWarning");
         warning.textContent = state.warning || "";
@@ -832,7 +916,22 @@
             headers: { "Content-Type": "application/json" },
             body: noteEmailPayload(),
         }, "Could not save the email.");
-        if (data) showToast("Draft saved");
+        if (data) {
+            showToast("Draft saved");
+            const state = document.getElementById("saveState");
+            if (state) state.textContent = "All changes saved";
+            return true;
+        }
+        return false;
+    }
+
+    function refreshApprovalSummary() {
+        const note = document.getElementById("crmNoteInput").value.trim();
+        document.getElementById("summaryNote").textContent = note ? "Reviewed and ready" : "Missing note";
+        const recipient = document.getElementById("noteEmailTo").value.trim();
+        document.getElementById("summaryEmail").textContent = recipient || "No recipient";
+        const taskCount = document.querySelectorAll(".follow-up-task-item").length;
+        document.getElementById("summaryTasks").textContent = `${taskCount} ${taskCount === 1 ? "task" : "tasks"} reviewed`;
     }
 
     async function noteEmailSend() {
