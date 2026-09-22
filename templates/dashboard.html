@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Dashboard{% endblock %}
+{% block title %}Transcript Operations Dashboard{% endblock %}
 
 {% block extra_css %}
 <link rel="stylesheet" href="/static/css/dashboard.css">
@@ -8,14 +8,26 @@
 
 {% block content %}
 
+<header class="dashboard-hero">
+    <div>
+        <span class="dashboard-eyebrow">AGENT WORKSPACE</span>
+        <h1>Transcript operations</h1>
+        <p>Monitor call processing, manage agent assignments, and keep every review moving.</p>
+    </div>
+    <div class="hero-actions">
+        <a class="dashboard-button secondary" href="/admin/transcripts">View all transcripts</a>
+        <a class="dashboard-button primary" href="/admin/add-user">Add agent</a>
+    </div>
+</header>
+
 {% if request.query_params.get("updated") %}
-<div class="notice success">User updated successfully</div>
+<div class="notice success">Agent updated successfully.</div>
 {% endif %}
 
 {% if request.query_params.get("deleted") %}
 <div class="notice success">
-    Deleted the user for extension {{ request.query_params.get("deleted") }}. They stay deleted —
-    calls on that extension are no longer assigned or emailed to anyone.
+    Deleted the agent for extension {{ request.query_params.get("deleted") }}. Calls on that extension
+    are no longer assigned or emailed to anyone.
 </div>
 {% endif %}
 
@@ -23,164 +35,131 @@
 <div class="notice">{{ request.query_params.get("error") }}</div>
 {% endif %}
 
-<h2>Call Sync</h2>
-<p style="margin:0 0 12px; font-size:0.9rem; opacity:0.85;">
-    Calls are fetched from RingCentral starting at the position below, which moves forward as calls
-    are saved. If calls have stopped appearing, this is where to look first.
-</p>
-<div class="table-container">
-    <table>
-        <tbody>
-            <tr>
-                <th style="width:230px;">Fetching calls from</th>
-                <td>{{ sync_status.cursor or "the beginning (nothing synced yet)" }}</td>
-            </tr>
-            <tr>
-                <th>Newest call saved</th>
-                <td>{{ sync_status.newest_call or "none yet" }}</td>
-            </tr>
-            <tr>
-                <th>Waiting to reprocess</th>
-                <td>
+<section class="dashboard-stats" aria-label="Transcript overview">
+    <article class="dashboard-stat">
+        <span class="stat-icon healthy">✓</span>
+        <div><span class="stat-label">Call sync</span><strong>Active</strong><small>RingCentral connection</small></div>
+    </article>
+    <article class="dashboard-stat">
+        <span class="stat-icon">#</span>
+        <div><span class="stat-label">Extensions seen</span><strong>{{ seen_extensions|length }}</strong><small>Across synced calls</small></div>
+    </article>
+    <article class="dashboard-stat">
+        <span class="stat-icon">A</span>
+        <div><span class="stat-label">Mapped agents</span><strong>{{ users_tokens|length }}</strong><small>Ready for assignment</small></div>
+    </article>
+    <article class="dashboard-stat {% if sync_status.pending_reprocess or sync_status.stuck_recordings %}attention{% endif %}">
+        <span class="stat-icon">!</span>
+        <div><span class="stat-label">Needs attention</span><strong>{{ (sync_status.pending_reprocess|length) + (sync_status.stuck_recordings|length) }}</strong><small>Reprocess or failed calls</small></div>
+    </article>
+</section>
+
+<div class="dashboard-grid">
+    <section class="dashboard-card sync-card">
+        <div class="card-heading">
+            <div><span class="dashboard-eyebrow">SYSTEM HEALTH</span><h2>Call sync</h2></div>
+            <span class="health-pill"><i></i> Secure connection</span>
+        </div>
+        <p class="card-intro">RingCentral calls are fetched from the current cursor and advance as recordings are saved.</p>
+        <dl class="status-list">
+            <div><dt>Fetching calls from</dt><dd>{{ sync_status.cursor or "Beginning of available calls" }}</dd></div>
+            <div><dt>Newest call saved</dt><dd>{{ sync_status.newest_call or "No calls saved yet" }}</dd></div>
+            <div class="{% if sync_status.pending_reprocess %}status-warning{% endif %}">
+                <dt>Waiting to reprocess</dt>
+                <dd>
                     {% if sync_status.pending_reprocess %}
                     {% for item in sync_status.pending_reprocess %}
-                    {{ item.recording_id }} (requested {{ item.requested_at }})<br>
+                    <span class="status-line">{{ item.recording_id }} <small>requested {{ item.requested_at }}</small></span>
                     {% endfor %}
-                    <small>The sync stays at or before these calls until they are transcribed again,
-                        so newer calls wait behind them.</small>
-                    {% else %}
-                    Nothing
-                    {% endif %}
-                </td>
-            </tr>
-            <tr>
-                <th>Recordings failing to transcribe</th>
-                <td>
+                    {% else %}<span class="status-good">✓ Nothing waiting</span>{% endif %}
+                </dd>
+            </div>
+            <div class="{% if sync_status.stuck_recordings %}status-warning{% endif %}">
+                <dt>Transcription failures</dt>
+                <dd>
                     {% if sync_status.stuck_recordings %}
                     {% for item in sync_status.stuck_recordings %}
-                    {{ item.recording_id }} — {{ item.attempts }} attempt(s), last result:
-                    {{ item.last_error or "unknown" }}<br>
+                    <span class="status-line">{{ item.recording_id }} · {{ item.attempts }} attempt(s)<small>{{ item.last_error or "Unknown error" }}</small></span>
                     {% endfor %}
-                    {% else %}
-                    None
-                    {% endif %}
-                </td>
-            </tr>
-        </tbody>
-    </table>
-</div>
+                    {% else %}<span class="status-good">✓ No failed recordings</span>{% endif %}
+                </dd>
+            </div>
+        </dl>
+    </section>
 
-<h2 style="margin-top:28px;">Extensions</h2>
-<p style="margin:0 0 12px; font-size:0.9rem; opacity:0.85;">
-    Calls are attributed to the RingCentral extension that answered them. Register a user whose
-    <b>Owner Id</b> is the extension number, and new calls on that extension are assigned to them
-    automatically and send them notifications.
-</p>
-
-{% if seen_extensions and seen_extensions|length > 0 %}
-<div class="table-container">
-    <table>
-        <thead>
-            <tr>
-                <th>Extension</th>
-                <th>Name On RingCentral</th>
-                <th>Calls</th>
-                <th>Mapped To A User?</th>
-            </tr>
-        </thead>
-        <tbody>
+    <section class="dashboard-card extensions-card">
+        <div class="card-heading">
+            <div><span class="dashboard-eyebrow">RINGCENTRAL</span><h2>Agent extensions</h2></div>
+            <a href="/admin/add-user">Add agent →</a>
+        </div>
+        <p class="card-intro">Calls are automatically assigned using the extension that answered.</p>
+        {% if seen_extensions and seen_extensions|length > 0 %}
+        <div class="compact-list">
             {% for extension in seen_extensions %}
-            <tr>
-                <td>{{ extension.number }}</td>
-                <td>{{ extension.name or "-" }}</td>
-                <td>{{ extension.calls }}</td>
-                <td>
-                    {% if extension.registered %}
-                    Yes
-                    {% else %}
-                    <a href="/admin/add-user?user_id={{ extension.number }}">Add user for this extension</a>
-                    {% endif %}
-                </td>
-            </tr>
+            <div class="extension-row">
+                <span class="extension-avatar">{{ (extension.name or extension.number|string)[0]|upper }}</span>
+                <span class="extension-agent"><strong>{{ extension.name or "Unnamed extension" }}</strong><small>Extension {{ extension.number }}</small></span>
+                <span class="call-count">{{ extension.calls }} call{% if extension.calls != 1 %}s{% endif %}</span>
+                {% if extension.registered %}
+                <span class="mapping-pill mapped">Mapped</span>
+                {% else %}
+                <a class="mapping-pill unmapped" href="/admin/add-user?user_id={{ extension.number }}">Map agent</a>
+                {% endif %}
+            </div>
             {% endfor %}
-        </tbody>
-    </table>
+        </div>
+        {% else %}
+        <div class="empty dashboard-empty">No extensions recorded yet. They appear after calls arrive from the published n8n workflow.</div>
+        {% endif %}
+    </section>
 </div>
-{% else %}
-<div class="empty">
-    No extensions recorded yet. They appear here once calls come through with workflow v5 published in n8n.
-</div>
-{% endif %}
 
-<h2 style="margin-top:28px;">User Tokens</h2>
+<section class="dashboard-card agents-card">
+    <div class="card-heading agent-heading">
+        <div><span class="dashboard-eyebrow">TEAM SETTINGS</span><h2>Agent mappings</h2><p class="card-intro">Control call assignment, review emails, and AgencyZoom ownership.</p></div>
+        <div class="agent-actions">
+            <button type="button" class="dashboard-button secondary" onclick="sendTestEmail()">Send test email</button>
+            <a class="dashboard-button primary" href="/admin/add-user">Add agent</a>
+        </div>
+    </div>
+    <div id="testEmailResult" class="test-email-result" aria-live="polite"></div>
 
-<div style="display:flex; gap:10px; align-items:center; margin-bottom:12px; flex-wrap:wrap;">
-    <button type="button" onclick="sendTestEmail()">Send test email to all users</button>
-    <span id="testEmailResult" style="font-size:0.88rem;"></span>
-</div>
+    {% if users_tokens and users_tokens|length > 0 %}
+    <div class="table-container agent-table">
+        <table>
+            <thead><tr><th>Agent extension</th><th>Email</th><th>AgencyZoom user</th><th>Notification token</th><th>Actions</th></tr></thead>
+            <tbody>
+                {% for user in users_tokens %}
+                <tr>
+                    <td><strong>{{ user.user_id }}</strong>{% if "@" in (user.user_id or "") %}<small class="mapping-error">Not a valid extension</small>{% endif %}</td>
+                    <td>{{ user.email or "Not added" }}</td>
+                    <td>{{ user.agency_zoom_employee_name or user.agency_zoom_employee_id or "Not mapped" }}</td>
+                    <td class="token">{{ user.token or "Not configured" }}</td>
+                    <td class="actions"><a href="/admin/edit-user/{{ user.token_id }}" class="edit-btn">Edit</a><a href="/admin/delete-user/{{ user.token_id }}" class="delete-btn" onclick="return confirm('Are you sure you want to delete this agent?');">Delete</a></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty dashboard-empty">No agents have been mapped yet.</div>
+    {% endif %}
+</section>
 
 <script>
-    async function sendTestEmail() {
-        const output = document.getElementById('testEmailResult');
-        output.textContent = 'Sending…';
-        try {
-            const res = await fetch('/admin/test-email', { method: 'POST', body: new FormData() });
-            const data = await res.json();
-            if (data.status === 'ok') {
-                output.textContent = 'Sent to: ' + data.results.map(r => r.email).join(', ');
-            } else {
-                output.textContent = data.detail || 'Could not send test email.';
-            }
-        } catch (e) {
-            output.textContent = 'Could not reach the server.';
-        }
+async function sendTestEmail() {
+    const output = document.getElementById('testEmailResult');
+    output.textContent = 'Sending test email…';
+    try {
+        const res = await fetch('/admin/test-email', { method: 'POST', body: new FormData() });
+        const data = await res.json();
+        output.textContent = data.status === 'ok'
+            ? 'Test email sent to ' + data.results.map(result => result.email).join(', ')
+            : (data.detail || 'The test email could not be sent.');
+    } catch (error) {
+        output.textContent = 'The server could not be reached.';
     }
+}
 </script>
-
-{% if users_tokens and users_tokens|length > 0 %}
-
-<div class="table-container">
-    <table>
-        <thead>
-            <tr>
-                <th>#</th>
-                <th>Owner Id (Extension)</th>
-                <th>Email</th>
-                <th>Agency Zoom User</th>
-                <th>Token</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for user in users_tokens %}
-            <tr>
-                <td>{{ loop.index }}</td>
-                <td>
-                    {{ user.user_id }}
-                    {% if "@" in (user.user_id or "") %}
-                    <br><small style="color:#9b1c1c;">
-                        Not an extension, so no call matches this user — nothing is assigned to them.
-                        <a href="/admin/edit-user/{{ user.token_id }}">Set their extension</a>.
-                    </small>
-                    {% endif %}
-                </td>
-                <td>{{ user.email or "—" }}</td>
-                <td>{{ user.agency_zoom_employee_name or user.agency_zoom_employee_id or "—" }}</td>
-                <td class="token">{{ user.token or "—" }}</td>
-                <td class="actions">
-                    <a href="/admin/edit-user/{{ user.token_id }}" class="edit-btn">Edit</a>
-                    <a href="/admin/delete-user/{{ user.token_id }}" class="delete-btn" onclick="return confirm('Are you sure you want to delete this user?');">Delete</a>
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</div>
-
-{% else %}
-
-<div class="empty">No token details available</div>
-
-{% endif %}
 
 {% endblock %}
