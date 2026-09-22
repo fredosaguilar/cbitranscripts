@@ -166,8 +166,8 @@
 
         <label class="field-label">Follow Up Task</label>
         <p style="margin:0 0 8px; font-size:0.85rem; opacity:0.8;">
-            Written from the call, but nothing reaches Agency Zoom until you add it. Give a task its
-            own due date if it needs one, then press Add.
+            Written from the call, but nothing reaches Agency Zoom until you schedule it. A future
+            task stays in this portal and is sent to Agency Zoom on its due date.
         </p>
         {# Numbered the same way the server numbers them, so a button always
            acts on the task it sits next to, whatever the text contains. #}
@@ -180,7 +180,7 @@
                 <span class="task-text">{{ task }}</span>
                 <div class="task-actions">
                     <input type="date" class="task-due" title="Due date for this task">
-                    <button type="button" class="task-add">Add to Agency Zoom</button>
+                    <button type="button" class="task-add">Schedule for Agency Zoom</button>
                     <button type="button" class="task-edit">Edit</button>
                     <button type="button" class="task-delete">Delete</button>
                 </div>
@@ -199,7 +199,7 @@
             <input type="date" id="dueDateInput" value="{{ transcript.agency_zoom_due_date or '' }}"
                    onchange="saveDueDate()">
             <small style="opacity:0.75;">
-                Used for any task added without a date of its own. Defaults to tomorrow.
+                Used for any task scheduled without a date of its own. Defaults to tomorrow.
             </small>
         </div>
 
@@ -517,8 +517,8 @@
         }
     });
 
-    // A date set before the task is added is remembered, so it is still there
-    // if the page is reloaded before anyone presses Add.
+    // A date set before the task is scheduled is remembered, so it is still
+    // there if the page is reloaded before anyone schedules it.
     document.getElementById("followUpTaskList").addEventListener("change", (event) => {
         const field = event.target.closest(".task-due");
         const item = field && field.closest(".follow-up-task-item");
@@ -527,6 +527,13 @@
         body.append("task", item.querySelector(".task-text").textContent.trim());
         body.append("due_date", field.value);
         fetch(`/api/transcripts/{{ transcript.id }}/follow-up/due-date`, { method: "POST", body })
+            .then(async response => {
+                if (!response.ok) throw new Error();
+                const data = await response.json();
+                if (data.due_date) field.value = data.due_date;
+                const badge = item.querySelector(".task-scheduled");
+                if (badge) badge.textContent = data.due_date ? `Scheduled for ${data.due_date}` : "Scheduled";
+            })
             .catch(() => showToast("Could not save the due date for that task."));
     });
 
@@ -537,24 +544,42 @@
         body.append("due_date", due ? due.value : "");
 
         button.disabled = true;
-        button.textContent = "Adding…";
+        button.textContent = "Scheduling…";
         try {
             const response = await fetch(`/api/transcripts/{{ transcript.id }}/follow-up/add`,
                                          { method: "POST", body });
             const data = await response.json().catch(() => null);
             if (!response.ok) {
-                showToast((data && data.detail) || "Agency Zoom could not add that task.");
+                showToast((data && data.detail) || "The task could not be scheduled.");
                 button.disabled = false;
-                button.textContent = "Add to Agency Zoom";
+                button.textContent = "Schedule for Agency Zoom";
                 return;
             }
-            markTaskAdded(item, data.task_id);
-            showToast(`Task added to Agency Zoom (#${data.task_id})`);
+            if (data.status === "scheduled") {
+                markTaskScheduled(item, data.due_date);
+                showToast(`Task scheduled for ${data.due_date}. It will reach Agency Zoom that day.`);
+            } else {
+                markTaskAdded(item, data.task_id);
+                showToast(`Task added to Agency Zoom (#${data.task_id})`);
+            }
         } catch (error) {
-            showToast("Could not reach the server to add that task.");
+            showToast("Could not reach the server to schedule that task.");
             button.disabled = false;
-            button.textContent = "Add to Agency Zoom";
+            button.textContent = "Schedule for Agency Zoom";
         }
+    }
+
+    function markTaskScheduled(item, dueDate) {
+        const actions = item.querySelector(".task-actions");
+        const add = actions.querySelector(".task-add");
+        if (add) add.remove();
+        let badge = actions.querySelector(".task-scheduled");
+        if (!badge) {
+            badge = document.createElement("span");
+            badge.className = "task-scheduled";
+            actions.prepend(badge);
+        }
+        badge.textContent = dueDate ? `Scheduled for ${dueDate}` : "Scheduled";
     }
 
     function markTaskAdded(item, taskId) {
@@ -585,6 +610,7 @@
                 const due = item.querySelector(".task-due");
                 if (due && entry.due_date) due.value = entry.due_date;
                 if (entry.task_id) markTaskAdded(item, entry.task_id);
+                else if (entry.status === "scheduled") markTaskScheduled(item, entry.due_date);
             });
         } catch (error) { /* the buttons still work without this */ }
     }
