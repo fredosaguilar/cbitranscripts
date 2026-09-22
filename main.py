@@ -264,6 +264,9 @@ EXTENSION_EMAIL_MAP = os.getenv("EXTENSION_EMAIL_MAP", "")
 
 # Follow-up tasks reach Agency Zoom only when an agent adds them, so nothing is
 # pushed into the CRM without a person deciding it belongs there.
+AGENCY_ZOOM_TASK_DISPATCH_INTERVAL_SECONDS = int(
+    os.getenv("AGENCY_ZOOM_TASK_DISPATCH_INTERVAL_SECONDS", "60")
+)
 
 # A reprocess request holds the scheduler cursor until the call is transcribed
 # again; abandoned after this long so one bad call cannot hold it forever.
@@ -1707,8 +1710,142 @@ def _save_task_state(transcript, state: dict) -> None:
     transcript.follow_up_task_state = json.dumps(state)
 
 
+def _agency_today():
+    """The agency's calendar day, not the server's UTC date."""
+    try:
+        timezone_info = ZoneInfo(BUSINESS_TZ)
+    except Exception:
+        timezone_info = timezone.utc
+    return datetime.now(timezone_info).date()
+
+
+def _scheduled_due_date(value: Optional[str]) -> str:
+    """A validated YYYY-MM-DD date, defaulting to tomorrow in agency time."""
+    chosen = (_clean_string(value) or "").split(" ")[0]
+    if chosen:
+        try:
+            datetime.strptime(chosen, "%Y-%m-%d")
+            return chosen
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Choose a valid due date.")
+    return (_agency_today() + timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def _store_agency_zoom_task_id(transcript, task_id: str) -> None:
+    existing = [line for line in (transcript.agency_zoom_task_ids or "").splitlines() if line.strip()]
+    if str(task_id) not in existing:
+        transcript.agency_zoom_task_ids = "\n".join(existing + [str(task_id)])
+
+
+def _dispatch_follow_up_task(db: Session, transcript, key: str) -> str:
+    """Create one previously scheduled task and mark it delivered."""
+    state = _task_state(transcript)
+    entry = state.get(key) or {}
+    if entry.get("task_id"):
+        return str(entry["task_id"])
+
+    task_text = _clean_string(entry.get("task"))
+    if not task_text:
+        raise ValueError("A scheduled Agency Zoom task has no task text.")
+
+    employee_id, agent_name = _assigned_agency_zoom_agent(db, transcript)
+    task_id = create_agency_zoom_task_for_transcript(
+        transcript,
+        task_text,
+        due_date=entry.get("due_date"),
+        assignee_id=employee_id,
+        agent_name=agent_name,
+    )
+    if not task_id:
+        raise ValueError("Agency Zoom accepted the task but returned no id.")
+
+    # Reload before saving because the due date may have been edited while the
+    # Agency Zoom request was in flight.
+    db.refresh(transcript)
+    state = _task_state(transcript)
+    entry = state.setdefault(key, {"task": task_text})
+    entry.update({
+        "task_id": str(task_id),
+        "status": "added",
+        "added_at": datetime.utcnow().isoformat(),
+    })
+    _save_task_state(transcript, state)
+    _store_agency_zoom_task_id(transcript, str(task_id))
+    db.commit()
+    return str(task_id)
+
+
+def _dispatch_due_agency_zoom_tasks_once() -> int:
+    """Send locally queued tasks whose Pacific-time due date has arrived."""
+    db = SessionLocal()
+    delivered = 0
+    today = _agency_today()
+    try:
+        transcripts = (
+            db.query(models.TranscriptResponse)
+            .filter(models.TranscriptResponse.follow_up_task_state.isnot(None))
+            .all()
+        )
+        for transcript in transcripts:
+            state = _task_state(transcript)
+            due_keys = []
+            for key, entry in state.items():
+                if not isinstance(entry, dict) or entry.get("task_id"):
+                    continue
+                if entry.get("status") != "scheduled":
+                    continue
+                try:
+                    due = datetime.strptime(str(entry.get("due_date") or ""), "%Y-%m-%d").date()
+                except ValueError:
+                    logger.error(
+                        "Scheduled Agency Zoom task %s on transcript %s has an invalid due date %r",
+                        key, transcript.id, entry.get("due_date"),
+                    )
+                    continue
+                if due <= today:
+                    due_keys.append(key)
+
+            for key in due_keys:
+                try:
+                    _dispatch_follow_up_task(db, transcript, key)
+                    delivered += 1
+                except Exception:
+                    db.rollback()
+                    logger.exception(
+                        "Could not dispatch scheduled Agency Zoom task %s for transcript %s",
+                        key, transcript.id,
+                    )
+        return delivered
+    finally:
+        db.close()
+
+
+def _agency_zoom_task_dispatch_loop() -> None:
+    while True:
+        try:
+            delivered = _dispatch_due_agency_zoom_tasks_once()
+            if delivered:
+                logger.info("Dispatched %s scheduled Agency Zoom task(s)", delivered)
+        except Exception:
+            logger.exception("Scheduled Agency Zoom task dispatcher failed")
+        time.sleep(max(15, AGENCY_ZOOM_TASK_DISPATCH_INTERVAL_SECONDS))
+
+
+@app.on_event("startup")
+def start_agency_zoom_task_dispatcher():
+    worker = getattr(app.state, "agency_zoom_task_dispatcher", None)
+    if worker and worker.is_alive():
+        return
+    app.state.agency_zoom_task_dispatcher = threading.Thread(
+        target=_agency_zoom_task_dispatch_loop,
+        name="agency-zoom-task-dispatcher",
+        daemon=True,
+    )
+    app.state.agency_zoom_task_dispatcher.start()
+
+
 @app.post("/api/transcripts/{id}/follow-up/add")
-# Add one follow-up task to Agency Zoom, with its own due date.
+# Schedule one follow-up task for Agency Zoom, with its own due date.
 def add_follow_up_task(
     id: str,
     request: Request,
@@ -1716,12 +1853,12 @@ def add_follow_up_task(
     due_date: str = Form(""),
     db: Session = Depends(get_db),
 ):
-    """Create a single task, on demand.
+    """Queue a single task, creating it only when its due date arrives.
 
     Tasks are written by the analysis but not sent anywhere until somebody adds
     them. A suggestion nobody read is not a commitment the agency should be
-    making to a client, and adding them one at a time is what lets each carry
-    the date it is actually due.
+    making to a client. Future tasks remain local until the selected calendar
+    date begins in the agency's timezone.
     """
     if not get_logged_in_admin(request, db):
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -1736,30 +1873,24 @@ def add_follow_up_task(
     if state.get(key, {}).get("task_id"):
         raise HTTPException(status_code=409, detail="That task has already been added to Agency Zoom.")
 
-    employee_id, agent_name = _assigned_agency_zoom_agent(db, transcript)
-    try:
-        task_id = create_agency_zoom_task_for_transcript(
-            transcript, task_text,
-            due_date=_clean_string(due_date),
-            assignee_id=employee_id,
-            agent_name=agent_name,
-        )
-    except Exception as exc:
-        logger.exception("Agency Zoom refused a follow-up task for transcript %s", transcript.id)
-        raise HTTPException(status_code=502, detail=f"Agency Zoom could not add the task: {exc}") from exc
-
-    if not task_id:
-        raise HTTPException(status_code=502, detail="Agency Zoom accepted the task but returned no id.")
-
-    state[key] = {"task_id": str(task_id), "due_date": _clean_string(due_date) or None,
-                  "task": task_text, "added_at": datetime.utcnow().isoformat()}
+    resolved_due_date = _scheduled_due_date(
+        _clean_string(due_date) or getattr(transcript, "agency_zoom_due_date", None)
+    )
+    state[key] = {
+        "task": task_text,
+        "due_date": resolved_due_date,
+        "status": "scheduled",
+        "scheduled_at": datetime.utcnow().isoformat(),
+    }
     _save_task_state(transcript, state)
-
-    existing = [line for line in (transcript.agency_zoom_task_ids or "").splitlines() if line.strip()]
-    transcript.agency_zoom_task_ids = "\n".join(existing + [str(task_id)])
     db.commit()
 
-    return JSONResponse(content={"status": "ok", "task_id": str(task_id), "key": key})
+    # The dispatcher is the only code path that creates the Agency Zoom task.
+    # Keeping even today's task in the queue avoids a route request and the
+    # background worker creating the same task at the same time.
+    return JSONResponse(content={
+        "status": "scheduled", "task_id": None, "key": key, "due_date": resolved_due_date,
+    })
 
 
 @app.post("/api/transcripts/{id}/follow-up/due-date")
@@ -1781,10 +1912,13 @@ def set_follow_up_due_date(
 
     state = _task_state(transcript)
     entry = state.setdefault(_task_key(task_text), {"task": task_text})
-    entry["due_date"] = _clean_string(due_date) or None
+    if entry.get("status") == "scheduled" and not entry.get("task_id"):
+        entry["due_date"] = _scheduled_due_date(due_date)
+    else:
+        entry["due_date"] = _clean_string(due_date) or None
     _save_task_state(transcript, state)
     db.commit()
-    return JSONResponse(content={"status": "ok"})
+    return JSONResponse(content={"status": "ok", "due_date": entry.get("due_date")})
 
 
 @app.get("/api/transcripts/{id}/follow-up/state")
@@ -1802,6 +1936,7 @@ def get_follow_up_state(id: str, request: Request, db: Session = Depends(get_db)
                 "key": _task_key(text),
                 "task_id": state.get(_task_key(text), {}).get("task_id"),
                 "due_date": state.get(_task_key(text), {}).get("due_date"),
+                "status": state.get(_task_key(text), {}).get("status"),
             }
             for text in tasks
         ],
@@ -2723,12 +2858,31 @@ def update_follow_up_task(
         tasks.append(task)
     elif action == "delete":
         position = _follow_up_task_position(tasks, data)
-        tasks.pop(position)
+        removed_task = tasks.pop(position)
+        state = _task_state(transcript)
+        removed_key = _task_key(removed_task)
+        # Deleting a task before its due date cancels the queued Agency Zoom
+        # delivery. A task already created in Agency Zoom keeps its audit state.
+        if not state.get(removed_key, {}).get("task_id"):
+            state.pop(removed_key, None)
+            _save_task_state(transcript, state)
     else:
         new_task = normalize_follow_up_task(data.new_task)
         if not new_task:
             raise HTTPException(status_code=400, detail="new_task is required")
-        tasks[_follow_up_task_position(tasks, data)] = new_task
+        position = _follow_up_task_position(tasks, data)
+        previous_task = tasks[position]
+        tasks[position] = new_task
+        state = _task_state(transcript)
+        previous_key = _task_key(previous_task)
+        previous_state = state.get(previous_key)
+        # Editing a future scheduled task keeps its date and scheduled status,
+        # but the dispatcher must use the new words and new key.
+        if previous_state and not previous_state.get("task_id"):
+            state.pop(previous_key, None)
+            previous_state["task"] = new_task
+            state[_task_key(new_task)] = previous_state
+            _save_task_state(transcript, state)
 
     transcript.follow_up_task = "\n".join(tasks) if tasks else None
     db.commit()
