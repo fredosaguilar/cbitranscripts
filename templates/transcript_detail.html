@@ -329,8 +329,9 @@
             return;
         }
         if (reviewCurrentStep === 4) {
-            if (!noteEmailLooksSendable()) {
-                showToast("Add a valid recipient and email message before continuing.");
+            const validationError = noteEmailDraftValidationError();
+            if (validationError) {
+                showToast(validationError);
                 return;
             }
             if (await noteEmailSave()) goToReviewStep(5, true);
@@ -812,18 +813,22 @@
         noteEmailRenderHistory(state.history || []);
     }
 
-    // The address may have just been typed, and the server's view of whether
-    // this can send was formed before that. Anything else blocking a send is
-    // the server's call and still stands.
-    function noteEmailLooksSendable() {
-        if (!noteEmailState) return false;
+    // Step 4 saves a draft before step 5 approves the transcript. Do not use
+    // can_send here: an unapproved transcript is intentionally not sendable
+    // yet, but its valid email draft must still be allowed to advance.
+    function noteEmailDraftValidationError() {
+        if (!noteEmailState) return "Wait for the email draft to finish loading.";
         const typed = document.getElementById("noteEmailTo").value.trim();
         const hasAddress = /^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$/.test(typed);
         const body = document.getElementById("noteEmailBody").value.trim();
-        if (!hasAddress || !body) return false;
-        const blocker = noteEmailState.blocked_reason || "";
-        // Only the missing-address blocker is one the agent can clear here
-        return noteEmailState.can_send || blocker.startsWith("No email address");
+        if (!hasAddress) return "Enter one valid recipient email address.";
+        if (!body) return "Add an email message before continuing.";
+        return "";
+    }
+
+    function noteEmailLooksSendable() {
+        return !noteEmailDraftValidationError()
+            && Boolean(noteEmailState && noteEmailState.can_send);
     }
 
     function noteEmailRefreshSendButton() {
