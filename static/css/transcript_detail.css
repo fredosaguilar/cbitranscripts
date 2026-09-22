@@ -331,3 +331,10 @@ button {
     color: #15825a;
     white-space: nowrap;
 }
+
+.task-scheduled {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #8a5a00;
+    white-space: nowrap;
+}
