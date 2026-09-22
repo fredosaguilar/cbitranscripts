@@ -8,14 +8,16 @@
 
 {% block content %}
 
+{% set issue_count = (sync_status.pending_reprocess|length) + (sync_status.stuck_recordings|length) %}
+
 <header class="dashboard-hero">
-    <div>
+    <div class="hero-copy">
         <span class="dashboard-eyebrow">AGENT WORKSPACE</span>
-        <h1>Transcript operations</h1>
-        <p>Monitor call processing, manage agent assignments, and keep every review moving.</p>
+        <h1>Good morning{% if request.state.portal_name|default('') %}, {{ request.state.portal_name.split(' ')[0] }}{% endif %}</h1>
+        <p>Here’s what needs your attention across call reviews and agent workflows.</p>
     </div>
     <div class="hero-actions">
-        <a class="dashboard-button secondary" href="/admin/transcripts">View all transcripts</a>
+        <a class="dashboard-button secondary" href="/admin/transcripts">View transcripts</a>
         <a class="dashboard-button primary" href="/admin/add-user">Add agent</a>
     </div>
 </header>
@@ -35,73 +37,95 @@
 <div class="notice">{{ request.query_params.get("error") }}</div>
 {% endif %}
 
+<section class="attention-card {% if not issue_count %}all-clear{% endif %}" aria-labelledby="attention-title">
+    <div class="attention-summary">
+        <span class="attention-count">{% if issue_count %}{{ issue_count }}{% else %}✓{% endif %}</span>
+        <div>
+            <span class="dashboard-eyebrow">{% if issue_count %}NEEDS ATTENTION{% else %}ALL CLEAR{% endif %}</span>
+            <h2 id="attention-title">{% if issue_count %}Calls need a closer look{% else %}No processing issues right now{% endif %}</h2>
+            <p>{% if issue_count %}{{ sync_status.pending_reprocess|length }} waiting to reprocess · {{ sync_status.stuck_recordings|length }} transcription failure{% if sync_status.stuck_recordings|length != 1 %}s{% endif %}{% else %}RingCentral intake and transcription processing are healthy.{% endif %}</p>
+        </div>
+    </div>
+    <a class="dashboard-button primary" href="/admin/transcripts">{% if issue_count %}Review affected calls{% else %}Open transcripts{% endif %} <span aria-hidden="true">→</span></a>
+</section>
+
 <section class="dashboard-stats" aria-label="Transcript overview">
     <article class="dashboard-stat">
-        <span class="stat-icon healthy">✓</span>
-        <div><span class="stat-label">Call sync</span><strong>Active</strong><small>RingCentral connection</small></div>
+        <span class="stat-label">Extensions seen</span>
+        <strong>{{ seen_extensions|length }}</strong>
+        <small>Across synced calls</small>
     </article>
     <article class="dashboard-stat">
-        <span class="stat-icon">#</span>
-        <div><span class="stat-label">Extensions seen</span><strong>{{ seen_extensions|length }}</strong><small>Across synced calls</small></div>
+        <span class="stat-label">Mapped agents</span>
+        <strong>{{ users_tokens|length }}</strong>
+        <small>Ready for assignment</small>
     </article>
     <article class="dashboard-stat">
-        <span class="stat-icon">A</span>
-        <div><span class="stat-label">Mapped agents</span><strong>{{ users_tokens|length }}</strong><small>Ready for assignment</small></div>
+        <span class="stat-label">Processing issues</span>
+        <strong>{{ issue_count }}</strong>
+        <small>Reprocess or failed calls</small>
     </article>
-    <article class="dashboard-stat {% if sync_status.pending_reprocess or sync_status.stuck_recordings %}attention{% endif %}">
-        <span class="stat-icon">!</span>
-        <div><span class="stat-label">Needs attention</span><strong>{{ (sync_status.pending_reprocess|length) + (sync_status.stuck_recordings|length) }}</strong><small>Reprocess or failed calls</small></div>
+    <article class="dashboard-stat health-stat {% if issue_count %}attention{% endif %}">
+        <span class="stat-label">Sync health</span>
+        <strong><i></i>{% if issue_count %}Check needed{% else %}Healthy{% endif %}</strong>
+        <small>RingCentral and n8n workflow</small>
     </article>
 </section>
 
 <div class="dashboard-grid">
     <section class="dashboard-card sync-card">
         <div class="card-heading">
-            <div><span class="dashboard-eyebrow">SYSTEM HEALTH</span><h2>Call sync</h2></div>
-            <span class="health-pill"><i></i> Secure connection</span>
+            <div>
+                <h2>Automation health</h2>
+                <p class="card-intro">Live connections powering transcript intake and follow-up.</p>
+            </div>
+            <span class="health-pill"><i></i> Live</span>
         </div>
-        <p class="card-intro">RingCentral calls are fetched from the current cursor and advance as recordings are saved.</p>
-        <dl class="status-list">
-            <div><dt>Fetching calls from</dt><dd>{{ sync_status.cursor or "Beginning of available calls" }}</dd></div>
-            <div><dt>Newest call saved</dt><dd>{{ sync_status.newest_call or "No calls saved yet" }}</dd></div>
-            <div class="{% if sync_status.pending_reprocess %}status-warning{% endif %}">
-                <dt>Waiting to reprocess</dt>
-                <dd>
-                    {% if sync_status.pending_reprocess %}
-                    {% for item in sync_status.pending_reprocess %}
-                    <span class="status-line">{{ item.recording_id }} <small>requested {{ item.requested_at }}</small></span>
-                    {% endfor %}
-                    {% else %}<span class="status-good">✓ Nothing waiting</span>{% endif %}
-                </dd>
+        <div class="health-rows">
+            <div class="health-row healthy">
+                <span><i></i>RingCentral intake</span>
+                <small>{{ sync_status.cursor or "Connected" }}</small>
             </div>
-            <div class="{% if sync_status.stuck_recordings %}status-warning{% endif %}">
-                <dt>Transcription failures</dt>
-                <dd>
-                    {% if sync_status.stuck_recordings %}
-                    {% for item in sync_status.stuck_recordings %}
-                    <span class="status-line">{{ item.recording_id }} · {{ item.attempts }} attempt(s)<small>{{ item.last_error or "Unknown error" }}</small></span>
-                    {% endfor %}
-                    {% else %}<span class="status-good">✓ No failed recordings</span>{% endif %}
-                </dd>
+            <div class="health-row healthy">
+                <span><i></i>n8n transcription workflow</span>
+                <small>{% if sync_status.newest_call %}Newest call {{ sync_status.newest_call }}{% else %}Ready for new calls{% endif %}</small>
             </div>
-        </dl>
+            <div class="health-row {% if issue_count %}warning{% else %}healthy{% endif %}">
+                <span><i></i>Processing queue</span>
+                <small>{% if issue_count %}{{ issue_count }} item{% if issue_count != 1 %}s{% endif %} need attention{% else %}Ready{% endif %}</small>
+            </div>
+        </div>
+        {% if sync_status.pending_reprocess or sync_status.stuck_recordings %}
+        <details class="health-details">
+            <summary>View affected recordings</summary>
+            {% for item in sync_status.pending_reprocess %}
+            <p><strong>{{ item.recording_id }}</strong> requested {{ item.requested_at }}</p>
+            {% endfor %}
+            {% for item in sync_status.stuck_recordings %}
+            <p><strong>{{ item.recording_id }}</strong> · {{ item.attempts }} attempt(s) · {{ item.last_error or "Unknown error" }}</p>
+            {% endfor %}
+        </details>
+        {% else %}
+        <p class="health-note">No stuck recordings or pending reprocessing.</p>
+        {% endif %}
     </section>
 
     <section class="dashboard-card extensions-card">
         <div class="card-heading">
-            <div><span class="dashboard-eyebrow">RINGCENTRAL</span><h2>Agent extensions</h2></div>
-            <a href="/admin/add-user">Add agent →</a>
+            <div>
+                <h2>Agent coverage</h2>
+                <p class="card-intro">RingCentral extensions detected from synced calls.</p>
+            </div>
+            <a href="/admin/add-user">Manage →</a>
         </div>
-        <p class="card-intro">Calls are automatically assigned using the extension that answered.</p>
         {% if seen_extensions and seen_extensions|length > 0 %}
-        <div class="compact-list">
-            {% for extension in seen_extensions %}
-            <div class="extension-row">
+        <div class="coverage-list">
+            {% for extension in seen_extensions[:5] %}
+            <div class="coverage-row">
                 <span class="extension-avatar">{{ (extension.name or extension.number|string)[0]|upper }}</span>
                 <span class="extension-agent"><strong>{{ extension.name or "Unnamed extension" }}</strong><small>Extension {{ extension.number }}</small></span>
-                <span class="call-count">{{ extension.calls }} call{% if extension.calls != 1 %}s{% endif %}</span>
                 {% if extension.registered %}
-                <span class="mapping-pill mapped">Mapped</span>
+                <span class="coverage-status">● Active</span>
                 {% else %}
                 <a class="mapping-pill unmapped" href="/admin/add-user?user_id={{ extension.number }}">Map agent</a>
                 {% endif %}
@@ -116,25 +140,37 @@
 
 <section class="dashboard-card agents-card">
     <div class="card-heading agent-heading">
-        <div><span class="dashboard-eyebrow">TEAM SETTINGS</span><h2>Agent mappings</h2><p class="card-intro">Control call assignment, review emails, and AgencyZoom ownership.</p></div>
+        <div>
+            <h2>Agent mappings</h2>
+            <p class="card-intro">Call ownership, review delivery, and AgencyZoom identity in one place.</p>
+        </div>
         <div class="agent-actions">
-            <button type="button" class="dashboard-button secondary" onclick="sendTestEmail()">Send test email</button>
-            <a class="dashboard-button primary" href="/admin/add-user">Add agent</a>
+            <button type="button" class="dashboard-button secondary" onclick="sendTestEmail()">Test email</button>
+            <a class="dashboard-button primary" href="/admin/add-user">+ Add agent</a>
         </div>
     </div>
     <div id="testEmailResult" class="test-email-result" aria-live="polite"></div>
 
     {% if users_tokens and users_tokens|length > 0 %}
+    <div class="agent-list-mobile" aria-label="Agent mappings">
+        {% for user in users_tokens %}
+        <a href="/admin/edit-user/{{ user.token_id }}" class="mobile-agent-row">
+            <span><strong>{{ user.agency_zoom_employee_name or user.user_id }}</strong><small>{{ user.email or "Email not added" }}</small></span>
+            <span>Ext. {{ user.user_id }} <b aria-hidden="true">›</b></span>
+        </a>
+        {% endfor %}
+    </div>
     <div class="table-container agent-table">
         <table>
-            <thead><tr><th>Agent extension</th><th>Email</th><th>AgencyZoom user</th><th>Notification token</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Agent / extension</th><th>Email</th><th>AgencyZoom user</th><th>Review delivery</th><th>Status</th><th>Actions</th></tr></thead>
             <tbody>
                 {% for user in users_tokens %}
                 <tr>
                     <td><strong>{{ user.user_id }}</strong>{% if "@" in (user.user_id or "") %}<small class="mapping-error">Not a valid extension</small>{% endif %}</td>
                     <td>{{ user.email or "Not added" }}</td>
                     <td>{{ user.agency_zoom_employee_name or user.agency_zoom_employee_id or "Not mapped" }}</td>
-                    <td class="token">{{ user.token or "Not configured" }}</td>
+                    <td>{% if user.email %}Email + task{% else %}Task only{% endif %}</td>
+                    <td><span class="coverage-status">● Active</span></td>
                     <td class="actions"><a href="/admin/edit-user/{{ user.token_id }}" class="edit-btn">Edit</a><a href="/admin/delete-user/{{ user.token_id }}" class="delete-btn" onclick="return confirm('Are you sure you want to delete this agent?');">Delete</a></td>
                 </tr>
                 {% endfor %}
