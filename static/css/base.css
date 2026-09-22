@@ -10,8 +10,18 @@
     --accent-hover: #0b3033;
     --accent-2: #d8a339;
     --success: #2b8a66;
+    --success-soft: #eaf6f1;
     --warning: #c88912;
+    --warning-soft: #fff7e0;
     --danger: #dc2626;
+    --space-8: 8px;
+    --space-12: 12px;
+    --space-16: 16px;
+    --space-24: 24px;
+    --space-32: 32px;
+    --radius-10: 10px;
+    --radius-14: 14px;
+    --radius-18: 18px;
     --shadow: 0 4px 16px rgba(15, 30, 50, 0.08);
     --shadow-lg: 0 8px 32px rgba(15, 30, 50, 0.12);
 }
@@ -127,6 +137,28 @@ p { margin: 0 0 10px; }
 .nav-right a.logout {
     color: rgba(255,255,255,0.5);
     font-size: 0.8rem;
+}
+
+.nav-menu-toggle {
+    align-items: center;
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.4);
+    border-radius: 9px;
+    display: none;
+    flex-direction: column;
+    gap: 4px;
+    height: 40px;
+    justify-content: center;
+    padding: 0;
+    width: 40px;
+}
+
+.nav-menu-toggle span {
+    background: #fff;
+    border-radius: 2px;
+    display: block;
+    height: 2px;
+    width: 16px;
 }
 
 /* ── Layout ─────────────────────────────────── */
@@ -369,14 +401,23 @@ tbody tr:nth-child(even):hover { background: #f2f6fb; }
 
 /* ── Mobile ──────────────────────────────────── */
 @media (max-width: 768px) {
-    .container { padding: 22px 14px; }
-    .navbar { align-items: stretch; flex-direction: column; gap: 8px; padding: 10px 14px 8px; }
+    .container { padding: 20px 16px 28px; }
+    .navbar { flex-wrap: wrap; gap: 12px; min-height: 72px; padding: 12px 16px; }
     .nav-left { min-width: 0; }
-    .nav-logo { height: 42px; width: 54px; }
-    .nav-brand-copy strong { font-size: 0.83rem; }
-    .nav-brand-copy small { font-size: 0.55rem; }
-    .nav-right { flex-wrap: nowrap; margin: 0 -4px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
-    .nav-right::-webkit-scrollbar { display: none; }
-    .nav-right a { flex: 0 0 auto; padding: 7px 10px; }
+    .nav-logo { height: 40px; width: 48px; }
+    .nav-brand-copy strong { font-size: 0.82rem; }
+    .nav-brand-copy small { display: none; }
+    .nav-menu-toggle { display: inline-flex; margin-left: auto; }
+    .nav-right {
+        background: #0b3033;
+        border-top: 1px solid rgba(255,255,255,0.1);
+        display: none;
+        flex-basis: 100%;
+        gap: 4px;
+        order: 3;
+        padding-top: 10px;
+    }
+    .nav-right.open { display: grid; grid-template-columns: 1fr 1fr; }
+    .nav-right a { padding: 10px 12px; text-align: center; }
     .stats-row { grid-template-columns: repeat(2, 1fr); }
 }
