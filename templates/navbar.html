@@ -9,7 +9,11 @@
         </span>
     </a>
 
-    <div class="nav-right">
+    <button class="nav-menu-toggle" type="button" aria-expanded="false" aria-controls="primaryNavigation" aria-label="Open navigation">
+        <span></span><span></span><span></span>
+    </button>
+
+    <div class="nav-right" id="primaryNavigation">
         <a href="https://columbia-basin-eo-forms-production.up.railway.app/">Forms Portal</a>
         {% if request.state.portal_role|default('admin') == 'admin' %}
         <a href="/admin/dashboard" class="{{ 'active' if request.url.path == '/admin/dashboard' else '' }}">Dashboard</a>
@@ -23,3 +27,17 @@
         <a href="/logout" class="logout">Logout</a>
     </div>
 </nav>
+
+<script>
+(() => {
+    const toggle = document.querySelector('.nav-menu-toggle');
+    const navigation = document.getElementById('primaryNavigation');
+    if (!toggle || !navigation) return;
+    toggle.addEventListener('click', () => {
+        const open = toggle.getAttribute('aria-expanded') !== 'true';
+        toggle.setAttribute('aria-expanded', String(open));
+        toggle.setAttribute('aria-label', open ? 'Close navigation' : 'Open navigation');
+        navigation.classList.toggle('open', open);
+    });
+})();
+</script>
