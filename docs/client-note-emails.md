@@ -385,6 +385,16 @@ The note is written from the transcript, and the transcript is stored, read and
 analysed in English no matter what was spoken. Two things make that true rather
 than hoped for:
 
+**Nothing tells Whisper what language to expect.** Every chunk of every call
+used to be sent with a Spanish prompt, to bias the insurance vocabulary. But
+Whisper's prompt is an initial context, not a glossary: it sets the language the
+decoder writes in. English calls came back as Spanish text — not mis-detected,
+actually written out in Spanish, chunk by chunk, some obeying the prompt and
+some following the audio — and the pipeline then "translated" that invention
+back into English. A call that was English throughout reached the file having
+been through two models and two languages. No prompt is sent now; whatever
+vocabulary it bought was not worth the language it cost.
+
 **The call's language is decided by the whole call, not its first minute.** A
 recording often opens with an English announcement, and taking the first chunk
 Whisper could read as the language of the call filed Spanish calls as English

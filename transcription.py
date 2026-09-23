@@ -34,11 +34,22 @@ TRANSCRIBE_TIMEOUT = int(os.getenv("TRANSCRIBE_TIMEOUT", "600"))
 # A complete call is far larger than this; anything smaller is the announcement
 MIN_EXPECTED_AUDIO_BYTES = int(os.getenv("MIN_EXPECTED_AUDIO_BYTES", "40000"))
 
-# Whisper echoes a long prompt back verbatim when it gives up on a segment, so
-# these stay short: just enough to bias the vocabulary, not enough to become the
-# transcript.
+# Only for the translations endpoint, which answers in English whatever it is
+# given, so an English prompt cannot mislead it about the language. Kept short
+# because Whisper echoes a long prompt back verbatim when it gives up on a
+# segment: enough to bias the vocabulary, not enough to become the transcript.
 ENGLISH_PROMPT = "Insurance call: policy, premium, deductible, coverage, claim, adjuster, endorsement, quote."
-SPANISH_PROMPT = "Llamada de seguros: poliza, prima, deducible, cobertura, reclamo, ajustador, endoso, cotizacion."
+
+# Nothing is prompted when reading a call as spoken. Whisper's prompt is an
+# initial context, not a glossary: it sets the language the decoder expects, and
+# a Spanish one was sent on every chunk of every call. An English call then came
+# back as Spanish text -- not mis-detected, actually written out in Spanish,
+# chunk by chunk, some obeying the prompt and some following the audio. The
+# pipeline then "translated" that invention back into English, so a call that
+# was English all along reached the file having been through two models and two
+# languages. Whatever vocabulary a prompt buys is not worth the language it
+# costs, and Whisper identifies these calls perfectly well unprompted.
+TRANSCRIBE_PROMPT = ""
 
 # Whisper stops early on long low-bitrate phone recordings, returning only the
 # opening announcement. Sending the call in pieces makes each piece a fresh
@@ -217,7 +228,11 @@ def reads_as_spanish(text: str) -> bool:
 
 def _whisper(endpoint: str, audio: bytes, prompt: str, verbose: bool = False) -> dict:
     files = {"file": ("recording.mp3", audio, "audio/mpeg")}
-    data = {"model": WHISPER_MODEL, "prompt": prompt, "temperature": "0"}
+    data = {"model": WHISPER_MODEL, "temperature": "0"}
+    # Omitted rather than sent empty: the prompt is what decides the language
+    # Whisper writes in, so "no prompt" has to mean no prompt field at all
+    if prompt:
+        data["prompt"] = prompt
     if verbose:
         data["response_format"] = "verbose_json"
 
@@ -256,7 +271,7 @@ def _whisper(endpoint: str, audio: bytes, prompt: str, verbose: bool = False) ->
 def _transcribe_chunk(chunk: bytes, index: int, total: int) -> tuple[str, str]:
     """Transcribe one chunk as spoken, returning its text and its language."""
     try:
-        payload = _whisper("transcriptions", chunk, SPANISH_PROMPT, verbose=True)
+        payload = _whisper("transcriptions", chunk, TRANSCRIBE_PROMPT, verbose=True)
         return str(payload.get("text", "")).strip(), str(payload.get("language") or "").lower()
     except OpenAIQuotaError:
         raise
