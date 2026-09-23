@@ -23,7 +23,16 @@
                 border-radius: 10px; background: #fff; color: #111; box-shadow: 0 12px 40px rgba(0,0,0,0.3); }
     @media (prefers-color-scheme: dark) { .az-modal { background: #1f2530; color: #f2f4f7; } }
     .az-modal h3 { margin: 0 0 12px; }
-    .az-modal input[type=text] { width: 100%; padding: 8px; box-sizing: border-box; }
+    .az-modal input[type=text], .az-modal input[type=email] { width: 100%; padding: 8px; box-sizing: border-box; }
+    .email-send-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0 4px; }
+    .email-send-row input { flex: 1 1 200px; }
+    .email-send-row label { font-size: 0.82rem; font-weight: 600; white-space: nowrap; }
+    /* A send that cannot happen should look like one, the same way the delete
+       button does -- a live-looking button that ignores the click reads as a
+       broken page rather than as a missing address. */
+    .email-send-row button:disabled { background: #ccc; cursor: not-allowed; }
+    .email-send-note { font-size: 0.78rem; opacity: 0.8; line-height: 1.5; }
+    .email-send-note.warn { color: #b45309; opacity: 1; font-weight: 600; }
     .az-row { display: flex; gap: 10px; align-items: center; padding: 8px 0;
               border-bottom: 1px solid rgba(128,128,128,0.25); }
     .az-actions { display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end; align-items: center; }
@@ -252,8 +261,21 @@
     <h3 id="emailModalTitle">File note email</h3>
     <div id="emailPreviewMeta" class="email-preview-meta"></div>
     <pre id="emailPreviewBody" class="email-preview-body"></pre>
+
+    <!-- The address is editable here, not only on the call page. A client the
+         CRM has no email for is the ordinary case this exists for: the agent
+         has the address in front of them, and the alternative was opening the
+         call in another tab to type the same thing. -->
+    <div class="email-send-row">
+        <label for="emailPreviewTo">Send to</label>
+        <input type="email" id="emailPreviewTo" placeholder="client@example.com"
+               oninput="emailRefreshSendButton()">
+        <button type="button" id="emailPreviewSend" onclick="emailSend()">Send Email</button>
+    </div>
+    <div id="emailPreviewNote" class="email-send-note"></div>
+
     <div class="az-actions">
-        <a id="emailPreviewOpen" class="detail-link" href="#">Open the call to edit or send</a>
+        <a id="emailPreviewOpen" class="detail-link" href="#">Open the call to edit the wording</a>
         <button type="button" onclick="emailClose()">Close</button>
     </div>
 </div>
@@ -358,17 +380,48 @@
         if (event.key === 'Escape') { azClose(); emailClose(); }
     });
 
+    const EMAIL_PATTERN = /^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$/;
+
+    let emailPreviewTranscriptId = null;
+    let emailPreviewState = null;
+
     function emailClose() {
+        emailPreviewTranscriptId = null;
+        emailPreviewState = null;
         document.getElementById('emailOverlay').style.display = 'none';
         document.getElementById('emailModal').style.display = 'none';
+    }
+
+    // The server decided what stops this going out before the agent typed
+    // anything, so the one blocker they can clear here -- a missing address --
+    // is reconsidered against the box. Every other blocker still stands.
+    function emailLooksSendable() {
+        if (!emailPreviewState) return false;
+        const typed = document.getElementById('emailPreviewTo').value.trim();
+        if (!EMAIL_PATTERN.test(typed)) return false;
+        if (!(emailPreviewState.body || '').trim()) return false;
+        return emailPreviewState.can_send || emailPreviewState.needs_address;
+    }
+
+    function emailRefreshSendButton() {
+        const sendable = emailLooksSendable();
+        const button = document.getElementById('emailPreviewSend');
+        if (button) button.disabled = !sendable;
+        emailRenderSendNote(sendable);
     }
 
     async function emailPreview(transcriptId) {
         const meta = document.getElementById('emailPreviewMeta');
         const body = document.getElementById('emailPreviewBody');
+        emailPreviewTranscriptId = transcriptId;
+        emailPreviewState = null;
         document.getElementById('emailPreviewOpen').href = `/user/transcripts/${transcriptId}`;
         document.getElementById('emailOverlay').style.display = 'block';
         document.getElementById('emailModal').style.display = 'block';
+        document.getElementById('emailPreviewTo').value = '';
+        document.getElementById('emailPreviewNote').textContent = '';
+        document.getElementById('emailPreviewNote').classList.remove('warn');
+        emailRefreshSendButton();
         meta.textContent = '';
         body.textContent = 'Loading…';
 
@@ -404,10 +457,100 @@
             lines.push('Not drafted yet. This is what drafting would produce.');
         }
         lines.push(`<b>From:</b> ${escapeHtml(data.from_email || '')}`);
-        lines.push(`<b>To:</b> ${escapeHtml(data.to_email || 'no address on file — add one before sending')}`);
+        // With nothing on file the Send to box directly below is the To line,
+        // and printing an empty one above it only contradicts what gets typed
+        if (data.to_email) lines.push(`<b>To:</b> ${escapeHtml(data.to_email)}`);
         lines.push(`<b>Subject:</b> ${escapeHtml(data.subject || '')}`);
+        if (data.language_name && data.language_name !== 'English') {
+            lines.push(`<b>Language:</b> ${escapeHtml(data.language_name)} and English, `
+                + (data.language_source === 'tag' ? 'from the Agency Zoom tag' : 'from the language of the call'));
+        } else if (data.language_source === 'tag') {
+            lines.push('<b>Language:</b> English only, from the Agency Zoom tag');
+        }
         meta.innerHTML = lines.join('<br>');
         body.textContent = data.body || '(nothing to preview)';
+
+        emailPreviewState = data;
+        document.getElementById('emailPreviewTo').value = data.to_email || '';
+        emailRefreshSendButton();
+    }
+
+    function emailRenderSendNote(sendable) {
+        const note = document.getElementById('emailPreviewNote');
+        const data = emailPreviewState;
+        if (!data) {
+            note.textContent = '';
+            note.classList.remove('warn');
+            return;
+        }
+
+        // A missing address is not a refusal, it is the box above -- so it is
+        // said as an instruction, and it stops being said at all the moment one
+        // is typed, rather than leaving amber over an address that is right
+        const missing = Boolean(data.needs_address) && !sendable;
+        const otherBlocker = data.needs_address ? '' : (data.blocked_reason || '');
+        let message;
+        if (missing) {
+            message = 'No email address on file for this client. Type one above to send it anyway.';
+        } else if (otherBlocker) {
+            message = otherBlocker;
+        } else if (data.already_sent) {
+            message = 'Already sent. Sending again emails the client a second copy.';
+        } else {
+            message = 'Sends the message above, exactly as it reads, from '
+                + (data.from_email || 'the agency address') + '.';
+        }
+        note.textContent = message;
+        note.classList.toggle('warn', Boolean(missing || otherBlocker));
+    }
+
+    async function emailSend() {
+        if (!emailPreviewTranscriptId || !emailPreviewState) return;
+        const to = document.getElementById('emailPreviewTo').value.trim();
+        if (!EMAIL_PATTERN.test(to)) {
+            alert('Type an email address before sending.');
+            return;
+        }
+        const again = emailPreviewState.already_sent
+            ? 'This note has already been emailed. Send it again to ' : 'Email these notes to ';
+        if (!confirm(`${again}${to}?\n\n${emailPreviewState.body || ''}`)) return;
+
+        const button = document.getElementById('emailPreviewSend');
+        const note = document.getElementById('emailPreviewNote');
+        button.disabled = true;
+        button.textContent = 'Sending…';
+        try {
+            const response = await fetch(
+                `/api/transcripts/${emailPreviewTranscriptId}/note-email/send`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ to_email: to }),
+                });
+            let data = null;
+            try { data = await response.json(); } catch (err) { /* no body */ }
+            button.textContent = 'Send Email';
+
+            if (!response.ok) {
+                // Re-enable first: the refresh redraws this line, so the reason
+                // the send failed has to be written after it, not before
+                emailRefreshSendButton();
+                note.textContent = response.status === 401
+                    ? 'Your session expired. Log in again, then send the email.'
+                    : ((data && (data.detail || data.message)) || 'The email could not be sent.');
+                note.classList.add('warn');
+                return;
+            }
+            // Redraw from the server so the modal shows what actually went, and
+            // so a second press is a deliberate second copy rather than a slip
+            await emailPreview(emailPreviewTranscriptId);
+            note.textContent = `Sent to ${to}.`;
+            note.classList.remove('warn');
+        } catch (error) {
+            button.textContent = 'Send Email';
+            emailRefreshSendButton();
+            note.textContent = 'Could not reach the server to send the email.';
+            note.classList.add('warn');
+        }
     }
 
     function escapeHtml(value) {

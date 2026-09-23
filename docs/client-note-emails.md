@@ -254,6 +254,7 @@ All routes require an admin session.
 | `POST` | `/api/transcripts/{id}/client-recap/draft` | Write a draft from the call analysis |
 | `PUT` | `/api/transcripts/{id}/client-recap` | Save edits (`body`, `to_number`) |
 | `POST` | `/api/transcripts/{id}/client-recap/send` | Send it and record the outcome |
+| `POST` | `/api/transcripts/{id}/note-email/send` | Email the file note. Takes an optional `to_email` for a client with no address on file |
 | `POST` | `/api/sms/opt-out` | Record a number that must not be texted |
 
 ## What is stored
@@ -296,7 +297,7 @@ Phone: 509-765-8839
 Email: info@columbiabasininsurance.com
 Office: 21 D St SW, Suite A, Quincy, WA 98848
 
-Licensed in Washington. Coverage descriptions here are summaries only - your policy language governs.
+Licensed in Washington State and Oregon. Coverage descriptions here are summaries only - your policy language governs.
 ```
 
 The agent named is the one the call is assigned to, by the name recorded against
@@ -311,10 +312,10 @@ changing the phone number in one place changes it here too;
 decoration — this email carries a summary of somebody's policy file, and it says
 in the same breath that the policy language governs.
 
-### Both languages when the call was not in English
+### Both languages when English is not the client's
 
-A call taken in Spanish produces an email in Spanish **and** English, the
-client's own language first:
+A client who reads Spanish gets the email in Spanish **and** English, their own
+language first:
 
 ```
 Hola Maria,
@@ -346,14 +347,62 @@ different words — which is the one thing this feature exists to prevent. With
 both, either can be checked against the other, by the client now or by anyone
 later.
 
-Whisper's detected language decides. An English call gets one copy and never
-asks a model for anything. If the translation cannot be produced, the email
-still goes in English rather than not going: a missing second copy is worth less
-than a missing email.
+**The Agency Zoom tag decides, and the call decides when there is no tag.** A
+client tagged `Spanish` — or `Spanish Speaking`, or `Habla Español`, the words
+are read out of the tag rather than matched whole — gets both copies whichever
+language this particular call happened to be taken in. A client tagged `English`
+gets English only, again whichever language they spoke this time. With no
+language tag on the record it falls back to the language Whisper detected on the
+call, which is what it always did.
+
+The tag wins because it is the agency's own standing record of what this client
+reads, where the spoken language is evidence from one call: a detection can be
+wrong, and a bilingual client may simply have taken this one in the other
+language. A client tagged both ways gets Spanish, since that sends both copies —
+guessing English would send someone who may not read it a letter about their own
+policy in a language they cannot check.
+
+The panel and the list preview both say which language the email is going in and
+whether the tag or the call decided it, before anyone presses Send. English gets
+one copy and never asks a model for anything. If the translation cannot be
+produced, the email still goes in English rather than not going: a missing
+second copy is worth less than a missing email.
+
+Tags are read from whichever shape Agency Zoom returns them in — a list of
+strings, a list of objects, or one comma-separated field — because a tag the
+agency set and the app cannot see looks exactly like a tag the agency never set.
+Changing the tag changes the email: the draft is pinned to it the same way it is
+pinned to the note, so a client re-tagged in Agency Zoom has their next email
+rewritten to match.
 
 Translations are cached per wording for the life of the process, so opening the
 panel or the preview repeatedly costs one model call, not one per page load.
 `CLIENT_EMAIL_TRANSLATE_MODEL` sets the model (default `gpt-4.1-mini`).
+
+### The transcript itself is always English
+
+The note is written from the transcript, and the transcript is stored, read and
+analysed in English no matter what was spoken. Two things make that true rather
+than hoped for:
+
+**The call's language is decided by the whole call, not its first minute.** A
+recording often opens with an English announcement, and taking the first chunk
+Whisper could read as the language of the call filed Spanish calls as English
+and never translated them. The language is now the one most of the call was
+spoken in.
+
+**The English is checked against the text before it is stored.** Whisper naming
+a Spanish call English is the one failure that would otherwise store Spanish
+text as the English transcript with nothing to show it had happened, so the
+assembled text is scored on the function words it draws from; if it plainly
+reads as Spanish it is translated anyway and the call is filed as Spanish. The
+same check runs on the translation: one that comes back still in Spanish, or not
+at all, sends the audio to Whisper's own translation for a second opinion, which
+does not fail the same way twice.
+
+The spoken-language transcript is kept beside the English one, as it always was,
+so nothing is lost when a translation is imperfect — and the *Original Language
+Transcript* panel on the call page is where to read it.
 
 ### The note goes in verbatim
 
@@ -384,6 +433,13 @@ posted to Agency Zoom, and reversing that because an address is missing would be
 worse than saying plainly that the email did not go, which the page then does in
 amber.
 
+**A client with no address on file is asked about, not skipped.** Approving a
+call the CRM holds no email for opens a box to type one into, and the email goes
+as you approve. Leaving it blank approves without emailing, which is still a
+choice someone made rather than something that happened quietly. A typo is said
+plainly — the approval stands and nothing is emailed, rather than the note going
+to whoever happens to be on the record instead.
+
 The Send Email button is still there for a call approved before this existed, or
 one whose address was added afterwards.
 
@@ -413,8 +469,9 @@ who the call is assigned to, the language, or the client's name has the same
 effect, since all of them change the wording.
 
 Send is blocked, with the reason shown, when the transcript is not approved,
-when the call has no CRM note, when there is no email address, or when SMTP is
-not configured.
+when the call has no CRM note, or when SMTP is not configured. A missing address
+is the one of these an agent can clear where they stand, so it is put as an
+instruction — type one in *Send to* — rather than as a refusal.
 
 **The client is greeted by the name on the linked Agency Zoom record**, falling
 back to caller ID only when there is no link. That is the name the agency files
@@ -445,6 +502,14 @@ linked Agency Zoom record when there is one and typed by the agent when there is
 not. Guessing an address for a letter about somebody's policy is not a thing to
 do quietly.
 
+**A typed address sends, and is remembered.** No address in the CRM is not a
+reason the client cannot be written to — it is a reason somebody has to type
+one, which the panel, the list preview and the approval all now let them do. It
+is kept on the row that was sent, so the next time that call is opened the box
+holds the address the note actually went to rather than being empty again, and a
+correction does not have to be addressed from memory. A linked Agency Zoom
+record still wins, since the CRM is the authority whenever it has an answer.
+
 Every draft and send is kept in `client_note_emails`, the same way recap texts
 are kept — a refused send is recorded as `failed` with the reason, because what
 was attempted is part of the record too.
@@ -465,9 +530,17 @@ directly.
 ### Previewing from the transcripts list
 
 Every row on the transcripts page has a **Preview email** link beside *View
-Details*. It shows the From, To and Subject, and the message itself, without
-saving anything or sending anything — so a whole afternoon of calls can be
-checked without opening each one.
+Details*. It shows the From, To and Subject, and the message itself — so a whole
+afternoon of calls can be checked without opening each one.
+
+It sends, too. The address sits in an editable **Send to** box under the
+message, prefilled with whatever is on file and typed in when nothing is, and
+**Send Email** sends exactly the message shown after asking once and naming the
+address. That is the whole point of it being here: a client the CRM has no email
+for used to mean opening the call in another tab to type an address that was
+already in front of you. Everything else that can stop a send still stops it —
+an unapproved call, a call with no note, SMTP not configured — and the reason is
+shown under the box rather than left to be discovered.
 
 What it shows depends on where that call has got to:
 

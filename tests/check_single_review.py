@@ -22,11 +22,11 @@ class DB:
 class Field:
  def __eq__(self,other):return True
 calls=[]
-env={'models':NS(TranscriptResponse=NS(id=Field()),TranscriptStatus=NS(approved=NS(value='approved'))),'_clean_string':lambda x:(x or '').strip() or None,'render_template':lambda *a,**k:k['status_code'],'_assigned_agency_zoom_agent':lambda *a:(None,'Agent'),'create_agency_zoom_customer_note_for_transcript':lambda *a,**k:calls.append('note'),'datetime':datetime,'RedirectResponse':lambda **k:k,'get_logged_in_admin':lambda *a:None,'_send_note_email':lambda *a:(calls.append('email') or True,'sent')}
+env={'models':NS(TranscriptResponse=NS(id=Field()),TranscriptStatus=NS(approved=NS(value='approved'))),'_clean_string':lambda x:(x or '').strip() or None,'render_template':lambda *a,**k:k['status_code'],'_assigned_agency_zoom_agent':lambda *a:(None,'Agent'),'create_agency_zoom_customer_note_for_transcript':lambda *a,**k:calls.append('note'),'datetime':datetime,'RedirectResponse':lambda **k:k,'get_logged_in_admin':lambda *a:None,'_send_note_email':lambda *a,**k:(calls.append('email') or True,'sent')}
 exec(compile(ast.fix_missing_locations(ast.Module(body=[fn],type_ignores=[])),'approval','exec'),env)
 for linked,reviewed,body,send,expected in [(False,True,'Note',False,400),(True,False,'Note',False,400),(True,True,'',False,400),(True,True,'Edited note',False,303),(True,True,'Edited note',True,303)]:
  db=DB();db.t=NS(id='test',status='pending',agency_zoom_customer_id='123' if linked else None,crm_note='old',agency_zoom_note_posted_at=None)
- calls.clear();r=env['update_status']('test',None,'approved',reviewed,body,send,db)
+ calls.clear();r=env['update_status']('test',None,'approved',reviewed,body,send,db=db)
  assert (r if isinstance(r,int) else r['status_code'])==expected
  if expected==400:assert not calls and db.t.status=='pending'
  else:assert db.t.crm_note==body and calls==(['note','email'] if send else ['note'])

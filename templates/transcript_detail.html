@@ -159,7 +159,9 @@
             <p>Edit the client-facing copy without changing the CRM note kept on the file.</p>
         </div>
         <div class="step-card">
-        <p class="recap-help">This email sends from <strong id="noteEmailFrom"></strong>. Review the wording if you choose to send this email.</p>
+        <p class="recap-help">This email sends from <strong id="noteEmailFrom"></strong>. Review the wording if you choose to send this email.
+           The address comes from the linked Agency Zoom record — when there is none, type one in
+           <em>Send to</em> and it sends to that.</p>
 
         <div id="noteEmailStatus" class="recap-status">Loading…</div>
 
@@ -198,6 +200,11 @@
             <form id="approvalForm" method="post" action="/user/transcripts/{{ transcript.id }}/update" onsubmit="return validateApprovalForm(event);">
                 <input type="hidden" name="status" id="statusSelect" value="approved">
                 <label class="approval-check"><input type="checkbox" id="sendEmailOnApproval" name="send_email" value="true"> Send the file-note email when I approve (optional)</label>
+                <!-- The address as it stands in the panel above, carried with the
+                     approval so the email goes where the agent typed rather than
+                     to whatever was last saved against the draft. Empty on a call
+                     that is not being emailed. -->
+                <input type="hidden" name="client_email" id="approvalClientEmail" value="">
                 <button type="submit" id="approveButton">Approve call</button>
             </form>
         </div>
@@ -654,9 +661,18 @@
             return false;
         }
         const sendEmail = document.getElementById("sendEmailOnApproval").checked;
+        // The address travels with the approval, so the email goes to what is on
+        // screen. Saving the draft below sends it too, and this is what makes
+        // the two agree if that save is ever the thing that did not happen.
+        document.getElementById("approvalClientEmail").value =
+            sendEmail ? document.getElementById("noteEmailTo").value.trim() : "";
         if (sendEmail) {
             const error = noteEmailDraftValidationError();
             if (error) { showToast(error + " Or uncheck the optional email to approve without sending."); return false; }
+            // Naming the address before it goes, because an email to a client
+            // cannot be recalled and the wrong one is worse than a slow one
+            if (!confirm(`Approve this call and email the note to `
+                         + `${document.getElementById("noteEmailTo").value.trim()}?`)) return false;
         }
         const form = event.currentTarget;
         approvalSubmitting = true;
@@ -685,11 +701,22 @@
         const blocked = document.getElementById("noteEmailBlocked");
 
         document.getElementById("noteEmailFrom").textContent = state.from_email || "";
+        // Which language it goes in, said before the agent reads the box rather
+        // than left for them to work out from the words in it
+        const language = state.language && state.language !== "en"
+            ? ` Going out in ${state.language_name} and English, `
+              + (state.language_source === "tag"
+                 ? "because this client is tagged that way in Agency Zoom."
+                 : "because that is the language the call was taken in.")
+            : (state.language_source === "tag"
+               ? " Going out in English only, because this client is tagged English in Agency Zoom."
+               : "");
         status.textContent = state.configured
             ? (state.has_note
                 ? `Sending from ${state.from_email}.`
                   + (state.edited ? " Edited — the note itself has changed on the file since, if it changed."
                                   : " This is the CRM note as it stands on the file.")
+                  + language
                 : "There is no CRM note on this call yet.")
             : "Email is not configured on the server.";
         status.classList.toggle("warn", !state.configured || !state.has_note);
@@ -732,8 +759,13 @@
     }
 
     function noteEmailLooksSendable() {
+        // can_send is the server's answer from before the agent typed anything,
+        // so the one blocker they can clear where they stand -- a client with no
+        // address on file -- is reconsidered against the box. Every other reason
+        // it gave still stands.
         return !noteEmailDraftValidationError()
-            && Boolean(noteEmailState && noteEmailState.can_send);
+            && Boolean(noteEmailState
+                       && (noteEmailState.can_send || noteEmailState.needs_address));
     }
 
     function noteEmailRefreshSendButton() {

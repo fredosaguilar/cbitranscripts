@@ -70,8 +70,8 @@ AGENCY_ADDRESS = os.getenv("AGENCY_ADDRESS", "21 D St SW, Suite A, Quincy, WA 98
 # that the policy language is what governs -- the same sentence the agency's
 # other mail already closes with.
 _LICENCE_LINE = (
-    "Licensed in Washington. Coverage descriptions here are summaries only - "
-    "your policy language governs."
+    "Licensed in Washington State and Oregon. Coverage descriptions here are "
+    "summaries only - your policy language governs."
 )
 
 
@@ -313,7 +313,8 @@ def has_note(transcript: Any) -> bool:
 
 
 def note_fingerprint(transcript: Any, assigned_name: Optional[str] = None,
-                     staff_names: Optional[set[str]] = None) -> str:
+                     staff_names: Optional[set[str]] = None,
+                     tag_language_code: Optional[str] = None) -> str:
     """Identifies the inputs the email is made from.
 
     Stored against the draft so a note corrected after the email was composed
@@ -324,7 +325,7 @@ def note_fingerprint(transcript: Any, assigned_name: Optional[str] = None,
     parts = [
         _clean(getattr(transcript, "crm_note", None)) or "",
         agent_name(transcript, assigned_name) or "",
-        resolve_language(transcript),
+        resolve_language(transcript, tag_language_code),
         greeting_name(transcript, staff_names),
     ]
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:32]
@@ -346,8 +347,79 @@ def agent_name(transcript: Any, assigned_name: Optional[str] = None) -> Optional
     return name or None
 
 
-def resolve_language(transcript: Any) -> str:
-    """The language the call was spoken in, as a short code. Defaults to English."""
+# A tag is rarely just the language: "Spanish Speaking", "Habla Espanol" and
+# "Prefers English" all name one, and all are the agency saying which language
+# this client reads.
+_TAG_LANGUAGE_MARKERS = {
+    "spanish": "es", "espanol": "es", "español": "es", "castellano": "es", "hispano": "es",
+    "english": "en", "ingles": "en", "inglés": "en",
+    "portuguese": "pt", "portugues": "pt", "português": "pt",
+    "russian": "ru", "ruso": "ru",
+    "ukrainian": "uk",
+    "vietnamese": "vi",
+    "arabic": "ar",
+    "punjabi": "pa",
+    "tagalog": "tl", "filipino": "tl",
+    "mandarin": "zh", "chinese": "zh",
+    "french": "fr", "frances": "fr", "francés": "fr",
+    "german": "de",
+}
+
+
+def tag_language(tags: Any) -> Optional[str]:
+    """The language an Agency Zoom tag names, if one of them names a language.
+
+    Read from the words in the tag rather than by matching a whole tag, because
+    no two agencies write the same tag the same way -- and a tag that says
+    "Spanish Speaking" is saying exactly what a tag that says "Spanish" says.
+
+    With both a Spanish and an English tag on one record, Spanish wins. That
+    client then gets both copies, where guessing English would send someone who
+    may not read it a letter about their own policy in a language they cannot
+    check.
+    """
+    if not tags:
+        return None
+    if isinstance(tags, str):
+        tags = [tags]
+
+    found: list[str] = []
+    for tag in tags:
+        text = _clean(tag)
+        if not text:
+            continue
+        lowered = text.lower()
+        # Whole words only: a client tagged "English" is not everyone whose tag
+        # happens to contain those letters
+        words = re.findall(r"[a-záéíóúüñ]+", lowered)
+        for word in words:
+            code = _TAG_LANGUAGE_MARKERS.get(word)
+            if code and code not in found:
+                found.append(code)
+
+    if not found:
+        return None
+    # Any named language other than English means a second copy is wanted, so
+    # English only wins when it is the only language named
+    return next((code for code in found if code != "en"), "en")
+
+
+def resolve_language(transcript: Any, tag_language_code: Optional[str] = None) -> str:
+    """The language to write the client's copy in, as a short code.
+
+    The Agency Zoom tag wins over the language the call was spoken in. The tag
+    is the agency's own standing record of what this client reads; the spoken
+    language is evidence from one call, where a detection can be wrong and where
+    a bilingual client may well have taken this particular call in the other
+    language. So a client tagged English is written to in English even if this
+    call was in Spanish, and a client tagged Spanish gets both copies even if
+    they spoke English this time.
+
+    With no tag either way it falls back to the call, which is what it always
+    did. Defaults to English.
+    """
+    if tag_language_code:
+        return _LANGUAGE_CODES.get(tag_language_code.lower(), "en")
     spoken = (_clean(getattr(transcript, "original_language", None)) or "").lower()
     return _LANGUAGE_CODES.get(spoken, "en")
 
@@ -446,8 +518,9 @@ def _message(transcript: Any, assigned_name: Optional[str],
 
 
 def compose(transcript: Any, assigned_name: Optional[str] = None,
-            staff_names: Optional[set[str]] = None) -> str:
-    """The message body, signed off, in both languages when the call was not English.
+            staff_names: Optional[set[str]] = None,
+            tag_language_code: Optional[str] = None) -> str:
+    """The message body, signed off, in both languages when English is not the one.
 
     The client's own language goes first because that is the copy they will
     read. The English follows it rather than replacing it: the note was written
@@ -456,9 +529,9 @@ def compose(transcript: Any, assigned_name: Optional[str] = None,
     same words. Both together, and either one can be checked against the other.
     """
     english = _message(transcript, assigned_name, staff_names)
-    language = resolve_language(transcript)
+    language = resolve_language(transcript, tag_language_code)
 
-    # An English call gets one copy, and never asks a model for anything
+    # English gets one copy, and never asks a model for anything
     translated = translate(english, language) if language != "en" else None
 
     if not translated:
