@@ -163,6 +163,54 @@ def clean_transcript(text: str) -> str:
     return re.sub(r"(.{2,60}?[.!?]\s*)\1{3,}", r"\1\1", cleaned)
 
 
+# Whisper reports the language of the chunk it was handed, and the first minute
+# of a call is often an English recording announcement -- so a Spanish call
+# could be filed as English and never translated, leaving Spanish text stored as
+# the English transcript. These are the commonest function words of each
+# language, chosen not to overlap: scoring a transcript on which set it draws
+# from is enough to tell "this is Spanish" from "this is not", which is all that
+# is needed to decide whether it still has to be translated.
+_ENGLISH_MARKERS = {
+    "the", "and", "is", "are", "was", "were", "you", "your", "that", "this",
+    "with", "have", "has", "for", "not", "but", "what", "when", "they", "will",
+    "would", "could", "can", "about", "there", "okay", "yes", "just", "know",
+    "need", "like", "from", "then", "them", "his", "her", "our", "out", "get",
+    "got", "going", "right", "back", "want", "call", "called", "because",
+    "policy", "coverage", "insurance", "payment", "thank", "thanks",
+}
+_SPANISH_MARKERS = {
+    "que", "de", "del", "la", "las", "los", "el", "un", "una", "por", "para",
+    "con", "pero", "como", "esta", "está", "esto", "eso", "muy", "más", "mas",
+    "tiene", "tengo", "puede", "hacer", "usted", "ustedes", "señor", "señora",
+    "gracias", "entonces", "también", "porque", "cuando", "donde", "ahora",
+    "todo", "toda", "bien", "sí", "nosotros", "vamos", "voy", "quiero",
+    "necesito", "dice", "dijo", "hola", "sus", "mi", "al", "les", "nos",
+    "póliza", "poliza", "cobertura", "pago", "número", "numero", "aseguranza",
+}
+
+
+def language_marker_counts(text: str) -> tuple[int, int]:
+    """How many English and Spanish marker words a transcript contains."""
+    words = re.findall(r"[a-záéíóúüñ]+", (text or "").lower())
+    english = sum(1 for word in words if word in _ENGLISH_MARKERS)
+    spanish = sum(1 for word in words if word in _SPANISH_MARKERS)
+    return english, spanish
+
+
+def reads_as_spanish(text: str) -> bool:
+    """Whether this text is plainly Spanish rather than English.
+
+    Deliberately asymmetric. It is used to catch text that still needs
+    translating, so it has to be sure about Spanish and need not identify
+    anything else: a handful of Spanish markers outnumbering the English ones is
+    the evidence, and anything less leaves the text alone. A bilingual call
+    counts as Spanish, which is correct -- the Spanish half still needs putting
+    into English.
+    """
+    english, spanish = language_marker_counts(text)
+    return spanish >= 3 and spanish > english
+
+
 def _whisper(endpoint: str, audio: bytes, prompt: str, verbose: bool = False) -> dict:
     files = {"file": ("recording.mp3", audio, "audio/mpeg")}
     data = {"model": WHISPER_MODEL, "prompt": prompt, "temperature": "0"}
@@ -287,9 +335,32 @@ def transcribe_audio(audio: bytes, audio_seconds: float, audio_url: str = "") ->
                 list(enumerate(chunks, start=1)),
             ))
 
-    detected = next((language for _, language in transcribed if language), "")
-    spoken_in_english = detected in {"english", "en"}
+    # The language of the call, not of whichever chunk happened to be readable
+    # first: the opening minute is often an English recording announcement, and
+    # taking that as the call's language left the rest of a Spanish call
+    # untranslated.
+    # A tie goes to the language that is not English, because translating an
+    # English call costs a fraction of a cent and leaving a Spanish one
+    # untranslated costs the transcript.
+    spoken = [language for _, language in transcribed if language]
+    detected = max(
+        spoken,
+        key=lambda language: (spoken.count(language), language not in {"english", "en"}),
+    ) if spoken else ""
     original_text = clean_transcript(" ".join(text for text, _ in transcribed if text))
+
+    # The transcript is stored, read and analysed in English, so the detection
+    # is checked against the text itself rather than trusted. Whisper naming a
+    # Spanish call English is the one failure that would otherwise file Spanish
+    # text as the English transcript, with nothing to show it had happened.
+    if detected in {"english", "en"} and reads_as_spanish(original_text):
+        logger.warning(
+            "Whisper reported %s as English but the transcript reads as Spanish; translating it",
+            audio_url,
+        )
+        detected = "spanish"
+
+    spoken_in_english = detected in {"english", "en"}
 
     if spoken_in_english:
         english = original_text
@@ -299,6 +370,18 @@ def transcribe_audio(audio: bytes, audio_seconds: float, audio_url: str = "") ->
         except Exception:
             logger.exception("Text translation failed for %s; falling back to Whisper", audio_url)
             english = clean_transcript(_translate_chunks_with_whisper(chunks))
+
+        # A translation that came back still in Spanish, or not at all, leaves
+        # the call unreadable to everyone who has to act on it. Whisper's own
+        # translation is the second opinion, and it reads the audio rather than
+        # the text, so it does not fail the same way twice.
+        if not english or reads_as_spanish(english):
+            logger.warning("The English transcript of %s is still not English; asking Whisper", audio_url)
+            retried = clean_transcript(_translate_chunks_with_whisper(chunks))
+            if retried and not reads_as_spanish(retried):
+                english = retried
+            elif not english:
+                english = retried
 
     result = {
         "audio_seconds": round(audio_seconds, 1),

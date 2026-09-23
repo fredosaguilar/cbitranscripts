@@ -2691,8 +2691,8 @@ def _note_email_json(record) -> dict:
     }
 
 
-def _linked_agency_zoom_email(transcript) -> Optional[str]:
-    """The email on the Agency Zoom record this call is linked to, if any.
+def _linked_agency_zoom_record(transcript) -> Optional[dict]:
+    """The Agency Zoom record this call is linked to, if it can be found.
 
     Searched by the linked record's own name first. Looking it up by the call's
     phone number found nothing whenever that number was not the client's -- an
@@ -2701,7 +2701,9 @@ def _linked_agency_zoom_email(transcript) -> Optional[str]:
     at all.
 
     Best effort by design. A lookup that fails should leave the agent typing an
-    address rather than stopping them sending.
+    address rather than stopping them sending. The directory is cached for
+    minutes at a time, so asking for the record on each page load costs a scan
+    of a list already in memory rather than a call to Agency Zoom.
     """
     customer_id = _clean_string(getattr(transcript, "agency_zoom_customer_id", None))
     if not customer_id:
@@ -2722,14 +2724,28 @@ def _linked_agency_zoom_email(transcript) -> Optional[str]:
             seen.add(query)
             for finder in (search_agency_zoom_customers, search_agency_zoom_leads):
                 for record in finder(query) or []:
-                    if str(record.get("id")) != customer_id:
-                        continue
-                    email = client_note_email.normalize_email(record.get("email"))
-                    if email:
-                        return email
+                    if str(record.get("id")) == customer_id:
+                        return record
     except Exception:
-        logger.exception("Could not read the Agency Zoom email for transcript %s", transcript.id)
+        logger.exception("Could not read the Agency Zoom record for transcript %s", transcript.id)
     return None
+
+
+def _linked_agency_zoom_email(transcript) -> Optional[str]:
+    """The email on the Agency Zoom record this call is linked to, if any."""
+    record = _linked_agency_zoom_record(transcript)
+    return client_note_email.normalize_email(record.get("email")) if record else None
+
+
+def _client_language_tag(transcript) -> Optional[str]:
+    """The language the agency has tagged this client as reading, if it has.
+
+    The tag is what decides which language the note is emailed in, so a client
+    the agency knows reads Spanish gets the Spanish copy whichever language this
+    particular call happened to be taken in.
+    """
+    record = _linked_agency_zoom_record(transcript)
+    return client_note_email.tag_language(record.get("tags")) if record else None
 
 
 def _assigned_agent_name(db: Session, transcript) -> Optional[str]:
@@ -2876,10 +2892,15 @@ def _note_email_body(db: Session, transcript, draft) -> str:
 
     agent = _assigned_agent_name(db, transcript)
     staff = _staff_names(db)
+    # The language tag is part of the wording, so a tag changed in Agency Zoom
+    # changes the fingerprint and the email follows it, the same way a corrected
+    # note does
+    tag = _client_language_tag(transcript)
     if (draft is not None and (draft.body or "").strip()
-            and draft.note_fingerprint == client_note_email.note_fingerprint(transcript, agent, staff)):
+            and draft.note_fingerprint == client_note_email.note_fingerprint(
+                transcript, agent, staff, tag)):
         return draft.body
-    return client_note_email.compose(transcript, agent, staff)
+    return client_note_email.compose(transcript, agent, staff, tag)
 
 
 def _note_email_state(db: Session, transcript) -> dict:
@@ -2894,7 +2915,17 @@ def _note_email_state(db: Session, transcript) -> dict:
     body = _note_email_body(db, transcript, draft)
     staff = _staff_names(db)
 
+    # Which language this is going in, and on whose say-so. An agent about to
+    # email a client is entitled to know that before they press Send, and
+    # whether it came from the client's tag or from the call itself is the part
+    # they can do something about.
+    tag = _client_language_tag(transcript)
+    language = client_note_email.resolve_language(transcript, tag)
+
     return {
+        "language": language,
+        "language_name": client_note_email.language_name(language),
+        "language_source": "tag" if tag else "call",
         "configured": alerts.is_smtp_configured(),
         "from_email": client_note_email.CLIENT_EMAIL_FROM,
         "subject": (draft.subject if draft else None) or client_note_email.SUBJECT,
@@ -2933,7 +2964,8 @@ def preview_note_email(id: str, request: Request, db: Session = Depends(get_db))
         body, subject, state = sent.body, sent.subject, "sent"
     elif client_note_email.has_note(transcript):
         body = client_note_email.compose(
-            transcript, _assigned_agent_name(db, transcript), _staff_names(db))
+            transcript, _assigned_agent_name(db, transcript), _staff_names(db),
+            _client_language_tag(transcript))
         subject, state = client_note_email.SUBJECT, "not drafted yet"
     else:
         body, subject, state = "", client_note_email.SUBJECT, "no note on this call"
@@ -2942,8 +2974,11 @@ def preview_note_email(id: str, request: Request, db: Session = Depends(get_db))
                 or _linked_agency_zoom_email(transcript)
                 or _last_note_email_address(db, transcript.id))
     # The preview is where an afternoon of calls gets checked, so it carries
-    # what the panel carries: whether this one could go, and what is stopping it
+    # what the panel carries: whether this one could go, what is stopping it,
+    # and which language it is written in
     blocker = _note_email_blocker(transcript, to_email)
+    preview_tag = _client_language_tag(transcript)
+    preview_language = client_note_email.resolve_language(transcript, preview_tag)
 
     return JSONResponse(content={
         "state": state,
@@ -2957,6 +2992,8 @@ def preview_note_email(id: str, request: Request, db: Session = Depends(get_db))
         "can_send": blocker is None and bool(body.strip()),
         "blocked_reason": blocker,
         "needs_address": blocker == NO_ADDRESS_BLOCKER,
+        "language_name": client_note_email.language_name(preview_language),
+        "language_source": "tag" if preview_tag else "call",
     })
 
 
@@ -2996,7 +3033,8 @@ def save_note_email(id: str, data: ClientNoteEmailUpdate, request: Request, db: 
     # Pinned to the note it was written against, so the edit survives until the
     # note itself changes and then gives way to it
     draft.note_fingerprint = client_note_email.note_fingerprint(
-        transcript, _assigned_agent_name(db, transcript), _staff_names(db))
+        transcript, _assigned_agent_name(db, transcript), _staff_names(db),
+        _client_language_tag(transcript))
     db.commit()
 
     return JSONResponse(content=_note_email_state(db, transcript))
@@ -3049,7 +3087,8 @@ def _send_note_email(db: Session, transcript, sent_by: str,
 
     draft.from_email = client_note_email.CLIENT_EMAIL_FROM
     draft.note_fingerprint = client_note_email.note_fingerprint(
-        transcript, _assigned_agent_name(db, transcript), _staff_names(db))
+        transcript, _assigned_agent_name(db, transcript), _staff_names(db),
+        _client_language_tag(transcript))
     draft.sent_by = sent_by
     draft.error = None if sent else message
     draft.status = "sent" if sent else "failed"

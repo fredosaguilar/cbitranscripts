@@ -297,7 +297,7 @@ Phone: 509-765-8839
 Email: info@columbiabasininsurance.com
 Office: 21 D St SW, Suite A, Quincy, WA 98848
 
-Licensed in Washington. Coverage descriptions here are summaries only - your policy language governs.
+Licensed in Washington State and Oregon. Coverage descriptions here are summaries only - your policy language governs.
 ```
 
 The agent named is the one the call is assigned to, by the name recorded against
@@ -312,10 +312,10 @@ changing the phone number in one place changes it here too;
 decoration — this email carries a summary of somebody's policy file, and it says
 in the same breath that the policy language governs.
 
-### Both languages when the call was not in English
+### Both languages when English is not the client's
 
-A call taken in Spanish produces an email in Spanish **and** English, the
-client's own language first:
+A client who reads Spanish gets the email in Spanish **and** English, their own
+language first:
 
 ```
 Hola Maria,
@@ -347,14 +347,62 @@ different words — which is the one thing this feature exists to prevent. With
 both, either can be checked against the other, by the client now or by anyone
 later.
 
-Whisper's detected language decides. An English call gets one copy and never
-asks a model for anything. If the translation cannot be produced, the email
-still goes in English rather than not going: a missing second copy is worth less
-than a missing email.
+**The Agency Zoom tag decides, and the call decides when there is no tag.** A
+client tagged `Spanish` — or `Spanish Speaking`, or `Habla Español`, the words
+are read out of the tag rather than matched whole — gets both copies whichever
+language this particular call happened to be taken in. A client tagged `English`
+gets English only, again whichever language they spoke this time. With no
+language tag on the record it falls back to the language Whisper detected on the
+call, which is what it always did.
+
+The tag wins because it is the agency's own standing record of what this client
+reads, where the spoken language is evidence from one call: a detection can be
+wrong, and a bilingual client may simply have taken this one in the other
+language. A client tagged both ways gets Spanish, since that sends both copies —
+guessing English would send someone who may not read it a letter about their own
+policy in a language they cannot check.
+
+The panel and the list preview both say which language the email is going in and
+whether the tag or the call decided it, before anyone presses Send. English gets
+one copy and never asks a model for anything. If the translation cannot be
+produced, the email still goes in English rather than not going: a missing
+second copy is worth less than a missing email.
+
+Tags are read from whichever shape Agency Zoom returns them in — a list of
+strings, a list of objects, or one comma-separated field — because a tag the
+agency set and the app cannot see looks exactly like a tag the agency never set.
+Changing the tag changes the email: the draft is pinned to it the same way it is
+pinned to the note, so a client re-tagged in Agency Zoom has their next email
+rewritten to match.
 
 Translations are cached per wording for the life of the process, so opening the
 panel or the preview repeatedly costs one model call, not one per page load.
 `CLIENT_EMAIL_TRANSLATE_MODEL` sets the model (default `gpt-4.1-mini`).
+
+### The transcript itself is always English
+
+The note is written from the transcript, and the transcript is stored, read and
+analysed in English no matter what was spoken. Two things make that true rather
+than hoped for:
+
+**The call's language is decided by the whole call, not its first minute.** A
+recording often opens with an English announcement, and taking the first chunk
+Whisper could read as the language of the call filed Spanish calls as English
+and never translated them. The language is now the one most of the call was
+spoken in.
+
+**The English is checked against the text before it is stored.** Whisper naming
+a Spanish call English is the one failure that would otherwise store Spanish
+text as the English transcript with nothing to show it had happened, so the
+assembled text is scored on the function words it draws from; if it plainly
+reads as Spanish it is translated anyway and the call is filed as Spanish. The
+same check runs on the translation: one that comes back still in Spanish, or not
+at all, sends the audio to Whisper's own translation for a second opinion, which
+does not fail the same way twice.
+
+The spoken-language transcript is kept beside the English one, as it always was,
+so nothing is lost when a translation is imperfect — and the *Original Language
+Transcript* panel on the call page is where to read it.
 
 ### The note goes in verbatim
 

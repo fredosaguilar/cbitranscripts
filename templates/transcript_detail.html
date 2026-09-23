@@ -712,11 +712,22 @@
         const blocked = document.getElementById("noteEmailBlocked");
 
         document.getElementById("noteEmailFrom").textContent = state.from_email || "";
+        // Which language it goes in, said before the agent reads the box rather
+        // than left for them to work out from the words in it
+        const language = state.language && state.language !== "en"
+            ? ` Going out in ${state.language_name} and English, `
+              + (state.language_source === "tag"
+                 ? "because this client is tagged that way in Agency Zoom."
+                 : "because that is the language the call was taken in.")
+            : (state.language_source === "tag"
+               ? " Going out in English only, because this client is tagged English in Agency Zoom."
+               : "");
         status.textContent = state.configured
             ? (state.has_note
                 ? `Sending from ${state.from_email}.`
                   + (state.edited ? " Edited — the note itself has changed on the file since, if it changed."
                                   : " This is the CRM note as it stands on the file.")
+                  + language
                 : "There is no CRM note on this call yet.")
             : "Email is not configured on the server.";
         status.classList.toggle("warn", !state.configured || !state.has_note);

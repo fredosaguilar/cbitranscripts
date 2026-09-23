@@ -342,6 +342,41 @@ def _extract_candidate_records(response_data: Any) -> list[dict[str, Any]]:
     return []
 
 
+# Agency Zoom has never documented one shape for tags, and customers and leads
+# do not have to agree: a list of strings, a list of objects with the name under
+# any of several keys, or one comma-separated string are all things it returns.
+# All of them are read, because a tag the agency set and the app cannot see is
+# worse than useless -- it looks like the agency never set it.
+_TAG_KEYS = ("tags", "tagList", "tagNames", "customerTags", "leadTags", "labels")
+_TAG_NAME_KEYS = ("name", "tagName", "title", "label", "value", "text")
+
+
+def _record_tags(record: dict[str, Any]) -> list[str]:
+    """Every tag on an Agency Zoom record, as plain strings."""
+    tags: list[str] = []
+
+    def add(value: Any) -> None:
+        if isinstance(value, str):
+            # One field can hold several tags, comma- or semicolon-separated
+            for part in re.split(r"[,;|]", value):
+                cleaned = _clean_string(part)
+                if cleaned and cleaned not in tags:
+                    tags.append(cleaned)
+        elif isinstance(value, dict):
+            for key in _TAG_NAME_KEYS:
+                if value.get(key):
+                    add(value[key])
+                    return
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                add(item)
+
+    for key in _TAG_KEYS:
+        if key in record:
+            add(record[key])
+    return tags
+
+
 # Condense an Agency Zoom customer/lead record into a uniform summary dict.
 def _candidate_summary(record: dict[str, Any], record_type: str) -> dict[str, Any]:
     first = _clean_string(record.get("firstName") or record.get("firstname"))
@@ -372,6 +407,9 @@ def _candidate_summary(record: dict[str, Any], record_type: str) -> dict[str, An
         "phone": phone,
         "phones": phones,
         "email": _clean_string(record.get("email")),
+        # Kept because the agency tags clients with the language they read in,
+        # and the note emailed to them is written from it
+        "tags": _record_tags(record),
     }
 
 

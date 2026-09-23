@@ -461,6 +461,12 @@
         // and printing an empty one above it only contradicts what gets typed
         if (data.to_email) lines.push(`<b>To:</b> ${escapeHtml(data.to_email)}`);
         lines.push(`<b>Subject:</b> ${escapeHtml(data.subject || '')}`);
+        if (data.language_name && data.language_name !== 'English') {
+            lines.push(`<b>Language:</b> ${escapeHtml(data.language_name)} and English, `
+                + (data.language_source === 'tag' ? 'from the Agency Zoom tag' : 'from the language of the call'));
+        } else if (data.language_source === 'tag') {
+            lines.push('<b>Language:</b> English only, from the Agency Zoom tag');
+        }
         meta.innerHTML = lines.join('<br>');
         body.textContent = data.body || '(nothing to preview)';
 
