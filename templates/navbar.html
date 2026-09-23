@@ -1,17 +1,43 @@
 <nav class="navbar">
-    <div class="nav-left">
-        <div class="nav-logo">CBI</div>
-        <div>
-            <h3>Transcripts</h3>
-        </div>
-    </div>
+    <a class="nav-left" href="/admin/dashboard" aria-label="Columbia Basin Insurance transcripts dashboard">
+        <span class="nav-logo">
+            <img src="/static/email/cbi-logo-reversed.png" alt="Columbia Basin Insurance">
+        </span>
+        <span class="nav-brand-copy">
+            <strong>Columbia Basin Insurance</strong>
+            <small>CALL TRANSCRIPTS PORTAL</small>
+        </span>
+    </a>
 
-    <div class="nav-right">
+    <button class="nav-menu-toggle" type="button" aria-expanded="false" aria-controls="primaryNavigation" aria-label="Open navigation">
+        <span></span><span></span><span></span>
+    </button>
+
+    <div class="nav-right" id="primaryNavigation">
+        <a href="https://columbia-basin-eo-forms-production.up.railway.app/">Forms Portal</a>
+        {% if request.state.portal_role|default('admin') == 'admin' %}
         <a href="/admin/dashboard" class="{{ 'active' if request.url.path == '/admin/dashboard' else '' }}">Dashboard</a>
         <a href="/admin/add-user" class="{{ 'active' if request.url.path == '/admin/add-user' else '' }}">Add User</a>
+        {% endif %}
         <a href="/admin/transcripts" class="{{ 'active' if request.url.path == '/admin/transcripts' else '' }}">Transcriptions</a>
         <a href="/admin/analytics" class="{{ 'active' if request.url.path == '/admin/analytics' else '' }}">Analytics</a>
+        {% if request.state.portal_role|default('admin') == 'admin' %}
         <a href="/admin/admins" class="{{ 'active' if request.url.path == '/admin/admins' else '' }}">Admins</a>
+        {% endif %}
         <a href="/logout" class="logout">Logout</a>
     </div>
 </nav>
+
+<script>
+(() => {
+    const toggle = document.querySelector('.nav-menu-toggle');
+    const navigation = document.getElementById('primaryNavigation');
+    if (!toggle || !navigation) return;
+    toggle.addEventListener('click', () => {
+        const open = toggle.getAttribute('aria-expanded') !== 'true';
+        toggle.setAttribute('aria-expanded', String(open));
+        toggle.setAttribute('aria-label', open ? 'Close navigation' : 'Open navigation');
+        navigation.classList.toggle('open', open);
+    });
+})();
+</script>

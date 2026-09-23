@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, JSON
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import desc, func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -252,9 +253,19 @@ BUSINESS_DAYS = {
 }
 BUSINESS_TZ = os.getenv("BUSINESS_TZ", "America/Los_Angeles")
 
-# Every message goes to the agent the call is assigned to. There is no shared
-# recipient and no digest, so nothing can reach a group inbox.
+# Every review message goes to the agent the Agency Zoom task is assigned to.
+# Shared inboxes are never valid review recipients, even if one was previously
+# saved on an extension record.
 RED_FLAG_MIN_CONFIDENCE = int(os.getenv("RED_FLAG_MIN_CONFIDENCE", "40"))
+
+ASSIGNMENT_EMAIL_BLOCKLIST = {
+    address.strip().lower()
+    for address in (
+        os.getenv("ASSIGNMENT_EMAIL_BLOCKLIST")
+        or "info@columbiabasininsurance.com"
+    ).split(",")
+    if address.strip()
+}
 
 # Email the assigned agent when a call lands on their extension
 ASSIGNMENT_EMAILS_ENABLED = _env_flag("ASSIGNMENT_EMAILS_ENABLED")
@@ -263,6 +274,9 @@ EXTENSION_EMAIL_MAP = os.getenv("EXTENSION_EMAIL_MAP", "")
 
 # Follow-up tasks reach Agency Zoom only when an agent adds them, so nothing is
 # pushed into the CRM without a person deciding it belongs there.
+AGENCY_ZOOM_TASK_DISPATCH_INTERVAL_SECONDS = int(
+    os.getenv("AGENCY_ZOOM_TASK_DISPATCH_INTERVAL_SECONDS", "60")
+)
 
 # A reprocess request holds the scheduler cursor until the call is transcribed
 # again; abandoned after this long so one bad call cannot hold it forever.
@@ -274,6 +288,10 @@ AUDIO_CACHE_RETENTION_DAYS = int(os.getenv("AUDIO_CACHE_RETENTION_DAYS", "90"))
 # How many times to refuse a poor transcript before accepting it, so one
 # unintelligible recording cannot be retried on every sync forever.
 MAX_TRANSCRIBE_ATTEMPTS = int(os.getenv("MAX_TRANSCRIBE_ATTEMPTS", "3"))
+
+# A claim remains while n8n transcribes, analyzes, and stores a call. If an
+# execution crashes before saving, the lease expires so a later sync can retry.
+TRANSCRIPTION_CLAIM_TTL_MINUTES = int(os.getenv("TRANSCRIPTION_CLAIM_TTL_MINUTES", "30"))
 
 # Use the RingCentral extension as owner_id when the workflow reports one, so
 # agents sharing a phone number are told apart. Set false to keep phone numbers.
@@ -723,8 +741,17 @@ def get_logged_in_admin(request: Request, db: Session):
     username = _clean_string(payload.get("sub"))
     if not username:
         return None
-
+    request.state.portal_role = _clean_string(payload.get("portal_role")) or "admin"
+    request.state.portal_name = _clean_string(payload.get("portal_name")) or username
     return db.query(models.Admin).filter(models.Admin.username == username).first()
+
+
+def get_logged_in_transcript_admin(request: Request, db: Session):
+    """Local transcript admins and portal admins may change configuration."""
+    admin = get_logged_in_admin(request, db)
+    if not admin or getattr(request.state, "portal_role", "admin") != "admin":
+        return None
+    return admin
 
 
 @app.on_event("startup")
@@ -988,6 +1015,55 @@ def login_page(request: Request):
     return templates.TemplateResponse(request, "login.html", context)
 
 
+@app.get("/sso")
+def portal_sso(request: Request, code: str = "", db: Session = Depends(get_db)):
+    """Exchange a one-time portal code and create the transcript session."""
+    if not code:
+        return RedirectResponse(url="/", status_code=303)
+    portal = (os.getenv("PORTAL_BASE_URL") or
+              "https://columbia-basin-eo-forms-production.up.railway.app").rstrip("/")
+    try:
+        exchange = requests.post(
+            f"{portal}/api/sso/transcripts/exchange",
+            json={"code": code}, timeout=10,
+        )
+        exchange.raise_for_status()
+        user = exchange.json().get("user") or {}
+        email = _clean_string(user.get("email")).lower()
+        if not email:
+            raise ValueError("Portal did not return an email address")
+        admin = db.query(models.Admin).filter(models.Admin.username == email).first()
+        if not admin:
+            # Portal users authenticate only through the one-time handoff. A
+            # random unknown password keeps the legacy local login unusable.
+            admin = models.Admin(
+                admin_id=str(uuid.uuid4()), username=email,
+                password_hash=auth.hash_password(uuid.uuid4().hex + uuid.uuid4().hex),
+            )
+            db.add(admin)
+            db.commit()
+        role = "admin" if _clean_string(user.get("role")) == "admin" else "agent"
+        access_token = auth.create_access_token(data={
+            "sub": email,
+            "portal_role": role,
+            "portal_name": _clean_string(user.get("agent_name")) or email,
+        })
+        destination = "/admin/dashboard" if role == "admin" else "/admin/transcripts"
+        response = RedirectResponse(url=destination, status_code=303)
+        response.set_cookie(
+            key="access_token", value=access_token, httponly=True,
+            secure=True, samesite="lax", max_age=auth.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        )
+        return response
+    except Exception:
+        logger.exception("Portal single sign-on failed")
+        return render_template(
+            request, "error.html",
+            {"error_message": "Portal sign-in could not be completed. Return to the portal and try again.",
+             "back_url": portal}, status_code=401,
+        )
+
+
 @app.post("/admin/login")
 # Authenticate an admin user and start the dashboard session.
 def login(
@@ -1003,7 +1079,8 @@ def login(
 
     access_token = auth.create_access_token(data={"sub": admin.username})
     response = RedirectResponse(url="/admin/dashboard", status_code=303)
-    response.set_cookie(key="access_token", value=access_token)
+    response.set_cookie(key="access_token", value=access_token, httponly=True,
+                        secure=True, samesite="lax", max_age=auth.ACCESS_TOKEN_EXPIRE_MINUTES * 60)
     return response
 
 
@@ -1018,7 +1095,7 @@ def logout():
 @app.get("/admin/dashboard")
 # Render the dashboard with all registered notification users.
 def dashboard(request: Request, db: Session = Depends(get_db)):
-    if not get_logged_in_admin(request, db):
+    if not get_logged_in_transcript_admin(request, db):
         return RedirectResponse(url="/", status_code=303)
 
     users_tokens = db.query(models.UserToken).all()
@@ -1079,7 +1156,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
 @app.get("/admin/add-user", response_class=HTMLResponse)
 # Render the add-user form page.
 def add_user_page(request: Request, db: Session = Depends(get_db)):
-    if not get_logged_in_admin(request, db):
+    if not get_logged_in_transcript_admin(request, db):
         return RedirectResponse(url="/", status_code=303)
 
     employees, employee_error = list_agency_zoom_employees_with_error()
@@ -1111,7 +1188,7 @@ def add_user(
     agency_zoom_employee_id_manual: str = Form(""),
     db: Session = Depends(get_db),
 ):
-    if not get_logged_in_admin(request, db):
+    if not get_logged_in_transcript_admin(request, db):
         return RedirectResponse(url="/", status_code=303)
 
     chosen = _clean_string(agency_zoom_employee_id_manual) or _clean_string(agency_zoom_employee_id)
@@ -1131,7 +1208,7 @@ def add_user(
 @app.get("/admin/delete-user/{token_id}")
 # Delete a stored notification user token.
 def delete_user(token_id: str, request: Request, db: Session = Depends(get_db)):
-    if not get_logged_in_admin(request, db):
+    if not get_logged_in_transcript_admin(request, db):
         return RedirectResponse(url="/", status_code=303)
 
     user = db.query(models.UserToken).filter(models.UserToken.token_id == token_id).first()
@@ -1149,6 +1226,8 @@ def delete_user(token_id: str, request: Request, db: Session = Depends(get_db)):
 @app.get("/admin/edit-user/{token_id}", response_class=HTMLResponse)
 # Render the edit page for a stored user token.
 def edit_user_page(token_id: str, request: Request, db: Session = Depends(get_db)):
+    if not get_logged_in_transcript_admin(request, db):
+        return RedirectResponse(url="/admin/transcripts", status_code=303)
     user = db.query(models.UserToken).filter(models.UserToken.token_id == token_id).first()
     employees, employee_error = list_agency_zoom_employees_with_error()
     return templates.TemplateResponse(request, "edit_user.html", {
@@ -1160,6 +1239,7 @@ def edit_user_page(token_id: str, request: Request, db: Session = Depends(get_db
 # Update an existing notification user token.
 def update_user(
     token_id: str,
+    request: Request,
     user_id: str = Form(""),
     email: str = Form(""),
     user_token: str = Form(""),
@@ -1167,6 +1247,8 @@ def update_user(
     agency_zoom_employee_id_manual: str = Form(""),
     db: Session = Depends(get_db),
 ):
+    if not get_logged_in_transcript_admin(request, db):
+        return RedirectResponse(url="/admin/transcripts", status_code=303)
     user = db.query(models.UserToken).filter(models.UserToken.token_id == token_id).first()
     if user:
         # Editable because a user saved with an email here matches no call at
@@ -1359,7 +1441,7 @@ def analytics_page(request: Request, db: Session = Depends(get_db)):
 @app.get("/admin/admins")
 # Render the admin account management page.
 def admins_page(request: Request, db: Session = Depends(get_db)):
-    current_admin = get_logged_in_admin(request, db)
+    current_admin = get_logged_in_transcript_admin(request, db)
     if not current_admin:
         return RedirectResponse(url="/", status_code=303)
 
@@ -1381,7 +1463,7 @@ def add_admin(
     password: str = Form(...),
     db: Session = Depends(get_db),
 ):
-    if not get_logged_in_admin(request, db):
+    if not get_logged_in_transcript_admin(request, db):
         return RedirectResponse(url="/", status_code=303)
 
     cleaned_username = _clean_string(username)
@@ -1405,7 +1487,7 @@ def add_admin(
 @app.post("/admin/admins/{admin_id}/delete")
 # Delete an admin login (cannot delete yourself or the last remaining admin).
 def delete_admin(admin_id: str, request: Request, db: Session = Depends(get_db)):
-    current_admin = get_logged_in_admin(request, db)
+    current_admin = get_logged_in_transcript_admin(request, db)
     if not current_admin:
         return RedirectResponse(url="/", status_code=303)
 
@@ -1469,8 +1551,7 @@ def assign_transcript(id: str, assigned_to: str = Form(""), db: Session = Depend
     # Assigning by hand should notify the agent, same as an automatic assignment
     emailed = False
     if ASSIGNMENT_EMAILS_ENABLED and changed and new_assignee:
-        user = db.query(models.UserToken).filter(models.UserToken.user_id == new_assignee).first()
-        recipient_email = _clean_string(getattr(user, "email", None))
+        recipient_email = _assigned_review_email(db, transcript)
         if recipient_email:
             try:
                 _send_assignment_email(transcript, recipient_email)
@@ -1478,7 +1559,10 @@ def assign_transcript(id: str, assigned_to: str = Form(""), db: Session = Depend
             except Exception:
                 logger.exception("Failed to send assignment email for transcript %s", transcript.id)
         else:
-            logger.info("No email on file for user %s; assignment email skipped", new_assignee)
+            logger.info(
+                "No direct email for the Agency Zoom assignee on user %s; assignment email skipped",
+                new_assignee,
+            )
 
     return JSONResponse(content={"status": "ok", "emailed": emailed})
 
@@ -1638,8 +1722,142 @@ def _save_task_state(transcript, state: dict) -> None:
     transcript.follow_up_task_state = json.dumps(state)
 
 
+def _agency_today():
+    """The agency's calendar day, not the server's UTC date."""
+    try:
+        timezone_info = ZoneInfo(BUSINESS_TZ)
+    except Exception:
+        timezone_info = timezone.utc
+    return datetime.now(timezone_info).date()
+
+
+def _scheduled_due_date(value: Optional[str]) -> str:
+    """A validated YYYY-MM-DD date, defaulting to tomorrow in agency time."""
+    chosen = (_clean_string(value) or "").split(" ")[0]
+    if chosen:
+        try:
+            datetime.strptime(chosen, "%Y-%m-%d")
+            return chosen
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Choose a valid due date.")
+    return (_agency_today() + timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def _store_agency_zoom_task_id(transcript, task_id: str) -> None:
+    existing = [line for line in (transcript.agency_zoom_task_ids or "").splitlines() if line.strip()]
+    if str(task_id) not in existing:
+        transcript.agency_zoom_task_ids = "\n".join(existing + [str(task_id)])
+
+
+def _dispatch_follow_up_task(db: Session, transcript, key: str) -> str:
+    """Create one previously scheduled task and mark it delivered."""
+    state = _task_state(transcript)
+    entry = state.get(key) or {}
+    if entry.get("task_id"):
+        return str(entry["task_id"])
+
+    task_text = _clean_string(entry.get("task"))
+    if not task_text:
+        raise ValueError("A scheduled Agency Zoom task has no task text.")
+
+    employee_id, agent_name = _assigned_agency_zoom_agent(db, transcript)
+    task_id = create_agency_zoom_task_for_transcript(
+        transcript,
+        task_text,
+        due_date=entry.get("due_date"),
+        assignee_id=employee_id,
+        agent_name=agent_name,
+    )
+    if not task_id:
+        raise ValueError("Agency Zoom accepted the task but returned no id.")
+
+    # Reload before saving because the due date may have been edited while the
+    # Agency Zoom request was in flight.
+    db.refresh(transcript)
+    state = _task_state(transcript)
+    entry = state.setdefault(key, {"task": task_text})
+    entry.update({
+        "task_id": str(task_id),
+        "status": "added",
+        "added_at": datetime.utcnow().isoformat(),
+    })
+    _save_task_state(transcript, state)
+    _store_agency_zoom_task_id(transcript, str(task_id))
+    db.commit()
+    return str(task_id)
+
+
+def _dispatch_due_agency_zoom_tasks_once() -> int:
+    """Send locally queued tasks whose Pacific-time due date has arrived."""
+    db = SessionLocal()
+    delivered = 0
+    today = _agency_today()
+    try:
+        transcripts = (
+            db.query(models.TranscriptResponse)
+            .filter(models.TranscriptResponse.follow_up_task_state.isnot(None))
+            .all()
+        )
+        for transcript in transcripts:
+            state = _task_state(transcript)
+            due_keys = []
+            for key, entry in state.items():
+                if not isinstance(entry, dict) or entry.get("task_id"):
+                    continue
+                if entry.get("status") != "scheduled":
+                    continue
+                try:
+                    due = datetime.strptime(str(entry.get("due_date") or ""), "%Y-%m-%d").date()
+                except ValueError:
+                    logger.error(
+                        "Scheduled Agency Zoom task %s on transcript %s has an invalid due date %r",
+                        key, transcript.id, entry.get("due_date"),
+                    )
+                    continue
+                if due <= today:
+                    due_keys.append(key)
+
+            for key in due_keys:
+                try:
+                    _dispatch_follow_up_task(db, transcript, key)
+                    delivered += 1
+                except Exception:
+                    db.rollback()
+                    logger.exception(
+                        "Could not dispatch scheduled Agency Zoom task %s for transcript %s",
+                        key, transcript.id,
+                    )
+        return delivered
+    finally:
+        db.close()
+
+
+def _agency_zoom_task_dispatch_loop() -> None:
+    while True:
+        try:
+            delivered = _dispatch_due_agency_zoom_tasks_once()
+            if delivered:
+                logger.info("Dispatched %s scheduled Agency Zoom task(s)", delivered)
+        except Exception:
+            logger.exception("Scheduled Agency Zoom task dispatcher failed")
+        time.sleep(max(15, AGENCY_ZOOM_TASK_DISPATCH_INTERVAL_SECONDS))
+
+
+@app.on_event("startup")
+def start_agency_zoom_task_dispatcher():
+    worker = getattr(app.state, "agency_zoom_task_dispatcher", None)
+    if worker and worker.is_alive():
+        return
+    app.state.agency_zoom_task_dispatcher = threading.Thread(
+        target=_agency_zoom_task_dispatch_loop,
+        name="agency-zoom-task-dispatcher",
+        daemon=True,
+    )
+    app.state.agency_zoom_task_dispatcher.start()
+
+
 @app.post("/api/transcripts/{id}/follow-up/add")
-# Add one follow-up task to Agency Zoom, with its own due date.
+# Schedule one follow-up task for Agency Zoom, with its own due date.
 def add_follow_up_task(
     id: str,
     request: Request,
@@ -1647,12 +1865,12 @@ def add_follow_up_task(
     due_date: str = Form(""),
     db: Session = Depends(get_db),
 ):
-    """Create a single task, on demand.
+    """Queue a single task, creating it only when its due date arrives.
 
     Tasks are written by the analysis but not sent anywhere until somebody adds
     them. A suggestion nobody read is not a commitment the agency should be
-    making to a client, and adding them one at a time is what lets each carry
-    the date it is actually due.
+    making to a client. Future tasks remain local until the selected calendar
+    date begins in the agency's timezone.
     """
     if not get_logged_in_admin(request, db):
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -1667,30 +1885,24 @@ def add_follow_up_task(
     if state.get(key, {}).get("task_id"):
         raise HTTPException(status_code=409, detail="That task has already been added to Agency Zoom.")
 
-    employee_id, agent_name = _assigned_agency_zoom_agent(db, transcript)
-    try:
-        task_id = create_agency_zoom_task_for_transcript(
-            transcript, task_text,
-            due_date=_clean_string(due_date),
-            assignee_id=employee_id,
-            agent_name=agent_name,
-        )
-    except Exception as exc:
-        logger.exception("Agency Zoom refused a follow-up task for transcript %s", transcript.id)
-        raise HTTPException(status_code=502, detail=f"Agency Zoom could not add the task: {exc}") from exc
-
-    if not task_id:
-        raise HTTPException(status_code=502, detail="Agency Zoom accepted the task but returned no id.")
-
-    state[key] = {"task_id": str(task_id), "due_date": _clean_string(due_date) or None,
-                  "task": task_text, "added_at": datetime.utcnow().isoformat()}
+    resolved_due_date = _scheduled_due_date(
+        _clean_string(due_date) or getattr(transcript, "agency_zoom_due_date", None)
+    )
+    state[key] = {
+        "task": task_text,
+        "due_date": resolved_due_date,
+        "status": "scheduled",
+        "scheduled_at": datetime.utcnow().isoformat(),
+    }
     _save_task_state(transcript, state)
-
-    existing = [line for line in (transcript.agency_zoom_task_ids or "").splitlines() if line.strip()]
-    transcript.agency_zoom_task_ids = "\n".join(existing + [str(task_id)])
     db.commit()
 
-    return JSONResponse(content={"status": "ok", "task_id": str(task_id), "key": key})
+    # The dispatcher is the only code path that creates the Agency Zoom task.
+    # Keeping even today's task in the queue avoids a route request and the
+    # background worker creating the same task at the same time.
+    return JSONResponse(content={
+        "status": "scheduled", "task_id": None, "key": key, "due_date": resolved_due_date,
+    })
 
 
 @app.post("/api/transcripts/{id}/follow-up/due-date")
@@ -1712,10 +1924,13 @@ def set_follow_up_due_date(
 
     state = _task_state(transcript)
     entry = state.setdefault(_task_key(task_text), {"task": task_text})
-    entry["due_date"] = _clean_string(due_date) or None
+    if entry.get("status") == "scheduled" and not entry.get("task_id"):
+        entry["due_date"] = _scheduled_due_date(due_date)
+    else:
+        entry["due_date"] = _clean_string(due_date) or None
     _save_task_state(transcript, state)
     db.commit()
-    return JSONResponse(content={"status": "ok"})
+    return JSONResponse(content={"status": "ok", "due_date": entry.get("due_date")})
 
 
 @app.get("/api/transcripts/{id}/follow-up/state")
@@ -1733,6 +1948,7 @@ def get_follow_up_state(id: str, request: Request, db: Session = Depends(get_db)
                 "key": _task_key(text),
                 "task_id": state.get(_task_key(text), {}).get("task_id"),
                 "due_date": state.get(_task_key(text), {}).get("due_date"),
+                "status": state.get(_task_key(text), {}).get("status"),
             }
             for text in tasks
         ],
@@ -1994,6 +2210,63 @@ def _assigned_agency_zoom_agent(db: Session, transcript) -> tuple[Optional[str],
     return employee_id, employee_name
 
 
+def _assigned_review_email(db: Session, transcript) -> Optional[str]:
+    """Direct email for the employee who will own this call's Agency Zoom task.
+
+    The extension record can contain an old shared mailbox. Task ownership is
+    decided by the mapped Agency Zoom employee, so review mail follows that
+    same mapping instead of blindly using the extension record's email.
+    """
+    assignee = _clean_string(getattr(transcript, "assigned_to", None)) or _clean_string(
+        getattr(transcript, "extension_number", None))
+    if not assignee:
+        return None
+
+    user = db.query(models.UserToken).filter(models.UserToken.user_id == assignee).first()
+    if user is None:
+        return None
+
+    employee_id, _ = _assigned_agency_zoom_agent(db, transcript)
+    if employee_id:
+        try:
+            employee = next(
+                (
+                    item for item in list_agency_zoom_employees()
+                    if _clean_string(item.get("id")) == _clean_string(employee_id)
+                ),
+                None,
+            )
+        except Exception:
+            logger.exception(
+                "Could not look up the review email for Agency Zoom employee %s", employee_id)
+            employee = None
+
+        agency_zoom_email = _clean_string((employee or {}).get("email"))
+        if agency_zoom_email:
+            if agency_zoom_email.lower() in ASSIGNMENT_EMAIL_BLOCKLIST:
+                logger.warning(
+                    "Review email skipped: Agency Zoom employee %s uses blocked shared mailbox %s",
+                    employee_id, agency_zoom_email,
+                )
+                return None
+            return agency_zoom_email
+
+        # An explicit Agency Zoom assignee without a direct address should not
+        # fall back to a shared extension mailbox and notify the wrong person.
+        logger.warning(
+            "Review email skipped: Agency Zoom employee %s has no direct email", employee_id)
+        return None
+
+    # Older users without an Agency Zoom mapping may still have a direct email
+    # saved locally. Keep that working, but never use a shared mailbox.
+    local_email = _clean_string(getattr(user, "email", None))
+    if local_email and local_email.lower() not in ASSIGNMENT_EMAIL_BLOCKLIST:
+        return local_email
+    if local_email:
+        logger.warning("Review email skipped: %s is a blocked shared mailbox", local_email)
+    return None
+
+
 @app.post("/api/transcripts")
 # Store a new transcript and notify the assigned user.
 def create_transcript(
@@ -2028,6 +2301,7 @@ def create_transcript(
             .first()
         )
         if existing_transcript:
+            _release_transcription_claim(db, normalized_recording_id)
             return JSONResponse(
                 content={
                     "message": "Transcript with this recordingID already exists",
@@ -2088,7 +2362,6 @@ def create_transcript(
 
     # Auto-assign to the user registered for this extension (or owner id), so
     # calls land on the right agent's plate without manual triage.
-    assigned_user = None
     if AUTO_ASSIGN_FROM_OWNER and not new_transcript.assigned_to:
         for candidate in (extension_number, resolved_owner_id):
             if not candidate:
@@ -2100,12 +2373,12 @@ def create_transcript(
             )
             if registered_user:
                 new_transcript.assigned_to = registered_user.user_id
-                assigned_user = registered_user
                 break
 
     db.add(new_transcript)
     db.commit()
     db.refresh(new_transcript)
+    _release_transcription_claim(db, normalized_recording_id)
 
     # Released before moving the cursor, so this call stops holding it back
     was_reprocess = _clear_reprocess_request(normalized_recording_id)
@@ -2120,14 +2393,7 @@ def create_transcript(
 
     # Tell the assigned agent their call is ready to review
     if ASSIGNMENT_EMAILS_ENABLED:
-        recipient = assigned_user or (
-            db.query(models.UserToken)
-            .filter(models.UserToken.user_id == new_transcript.assigned_to)
-            .first()
-            if new_transcript.assigned_to
-            else None
-        )
-        recipient_email = _clean_string(getattr(recipient, "email", None))
+        recipient_email = _assigned_review_email(db, new_transcript)
         if recipient_email:
             try:
                 _send_assignment_email(new_transcript, recipient_email)
@@ -2200,6 +2466,53 @@ def _existing_transcription(db: Session, recording_id: Optional[str]) -> Optiona
     }
 
 
+def _release_transcription_claim(db: Session, recording_id: Optional[str]) -> None:
+    """Release the lease after a save or a failed transcription attempt."""
+    cleaned = _clean_string(recording_id)
+    if not cleaned:
+        return
+    deleted = (
+        db.query(models.TranscriptionClaim)
+        .filter(models.TranscriptionClaim.recording_id == cleaned)
+        .delete(synchronize_session=False)
+    )
+    if deleted:
+        db.commit()
+
+
+def _acquire_transcription_claim(db: Session, recording_id: Optional[str]) -> Optional[str]:
+    """Atomically claim a recording, returning a token only to the winner."""
+    cleaned = _clean_string(recording_id)
+    if not cleaned:
+        # RingCentral recordings always have IDs. Keep the endpoint usable for
+        # manual URL-only troubleshooting without creating a fake global lock.
+        return str(uuid.uuid4())
+
+    cutoff = datetime.utcnow() - timedelta(minutes=max(1, TRANSCRIPTION_CLAIM_TTL_MINUTES))
+    (
+        db.query(models.TranscriptionClaim)
+        .filter(
+            models.TranscriptionClaim.recording_id == cleaned,
+            models.TranscriptionClaim.claimed_at < cutoff,
+        )
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+
+    token = str(uuid.uuid4())
+    db.add(models.TranscriptionClaim(
+        recording_id=cleaned,
+        claim_token=token,
+        claimed_at=datetime.utcnow(),
+    ))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return None
+    return token
+
+
 @app.post("/api/transcribe-recording")
 # Download a recording and transcribe it here, rather than in the workflow.
 def transcribe_recording_endpoint(payload: dict, db: Session = Depends(get_db)):
@@ -2215,12 +2528,19 @@ def transcribe_recording_endpoint(payload: dict, db: Session = Depends(get_db)):
     # call again; the stored text is what would be produced anyway.
     existing = _existing_transcription(db, recording_id)
     if existing is not None:
+        _release_transcription_claim(db, recording_id)
         logger.info("Reusing the stored transcript for %s instead of transcribing again", recording_id)
         return JSONResponse(content=existing)
+
+    claim_token = _acquire_transcription_claim(db, recording_id)
+    if claim_token is None:
+        logger.info("Recording %s is already being processed by another execution", recording_id)
+        raise HTTPException(status_code=409, detail="Recording is already being processed")
 
     try:
         audio, audio_seconds = transcription.load_recording(audio_url)
     except Exception as exc:
+        _release_transcription_claim(db, recording_id)
         logger.exception("Could not download %s", audio_url)
         raise HTTPException(status_code=502, detail=f"Could not download the recording: {exc}") from exc
 
@@ -2231,6 +2551,7 @@ def transcribe_recording_endpoint(payload: dict, db: Session = Depends(get_db)):
         attempts = _record_transcription_attempt(db, recording_id, {
             "audio_bytes": len(audio), "audio_seconds": round(audio_seconds, 1), "word_count": 0})
         if attempts < MAX_TRANSCRIBE_ATTEMPTS:
+            _release_transcription_claim(db, recording_id)
             logger.warning(
                 "Recording %s is only %s bytes (%.0fs); attempt %s of %s, not transcribing yet",
                 recording_id or audio_url, len(audio), audio_seconds, attempts, MAX_TRANSCRIBE_ATTEMPTS,
@@ -2242,11 +2563,17 @@ def transcribe_recording_endpoint(payload: dict, db: Session = Depends(get_db)):
 
     try:
         result = transcription.transcribe_audio(audio, audio_seconds, audio_url)
+    except transcription.OpenAIQuotaError as exc:
+        _release_transcription_claim(db, recording_id)
+        logger.error("OpenAI quota unavailable while transcribing %s: %s", recording_id, exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except requests.HTTPError as exc:
+        _release_transcription_claim(db, recording_id)
         detail = getattr(exc.response, "text", str(exc))[:400]
         logger.error("Transcription failed for %s: %s", audio_url, detail)
         raise HTTPException(status_code=502, detail=f"Transcription failed: {detail}") from exc
     except Exception as exc:
+        _release_transcription_claim(db, recording_id)
         logger.exception("Transcription failed for %s", audio_url)
         raise HTTPException(status_code=502, detail=f"Transcription failed: {exc}") from exc
 
@@ -2256,6 +2583,7 @@ def transcribe_recording_endpoint(payload: dict, db: Session = Depends(get_db)):
     if result["short_download"] or result["word_count"] < 15:
         attempts = _record_transcription_attempt(db, recording_id, result)
         if attempts < MAX_TRANSCRIBE_ATTEMPTS:
+            _release_transcription_claim(db, recording_id)
             logger.warning(
                 "Recording %s produced only %s bytes (%ss) / %s words; attempt %s of %s, will retry",
                 recording_id or audio_url, result["audio_bytes"], result["audio_seconds"],
@@ -2415,8 +2743,11 @@ def update_status(
     id: str,
     request: Request,
     status: str = Form(...),
-    # Typed by the agent when the CRM holds no email for this client. Approving
-    # is what sends the email, so the address has to travel with the approval --
+    crm_reviewed: bool = Form(False),
+    reviewed_crm_note: str = Form(""),
+    send_email: bool = Form(False),
+    # Typed by the agent when the CRM holds no email for this client. The email
+    # is sent by approving, so the address has to travel with the approval --
     # otherwise a client with no address on file gets approved past silently and
     # someone has to remember to come back and send it.
     client_email: str = Form(""),
@@ -2428,20 +2759,17 @@ def update_status(
         raise HTTPException(status_code=404, detail="Transcript not found")
 
     previous_status = transcript.status.value if hasattr(transcript.status, "value") else str(transcript.status)
-    normalized_tasks = normalize_follow_up_task(transcript.follow_up_task)
-
     if status == models.TranscriptStatus.approved.value and previous_status != models.TranscriptStatus.approved.value:
-        crm_note = _clean_string(transcript.crm_note)
-        if not crm_note and not normalized_tasks:
-            return render_template(
-                request,
-                "transcript_detail.html",
-                {
-                    "transcript": transcript,
-                    "error_message": "CRM note is required to approve this transcript.",
-                },
-                status_code=400,
-            )
+        crm_note = _clean_string(reviewed_crm_note)
+        error = None
+        if not _clean_string(transcript.agency_zoom_customer_id):
+            error = "Link the client to AgencyZoom before approving this call."
+        elif not crm_reviewed or not crm_note:
+            error = "Read and confirm the CRM note before approving this call."
+        if error:
+            return render_template(request, "transcript_detail.html",
+                {"transcript": transcript, "error_message": error}, status_code=400)
+        transcript.crm_note = crm_note
 
         employee_id, agent_name = _assigned_agency_zoom_agent(db, transcript)
 
@@ -2478,10 +2806,8 @@ def update_status(
     transcript.status = status
     db.commit()
 
-    # Approving is what sends the email. The button says so, and it is the same
-    # act: the agent has just read the notes and put their name to them, which
-    # is the review this email was always waiting on.
-    if status == models.TranscriptStatus.approved.value and previous_status != status:
+    # Email is optional and sends only when explicitly selected on approval.
+    if send_email and status == models.TranscriptStatus.approved.value and previous_status != status:
         admin = get_logged_in_admin(request, db)
         typed_email = _clean_string(client_email)
         if typed_email and not client_note_email.normalize_email(typed_email):
@@ -2602,12 +2928,31 @@ def update_follow_up_task(
         tasks.append(task)
     elif action == "delete":
         position = _follow_up_task_position(tasks, data)
-        tasks.pop(position)
+        removed_task = tasks.pop(position)
+        state = _task_state(transcript)
+        removed_key = _task_key(removed_task)
+        # Deleting a task before its due date cancels the queued Agency Zoom
+        # delivery. A task already created in Agency Zoom keeps its audit state.
+        if not state.get(removed_key, {}).get("task_id"):
+            state.pop(removed_key, None)
+            _save_task_state(transcript, state)
     else:
         new_task = normalize_follow_up_task(data.new_task)
         if not new_task:
             raise HTTPException(status_code=400, detail="new_task is required")
-        tasks[_follow_up_task_position(tasks, data)] = new_task
+        position = _follow_up_task_position(tasks, data)
+        previous_task = tasks[position]
+        tasks[position] = new_task
+        state = _task_state(transcript)
+        previous_key = _task_key(previous_task)
+        previous_state = state.get(previous_key)
+        # Editing a future scheduled task keeps its date and scheduled status,
+        # but the dispatcher must use the new words and new key.
+        if previous_state and not previous_state.get("task_id"):
+            state.pop(previous_key, None)
+            previous_state["task"] = new_task
+            state[_task_key(new_task)] = previous_state
+            _save_task_state(transcript, state)
 
     transcript.follow_up_task = "\n".join(tasks) if tasks else None
     db.commit()
@@ -3117,5 +3462,3 @@ def send_note_email(id: str, request: Request, db: Session = Depends(get_db),
     state = _note_email_state(db, transcript)
     state["message"] = message
     return JSONResponse(content=state, status_code=200 if sent else 502)
-
-

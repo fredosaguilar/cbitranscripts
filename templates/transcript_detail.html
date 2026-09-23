@@ -8,7 +8,14 @@
 
 {% block content %}
 
-<h2>Transcript Detail</h2>
+<header class="review-page-header">
+    <div>
+        <span class="eyebrow">CALL REVIEW WORKSPACE</span>
+        <h1>Review and complete this call</h1>
+        <p>Review this call in one place. Link the client and review the CRM note to approve; tasks and email are optional.</p>
+    </div>
+    <span class="save-state" id="saveState">All changes saved</span>
+</header>
 
 {% if transcript %}
 
@@ -25,150 +32,90 @@
 </div>
 {% endif %}
 
-<div class="card surface">
-
-    <div class="section">
-        <h3 class="section-title">Call Audio</h3>
-        {% if transcript.file_link or transcript.recordingID %}
-        <div class="audio-player-card">
-            <audio controls preload="none" class="audio-player" src="/api/transcripts/{{ transcript.id }}/audio">
-                Your browser does not support audio playback.
-            </audio>
-            <p class="audio-help">
-                Audio is streamed through the app so RingCentral recording links and recording content endpoints can be
-                played here.
-                {% if transcript.file_link %}
-                <a href="{{ transcript.file_link }}" target="_blank" rel="noopener noreferrer">Open source file</a>
-                {% endif %}
-            </p>
+<div class="review-shell surface single-review">
+    <nav class="review-overview" aria-label="Review sections">
+        <a href="#clientSection">1. Client link · Required</a>
+        <a href="#crmSection">2. CRM note · Required</a>
+        <a href="#tasksSection">3. Tasks · Optional</a>
+        <a href="#noteEmailSection">4. Email · Optional</a>
+    </nav>
+    <section class="review-step" id="clientSection">
+        <div class="step-heading">
+            <span class="eyebrow">REQUIRED · CLIENT LINK</span>
+            <h2>Match the client</h2>
+            <p>Confirm the correct AgencyZoom client before anything is saved or sent.</p>
         </div>
-        {% else %}
-        <p class="audio-help">No audio file is attached to this transcript.</p>
-        {% endif %}
-    </div>
-
-    <div class="section">
-        <h3 class="section-title">Display</h3>
-        <div class="meta-grid">
-            <p><b>ID:</b> {{ transcript.id }}</p>
-            <p><b>Owner ID:</b> {{ transcript.owner_id }}</p>
-            <p><b>Client Name:</b> {{ transcript.client_name or "-" }}</p>
-            <p><b>Client Number:</b> {{ transcript.client_number or "-" }}</p>
-            <p><b>Policy Type:</b> {{ transcript.policy_type or "-" }}</p>
-            <p><b>Customer Sentiment:</b> {{ transcript.customer_sentiment or "-" }}</p>
-            <p><b>Follow Up Needed:</b>
-                {% if transcript.follow_up_needed is not none %}
-                {{ "Yes" if transcript.follow_up_needed else "No" }}
-                {% else %}
-                -
-                {% endif %}
-            </p>
-            <p><b>Recording ID:</b> {{ transcript.recordingID or "-" }}</p>
-            <p>
-                <b>Agency Zoom Task IDs:</b>
-                {% if transcript.agency_zoom_task_ids %}
-                {{ transcript.agency_zoom_task_ids.replace('\n', ', ') }}
-                {% else %}
-                -
-                {% endif %}
-            </p>
-            <p>
-                <b>File:</b>
-                <a href="{{ transcript.file_link }}" target="_blank">Open File</a>
-            </p>
-            <p>
-                <b>Status:</b>
-                <span class="status {{ transcript.status.value }}">
-                    {{ transcript.status.value|capitalize }}
-                </span>
-            </p>
-        </div>
-    </div>
-
-    <div class="section">
-        <h3 class="section-title">Call Metadata</h3>
-        <div class="meta-grid">
-            <p><b>Caller Number:</b> {{ transcript.caller_number or "-" }}</p>
-            <p><b>From Name:</b> {{ transcript.from_name or "-" }}</p>
-            <p><b>Handled By (Extension):</b>
-                {% if transcript.extension_number %}
-                {{ transcript.extension_name or "" }} (ext. {{ transcript.extension_number }})
-                {% else %}-{% endif %}
-            </p>
-            <p><b>Arrived Via Queue:</b> {{ transcript.queue_name or "-" }}</p>
-            <p><b>Usage Type:</b> {{ transcript.usage_type or "-" }}</p>
-            <p><b>Usage Seconds:</b> {{ transcript.usage_sec if transcript.usage_sec is not none else "-" }}</p>
-            <p><b>Start Time:</b> {{ transcript.start_time or "-" }}</p>
-            <p><b>Call Type:</b> {{ transcript.call_type or "-" }}</p>
-            <p><b>Direction:</b> {{ transcript.direction or "-" }}</p>
-            <p><b>To Phone Number:</b> {{ transcript.to_phoneNumber or "-" }}</p>
-            <p><b>To Name:</b> {{ transcript.to_name or "-" }}</p>
-            <p><b>Created At:</b> {{ transcript.created_at or "-" }}</p>
-        </div>
-    </div>
-
-    <div class="section">
-        <h3 class="section-title">Transcription Problem?</h3>
-        <p style="margin:0 0 10px; font-size:0.9rem; opacity:0.85;">
-            If the transcript missed the conversation or the notes are wrong, run the call again.
-            This deletes the current record and re-transcribes from the original recording on the
-            next sync, which takes a few minutes.
-        </p>
-        <form method="post" action="/admin/transcripts/{{ transcript.id }}/reprocess"
-              onsubmit="return confirm('Delete this transcript and transcribe the call again?');">
-            <button type="submit">Reprocess this call</button>
-        </form>
-    </div>
-
-    <div class="section">
-        <h3 class="section-title">Agency Zoom Match</h3>
+        <div class="review-grid">
+            <div class="step-card">
+                <h3>Find the client record</h3>
         <div id="azStatus" style="margin-bottom:10px;">Checking…</div>
-
-        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                <div class="search-row">
             <input type="text" id="azQuery" placeholder="Search by phone, name, or email…"
-                   value="{{ transcript.client_number or '' }}" style="flex:1; min-width:240px;">
-            <button type="button" onclick="azSearch()">Search Agency Zoom</button>
+                           value="{{ transcript.client_number or '' }}">
+                    <button type="button" onclick="azSearch()">Search AgencyZoom</button>
             {% if transcript.agency_zoom_customer_id %}
-            <button type="button" onclick="azLink('', '', '')">Unlink</button>
+                    <button type="button" class="btn-secondary" onclick="azLink('', '', '')">Unlink</button>
             {% endif %}
-        </div>
-
-        <label style="display:block; margin-top:8px; font-size:0.85rem;">
+                </div>
+                <label class="apply-all-option">
             <input type="checkbox" id="azApplyAll">
             Also link every other call from this number (leave off to link only this call)
         </label>
-
         <div id="azResults" style="margin-top:12px;"></div>
-    </div>
+            </div>
+            <aside class="step-card context-card">
+                <span class="eyebrow">CALL CONTEXT</span>
+                <h3>{{ transcript.client_name or transcript.from_name or "Unknown caller" }}</h3>
+                <dl class="context-list">
+                    <div><dt>Phone</dt><dd>{{ transcript.client_number or transcript.caller_number or "-" }}</dd></div>
+                    <div><dt>Policy</dt><dd>{{ transcript.policy_type or "-" }}</dd></div>
+                    <div><dt>Direction</dt><dd>{{ transcript.direction or "-" }}</dd></div>
+                    <div><dt>Assigned to</dt><dd>{{ transcript.extension_name or transcript.assigned_to or "Unassigned" }}</dd></div>
+                </dl>
+                {% if transcript.file_link or transcript.recordingID %}
+                <audio controls preload="none" class="audio-player" src="/api/transcripts/{{ transcript.id }}/audio"></audio>
+                {% endif %}
+            </aside>
+        </div>
+    </section>
 
-    {% if transcript.transcription_original %}
-    <div class="section">
-        <h3 class="section-title">
-            Original Language Transcript
-            {% if transcript.original_language %}({{ transcript.original_language|title }}){% endif %}
-        </h3>
-        <div class="transcription-box">{{ transcript.transcription_original }}</div>
-    </div>
-    {% elif transcript.original_language in ["english", "en"] %}
-    <div class="section">
-        <h3 class="section-title">Original Language Transcript</h3>
-        <div class="transcription-box">This call was spoken in English, so the transcript above is the original.</div>
-    </div>
-    {% endif %}
+    <section class="review-step" id="crmSection">
+        <div class="step-heading">
+            <span class="eyebrow">REQUIRED · CRM NOTE</span>
+            <h2>Review the CRM note</h2>
+            <p>Compare the generated note with the call, correct inaccuracies, and save it to the review.</p>
+        </div>
+        <div class="review-grid">
+            <div class="step-card">
+                <label class="field-label" for="crmNoteInput">CRM note</label>
+                <textarea name="reviewed_crm_note" form="approvalForm" id="crmNoteInput" rows="12">{{ transcript.crm_note }}</textarea>
+                <label class="approval-check"><input type="checkbox" id="crmReviewed" name="crm_reviewed" value="true" form="approvalForm" required> I have read and checked the CRM note for accuracy.</label>
+                <button type="button" onclick="updateTranscription()">Save note</button>
+                <label class="field-label" for="reasonForCallInput">Reason for call</label>
+                <textarea id="reasonForCallInput" rows="3">{{ transcript.reason_for_call }}</textarea>
+            </div>
+            <aside class="step-card transcript-reference">
+                <div class="reference-heading">
+                    <h3>Call transcript</h3>
+                    <span class="badge warning">Reference</span>
+                </div>
+                <div class="transcription-box">{{ transcript.transcription_original or transcript.transcription or "No transcript is available." }}</div>
+                <details>
+                    <summary>Edit the full transcription</summary>
+                    <textarea id="transcriptionInput" rows="6">{{ transcript.transcription }}</textarea>
+                </details>
+            </aside>
+        </div>
+    </section>
 
-    <div class="section">
-        <h3 class="section-title">Edit</h3>
-        <label class="field-label">Transcription</label>
-        <textarea id="transcriptionInput" rows="6">{{ transcript.transcription }}</textarea>
-
-        <label class="field-label">Reason For Call</label>
-        <textarea id="reasonForCallInput" rows="4">{{ transcript.reason_for_call }}</textarea>
-
-        <label class="field-label">Follow Up Task</label>
-        <p style="margin:0 0 8px; font-size:0.85rem; opacity:0.8;">
-            Written from the call, but nothing reaches Agency Zoom until you add it. Give a task its
-            own due date if it needs one, then press Add.
-        </p>
+    <section class="review-step" id="tasksSection">
+        <div class="step-heading">
+            <span class="eyebrow">OPTIONAL · TASKS</span>
+            <h2>Review HawkSoft tasks</h2>
+            <p>Schedule useful automated follow-ups, edit or remove them, and add any manual tasks the call needs.</p>
+        </div>
+        <div class="step-card">
+        <p class="step-help">Nothing is sent to the task workflow until you schedule it. Future tasks stay here and are created on their actual due date.</p>
         {# Numbered the same way the server numbers them, so a button always
            acts on the task it sits next to, whatever the text contains. #}
         {% set follow_up_tasks = (transcript.follow_up_task or "").splitlines()
@@ -180,7 +127,7 @@
                 <span class="task-text">{{ task }}</span>
                 <div class="task-actions">
                     <input type="date" class="task-due" title="Due date for this task">
-                    <button type="button" class="task-add">Add to Agency Zoom</button>
+                    <button type="button" class="task-add">Schedule task</button>
                     <button type="button" class="task-edit">Edit</button>
                     <button type="button" class="task-delete">Delete</button>
                 </div>
@@ -194,33 +141,27 @@
             <input id="followUpTaskInput" type="text" placeholder="Add follow-up task">
             <button type="button" onclick="addFollowUpTask()">Add Task</button>
         </div>
-        <div style="display:flex; gap:8px; align-items:center; margin-top:8px; flex-wrap:wrap;">
-            <label class="field-label" style="margin:0;">Agency Zoom due date</label>
+        <div class="default-date-row">
+            <label class="field-label" style="margin:0;">Default task due date</label>
             <input type="date" id="dueDateInput" value="{{ transcript.agency_zoom_due_date or '' }}"
                    onchange="saveDueDate()">
             <small style="opacity:0.75;">
-                Used for any task added without a date of its own. Defaults to tomorrow.
+                Used for any task scheduled without a date of its own. Defaults to tomorrow.
             </small>
         </div>
+        </div>
+    </section>
 
-        <label class="field-label">CRM Note</label>
-        <textarea id="crmNoteInput" rows="4">{{ transcript.crm_note }}</textarea>
-
-        <button onclick="updateTranscription()">Save Updates</button>
-    </div>
-
-    <hr>
-
-    <div class="section" id="noteEmailSection">
-        <h3 class="section-title">Email the File Note</h3>
-        <p class="recap-help">
-            Emails the client the CRM note kept on this call, word for word, from
-            <strong id="noteEmailFrom"></strong>. It is ready below — read it before it goes, because
-            the note was written for the file, not for the client, so anything in it meant for the
-            agency's own eyes needs taking out first. Editing here changes only the email; the note
-            on the file is untouched. The address comes from the linked Agency Zoom record — when
-            there is none, type one in <em>Send to</em> and it sends to that.
-        </p>
+    <section class="review-step" id="noteEmailSection">
+        <div class="step-heading">
+            <span class="eyebrow">OPTIONAL · EMAIL</span>
+            <h2>Review the file-note email</h2>
+            <p>Edit the client-facing copy without changing the CRM note kept on the file.</p>
+        </div>
+        <div class="step-card">
+        <p class="recap-help">This email sends from <strong id="noteEmailFrom"></strong>. Review the wording if you choose to send this email.
+           The address comes from the linked Agency Zoom record — when there is none, type one in
+           <em>Send to</em> and it sends to that.</p>
 
         <div id="noteEmailStatus" class="recap-status">Loading…</div>
 
@@ -239,49 +180,58 @@
 
             <div class="recap-actions">
                 <button type="button" onclick="noteEmailSave()">Save Draft</button>
-                <button type="button" id="noteEmailSendButton" onclick="noteEmailSend()">Send Email</button>
             </div>
             <div id="noteEmailWarning" class="recap-warning" hidden></div>
             <div id="noteEmailBlocked" class="recap-blocked" hidden></div>
         </div>
 
         <div id="noteEmailHistory" class="recap-history"></div>
-    </div>
+        </div>
+    </section>
 
-    <hr>
+    <section class="review-step" id="approvalSection">
+        <div class="step-heading">
+            <span class="eyebrow">COMPLETE REVIEW</span>
+            <h2>Approve this call</h2>
+            <p>Approval saves the reviewed CRM note to AgencyZoom. Tasks and email are optional.</p>
+        </div>
+        <div class="step-card final-approval-card">
+            <p id="reviewRequirements" role="status">Link the client and review the CRM note before approving.</p>
+            <form id="approvalForm" method="post" action="/user/transcripts/{{ transcript.id }}/update" onsubmit="return validateApprovalForm(event);">
+                <input type="hidden" name="status" id="statusSelect" value="approved">
+                <label class="approval-check"><input type="checkbox" id="sendEmailOnApproval" name="send_email" value="true"> Send the file-note email when I approve (optional)</label>
+                <!-- The address as it stands in the panel above, carried with the
+                     approval so the email goes where the agent typed rather than
+                     to whatever was last saved against the draft. Empty on a call
+                     that is not being emailed. -->
+                <input type="hidden" name="client_email" id="approvalClientEmail" value="">
+                <button type="submit" id="approveButton">Approve call</button>
+            </form>
+        </div>
+    </section>
 
-    <div class="section" id="approvalSection">
-        <h3 class="section-title">Approve</h3>
-        <p class="recap-help">
-            Approving posts the note and any follow-ups to Agency Zoom and emails the client the
-            note above, in one step. Read both before you approve — the email goes as soon as you do.
-        </p>
-
-        <form method="post" action="/user/transcripts/{{ transcript.id }}/update"
-              onsubmit="return validateApprovalForm();">
-            <label>Status</label>
-            <select name="status" id="statusSelect">
-                <option value="pending" {% if transcript.status.value=="pending" %}selected{% endif %}>Pending</option>
-                <option value="approved" {% if transcript.status.value=="approved" %}selected{% endif %}>Approved</option>
-            </select>
-
-            <input type="hidden" id="followUpTaskExists" value="{{ '1' if transcript.follow_up_task else '0' }}">
-            <!-- An address typed at the moment of approving, for a client the
-                 CRM holds no email for. Empty on every call that already has
-                 one, which is the ordinary case. -->
-            <input type="hidden" name="client_email" id="approvalClientEmail" value="">
-            <button type="submit" id="approveButton">Approve CRM Note and Email</button>
-        </form>
-    </div>
-
-    <hr>
-
-    <form method="post" action="/admin/transcripts/{{ transcript.id }}/delete"
-        onsubmit="return confirm('Delete this transcript?');">
-        <button type="submit" class="danger-button">Delete Transcript</button>
-    </form>
 
 </div>
+
+<details class="record-details surface">
+    <summary>Call details and maintenance</summary>
+    <div class="record-details-body">
+        <div class="meta-grid">
+            <p><b>ID:</b> {{ transcript.id }}</p><p><b>Owner ID:</b> {{ transcript.owner_id }}</p>
+            <p><b>Caller:</b> {{ transcript.from_name or "-" }}</p><p><b>Number:</b> {{ transcript.caller_number or "-" }}</p>
+            <p><b>Started:</b> {{ transcript.start_time or "-" }}</p><p><b>Queue:</b> {{ transcript.queue_name or "-" }}</p>
+            <p><b>Status:</b> <span class="status {{ transcript.status.value }}">{{ transcript.status.value|capitalize }}</span></p>
+        </div>
+        <div class="maintenance-actions">
+            <form method="post" action="/admin/transcripts/{{ transcript.id }}/reprocess" onsubmit="return confirm('Delete this transcript and transcribe the call again?');">
+                <button type="submit" class="btn-secondary">Reprocess this call</button>
+            </form>
+            <form method="post" action="/admin/transcripts/{{ transcript.id }}/delete" onsubmit="return confirm('Delete this transcript?');">
+                <button type="submit" class="danger-button">Delete transcript</button>
+            </form>
+        </div>
+    </div>
+</details>
 
 {% else %}
 
@@ -293,6 +243,21 @@
 
 <script>
     const AZ_TRANSCRIPT_ID = "{{ transcript.id }}";
+    let clientMatchReady = false;
+    function refreshReviewRequirements() {
+        const reviewed = document.getElementById("crmReviewed").checked;
+        document.getElementById("reviewRequirements").textContent =
+            !clientMatchReady ? "Required: link the client to AgencyZoom." :
+            !reviewed ? "Required: read and confirm the CRM note." : "Both requirements complete. Ready to approve.";
+    }
+    document.getElementById("crmNoteInput").addEventListener("input", () => {
+        document.getElementById("crmReviewed").checked = false;
+        refreshReviewRequirements();
+    });
+    document.getElementById("crmReviewed").addEventListener("change", refreshReviewRequirements);
+    document.getElementById("sendEmailOnApproval").addEventListener("change", event => {
+        document.getElementById("approveButton").textContent = event.target.checked ? "Approve & send email" : "Approve call";
+    });
 
     async function azLoadStatus() {
         const box = document.getElementById("azStatus");
@@ -302,12 +267,22 @@
             if (data.match && data.match.id) {
                 const m = data.match;
                 const how = m.source === "linked" ? "manually linked" : "matched automatically";
-                box.innerHTML = `<b>Linked:</b> ${m.name || "(no name)"} — ${m.type} #${m.id} <i>(${how})</i>`;
+                box.className = "match-status ready";
+                box.innerHTML = `<b>✓ ${m.name || "Matched client"}</b><span>${m.type} #${m.id} · ${how}</span>`;
+                clientMatchReady = m.source === "linked";
             } else {
-                box.innerHTML = `<b>No match found.</b> Search below and link the correct customer or lead.`;
+                box.className = "match-status warning";
+                box.innerHTML = `<b>No client matched</b><span>Search below and link the correct customer or lead.</span>`;
+                clientMatchReady = false;
             }
+            refreshReviewRequirements();
+            return clientMatchReady;
         } catch (e) {
+            box.className = "match-status warning";
             box.textContent = "Could not check Agency Zoom.";
+            clientMatchReady = false;
+            refreshReviewRequirements();
+            return false;
         }
     }
 
@@ -387,13 +362,14 @@
                 showToast(await azFailureMessage(res));
                 return;
             }
+            document.getElementById("crmReviewed").checked = false;
             // Report what the server stored, not what was sent, so the message
             // is only ever shown for a link that really was saved.
             const data = await res.json();
             const extra = data.also_updated ? ` (and ${data.also_updated} other call${data.also_updated === 1 ? "" : "s"})` : "";
             showToast((data.linked ? `Linked to ${data.customer_name || "Agency Zoom"}` : "Agency Zoom link cleared") + extra);
             document.getElementById("azResults").innerHTML = "";
-            azLoadStatus();
+            await azLoadStatus();
 
             // The note now names the linked customer, so show that rather than
             // leaving the previous name on screen until someone reloads.
@@ -450,12 +426,16 @@
             const data = await response.json();
 
             showToast("Transcript updated successfully");
+            const state = document.getElementById("saveState");
+            if (state) state.textContent = "All changes saved";
             // The email is made from the note, so a saved note reloads it
             // rather than leaving wording on screen that has been superseded.
             noteEmailLoad();
+            return true;
 
         } catch (error) {
             showToast("Error updating transcription");
+            return false;
         }
     }
 
@@ -522,8 +502,8 @@
         }
     });
 
-    // A date set before the task is added is remembered, so it is still there
-    // if the page is reloaded before anyone presses Add.
+    // A date set before the task is scheduled is remembered, so it is still
+    // there if the page is reloaded before anyone schedules it.
     document.getElementById("followUpTaskList").addEventListener("change", (event) => {
         const field = event.target.closest(".task-due");
         const item = field && field.closest(".follow-up-task-item");
@@ -532,6 +512,13 @@
         body.append("task", item.querySelector(".task-text").textContent.trim());
         body.append("due_date", field.value);
         fetch(`/api/transcripts/{{ transcript.id }}/follow-up/due-date`, { method: "POST", body })
+            .then(async response => {
+                if (!response.ok) throw new Error();
+                const data = await response.json();
+                if (data.due_date) field.value = data.due_date;
+                const badge = item.querySelector(".task-scheduled");
+                if (badge) badge.textContent = data.due_date ? `Scheduled for ${data.due_date}` : "Scheduled";
+            })
             .catch(() => showToast("Could not save the due date for that task."));
     });
 
@@ -542,24 +529,42 @@
         body.append("due_date", due ? due.value : "");
 
         button.disabled = true;
-        button.textContent = "Adding…";
+        button.textContent = "Scheduling…";
         try {
             const response = await fetch(`/api/transcripts/{{ transcript.id }}/follow-up/add`,
                                          { method: "POST", body });
             const data = await response.json().catch(() => null);
             if (!response.ok) {
-                showToast((data && data.detail) || "Agency Zoom could not add that task.");
+                showToast((data && data.detail) || "The task could not be scheduled.");
                 button.disabled = false;
-                button.textContent = "Add to Agency Zoom";
+                button.textContent = "Schedule for Agency Zoom";
                 return;
             }
-            markTaskAdded(item, data.task_id);
-            showToast(`Task added to Agency Zoom (#${data.task_id})`);
+            if (data.status === "scheduled") {
+                markTaskScheduled(item, data.due_date);
+                showToast(`Task scheduled for ${data.due_date}. It will reach Agency Zoom that day.`);
+            } else {
+                markTaskAdded(item, data.task_id);
+                showToast(`Task added to Agency Zoom (#${data.task_id})`);
+            }
         } catch (error) {
-            showToast("Could not reach the server to add that task.");
+            showToast("Could not reach the server to schedule that task.");
             button.disabled = false;
-            button.textContent = "Add to Agency Zoom";
+            button.textContent = "Schedule for Agency Zoom";
         }
+    }
+
+    function markTaskScheduled(item, dueDate) {
+        const actions = item.querySelector(".task-actions");
+        const add = actions.querySelector(".task-add");
+        if (add) add.remove();
+        let badge = actions.querySelector(".task-scheduled");
+        if (!badge) {
+            badge = document.createElement("span");
+            badge.className = "task-scheduled";
+            actions.prepend(badge);
+        }
+        badge.textContent = dueDate ? `Scheduled for ${dueDate}` : "Scheduled";
     }
 
     function markTaskAdded(item, taskId) {
@@ -590,6 +595,7 @@
                 const due = item.querySelector(".task-due");
                 if (due && entry.due_date) due.value = entry.due_date;
                 if (entry.task_id) markTaskAdded(item, entry.task_id);
+                else if (entry.status === "scheduled") markTaskScheduled(item, entry.due_date);
             });
         } catch (error) { /* the buttons still work without this */ }
     }
@@ -640,63 +646,46 @@
             { action: "edit", index, task, new_task: trimmed }, "Error editing follow-up task");
     }
 
-    function validateApprovalForm() {
-        const status = document.getElementById("statusSelect").value;
-        const crmNote = document.getElementById("crmNoteInput").value.trim();
-        const followUpTaskExists = document.getElementById("followUpTaskExists").value === "1";
-
-        if (status === "approved" && !followUpTaskExists && !crmNote) {
-            showToast("CRM note is required to approve this transcript.");
+    let approvalSubmitting = false;
+    function validateApprovalForm(event) {
+        event.preventDefault();
+        if (approvalSubmitting) return false;
+        if (!clientMatchReady) {
+            showToast("Link the client to AgencyZoom before approving.");
+            document.getElementById("clientSection").scrollIntoView({behavior: "smooth"});
             return false;
         }
-
-        // Naming the address before it goes, because an email to a client
-        // cannot be recalled and the wrong one is worse than a slow one.
-        const alreadyApproved = {{ 'true' if transcript.status.value == "approved" else 'false' }};
-        if (status === "approved" && !alreadyApproved) {
-            const emailPattern = /^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$/;
-            const box = document.getElementById("noteEmailTo");
-            // What is in the box beats what the server last knew: an address
-            // typed into the panel and not yet saved is still the address the
-            // agent means, and approving is what sends the email
-            const typedInPanel = box ? box.value.trim() : "";
-            const hasNote = Boolean(noteEmailState && noteEmailState.has_note);
-            document.getElementById("approvalClientEmail").value = "";
-
-            if (typedInPanel && !emailPattern.test(typedInPanel)) {
-                showToast(`${typedInPanel} is not an email address.`);
-                return false;
-            }
-
-            let to = typedInPanel || (noteEmailState && noteEmailState.to_email) || "";
-            if (!to && hasNote) {
-                // Nothing on file is not the same as nothing to send. The agent
-                // is here with the note in front of them, which is the moment
-                // they are most likely to know the address -- so ask for it now
-                // rather than approving past it and leaving the email owed.
-                const answer = prompt(
-                    "There is no email address on file for this client.\n\n"
-                    + "Type one to email the note as you approve, or leave it blank "
-                    + "to approve without emailing.", "");
-                if (answer === null) return false;
-                to = answer.trim();
-                if (to && !emailPattern.test(to)) {
-                    showToast(`${to} is not an email address.`);
-                    return false;
-                }
-            }
-
-            const question = to
-                ? `Approve this call and email the note to ${to}?`
-                : (hasNote ? "Approve this call? Nothing will be emailed."
-                           : "Approve this call? There is no CRM note, so nothing will be emailed.");
-            if (!confirm(question)) return false;
-            // Sent with the approval, so it goes to what is on screen rather
-            // than to whatever was last saved against the draft
-            document.getElementById("approvalClientEmail").value = to;
+        if (!document.getElementById("crmReviewed").checked || !document.getElementById("crmNoteInput").value.trim()) {
+            showToast("Read and confirm the CRM note before approving.");
+            document.getElementById("crmNoteInput").focus();
+            return false;
         }
-
-        return true;
+        const sendEmail = document.getElementById("sendEmailOnApproval").checked;
+        // The address travels with the approval, so the email goes to what is on
+        // screen. Saving the draft below sends it too, and this is what makes
+        // the two agree if that save is ever the thing that did not happen.
+        document.getElementById("approvalClientEmail").value =
+            sendEmail ? document.getElementById("noteEmailTo").value.trim() : "";
+        if (sendEmail) {
+            const error = noteEmailDraftValidationError();
+            if (error) { showToast(error + " Or uncheck the optional email to approve without sending."); return false; }
+            // Naming the address before it goes, because an email to a client
+            // cannot be recalled and the wrong one is worse than a slow one
+            if (!confirm(`Approve this call and email the note to `
+                         + `${document.getElementById("noteEmailTo").value.trim()}?`)) return false;
+        }
+        const form = event.currentTarget;
+        approvalSubmitting = true;
+        document.getElementById("approveButton").disabled = true;
+        (async () => {
+            if (sendEmail && !await noteEmailSave()) {
+                approvalSubmitting = false;
+                document.getElementById("approveButton").disabled = false;
+                return;
+            }
+            form.submit();
+        })();
+        return false;
     }
 
     // ---- Client recap text -------------------------------------------------
@@ -741,30 +730,42 @@
 
         const toField = document.getElementById("noteEmailTo");
         if (document.activeElement !== toField) toField.value = state.to_email || "";
+        const summaryEmail = document.getElementById("summaryEmail");
+        if (summaryEmail) summaryEmail.textContent = state.to_email || "No recipient";
 
         const warning = document.getElementById("noteEmailWarning");
         warning.textContent = state.warning || "";
         warning.hidden = !state.warning;
 
         noteEmailRefreshSendButton();
-        blocked.textContent = state.blocked_reason || "";
-        blocked.hidden = !state.blocked_reason;
+        const reason = state.blocked_reason || "";
+        blocked.textContent = reason.startsWith("Approve the transcript first") ? "Email is optional. Select it in the approval section when you are ready to send." : reason;
+        blocked.hidden = !reason;
 
         noteEmailRenderHistory(state.history || []);
     }
 
-    // The address may have just been typed, and the server's view of whether
-    // this can send was formed before that. Anything else blocking a send is
-    // the server's call and still stands.
-    function noteEmailLooksSendable() {
-        if (!noteEmailState) return false;
+    // Step 4 saves a draft before step 5 approves the transcript. Do not use
+    // can_send here: an unapproved transcript is intentionally not sendable
+    // yet, but its valid email draft must still be allowed to advance.
+    function noteEmailDraftValidationError() {
+        if (!noteEmailState) return "Wait for the email draft to finish loading.";
         const typed = document.getElementById("noteEmailTo").value.trim();
         const hasAddress = /^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$/.test(typed);
         const body = document.getElementById("noteEmailBody").value.trim();
-        if (!hasAddress || !body) return false;
-        // Only the missing-address blocker is one the agent can clear here, by
-        // typing one -- every other reason is the server's and still stands
-        return noteEmailState.can_send || Boolean(noteEmailState.needs_address);
+        if (!hasAddress) return "Enter one valid recipient email address.";
+        if (!body) return "Add an email message before continuing.";
+        return "";
+    }
+
+    function noteEmailLooksSendable() {
+        // can_send is the server's answer from before the agent typed anything,
+        // so the one blocker they can clear where they stand -- a client with no
+        // address on file -- is reconsidered against the box. Every other reason
+        // it gave still stands.
+        return !noteEmailDraftValidationError()
+            && Boolean(noteEmailState
+                       && (noteEmailState.can_send || noteEmailState.needs_address));
     }
 
     function noteEmailRefreshSendButton() {
@@ -857,7 +858,13 @@
             headers: { "Content-Type": "application/json" },
             body: noteEmailPayload(),
         }, "Could not save the email.");
-        if (data) showToast("Draft saved");
+        if (data) {
+            showToast("Draft saved");
+            const state = document.getElementById("saveState");
+            if (state) state.textContent = "All changes saved";
+            return true;
+        }
+        return false;
     }
 
     async function noteEmailSend() {

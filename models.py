@@ -69,6 +69,21 @@ class TranscriptionAttempt(Base):
     updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class TranscriptionClaim(Base):
+    """An expiring lease that prevents duplicate transcription work.
+
+    The scheduler can start a new n8n execution while an earlier execution is
+    still processing. The recording ID is the primary key so only one request
+    can own a recording at a time, even across multiple app replicas.
+    """
+
+    __tablename__ = "transcription_claims"
+
+    recording_id = Column(String, primary_key=True, index=True)
+    claim_token = Column(String, nullable=False)
+    claimed_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+
+
 class ClientRecap(Base):
     """A recap text drafted for a client, and what became of it.
 

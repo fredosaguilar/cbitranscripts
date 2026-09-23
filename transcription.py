@@ -20,6 +20,10 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+
+class OpenAIQuotaError(RuntimeError):
+    """The configured OpenAI API account cannot accept paid requests."""
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-1")
@@ -227,6 +231,18 @@ def _whisper(endpoint: str, audio: bytes, prompt: str, verbose: bool = False) ->
             data=data,
             timeout=TRANSCRIBE_TIMEOUT,
         )
+        if response.status_code == 429:
+            try:
+                error = response.json().get("error") or {}
+            except ValueError:
+                error = {}
+            if error.get("type") == "insufficient_quota" or error.get("code") in {
+                "credit_balance_exhausted",
+                "insufficient_quota",
+            }:
+                raise OpenAIQuotaError(
+                    "OpenAI API credits are exhausted; add credits before transcribing calls."
+                )
         if response.status_code in (429, 500, 502, 503, 504) and attempt < WHISPER_RETRIES:
             time.sleep(2 ** attempt)
             continue
@@ -242,6 +258,8 @@ def _transcribe_chunk(chunk: bytes, index: int, total: int) -> tuple[str, str]:
     try:
         payload = _whisper("transcriptions", chunk, SPANISH_PROMPT, verbose=True)
         return str(payload.get("text", "")).strip(), str(payload.get("language") or "").lower()
+    except OpenAIQuotaError:
+        raise
     except Exception:
         # One unreadable minute must not cost the rest of the call
         logger.exception("Transcription failed for chunk %s/%s", index, total)
@@ -294,6 +312,8 @@ def _translate_chunks_with_whisper(chunks: list[bytes]) -> str:
 def _safe_whisper_translation(chunk: bytes) -> str:
     try:
         return _whisper("translations", chunk, ENGLISH_PROMPT).get("text", "").strip()
+    except OpenAIQuotaError:
+        raise
     except Exception:
         logger.exception("Whisper translation failed for a chunk")
         return ""
