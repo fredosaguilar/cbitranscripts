@@ -30,7 +30,7 @@ AGENCY_NAME = os.getenv("AGENCY_NAME", "Columbia Basin Insurance")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-TRANSLATE_MODEL = os.getenv("CLIENT_EMAIL_TRANSLATE_MODEL", os.getenv("TRANSLATE_MODEL", "gpt-4.1-mini"))
+TRANSLATE_MODEL = os.getenv("CLIENT_EMAIL_TRANSLATE_MODEL", os.getenv("TRANSLATE_MODEL", "gpt-4.1"))
 TRANSLATE_TIMEOUT = int(os.getenv("CLIENT_EMAIL_TRANSLATE_TIMEOUT", "60"))
 
 # Whisper reports the spoken language as a name or a code depending on the
@@ -534,6 +534,8 @@ def compose(transcript: Any, assigned_name: Optional[str] = None,
     # English gets one copy, and never asks a model for anything
     translated = translate(english, language) if language != "en" else None
 
+    if language == "es" and not translated:
+        raise ValueError("The Spanish email could not be prepared. Please retry before sending.")
     if not translated:
         return f"{english}\n\n{signature()}\n"
 
