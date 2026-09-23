@@ -2743,6 +2743,9 @@ def update_status(
     id: str,
     request: Request,
     status: str = Form(...),
+    crm_reviewed: bool = Form(False),
+    reviewed_crm_note: str = Form(""),
+    send_email: bool = Form(False),
     db: Session = Depends(get_db),
 ):
     transcript = db.query(models.TranscriptResponse).filter(models.TranscriptResponse.id == id).first()
@@ -2751,20 +2754,17 @@ def update_status(
         raise HTTPException(status_code=404, detail="Transcript not found")
 
     previous_status = transcript.status.value if hasattr(transcript.status, "value") else str(transcript.status)
-    normalized_tasks = normalize_follow_up_task(transcript.follow_up_task)
-
     if status == models.TranscriptStatus.approved.value and previous_status != models.TranscriptStatus.approved.value:
-        crm_note = _clean_string(transcript.crm_note)
-        if not crm_note and not normalized_tasks:
-            return render_template(
-                request,
-                "transcript_detail.html",
-                {
-                    "transcript": transcript,
-                    "error_message": "CRM note is required to approve this transcript.",
-                },
-                status_code=400,
-            )
+        crm_note = _clean_string(reviewed_crm_note)
+        error = None
+        if not _clean_string(transcript.agency_zoom_customer_id):
+            error = "Link the client to AgencyZoom before approving this call."
+        elif not crm_reviewed or not crm_note:
+            error = "Read and confirm the CRM note before approving this call."
+        if error:
+            return render_template(request, "transcript_detail.html",
+                {"transcript": transcript, "error_message": error}, status_code=400)
+        transcript.crm_note = crm_note
 
         employee_id, agent_name = _assigned_agency_zoom_agent(db, transcript)
 
@@ -2801,10 +2801,8 @@ def update_status(
     transcript.status = status
     db.commit()
 
-    # Approving is what sends the email. The button says so, and it is the same
-    # act: the agent has just read the notes and put their name to them, which
-    # is the review this email was always waiting on.
-    if status == models.TranscriptStatus.approved.value and previous_status != status:
+    # Email is optional and sends only when explicitly selected on approval.
+    if send_email and status == models.TranscriptStatus.approved.value and previous_status != status:
         admin = get_logged_in_admin(request, db)
         try:
             sent, message = _send_note_email(db, transcript, admin.username if admin else "approval")
