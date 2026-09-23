@@ -720,3 +720,10 @@ button {
     .recap-actions button { flex: 1 1 100%; min-height: 46px; }
     .toast { bottom: 84px; left: 14px; right: 14px; }
 }
+
+/* Continuous review: every section stays visible on desktop and mobile. */
+.single-review .review-step { min-height: 0; border-bottom: 1px solid #dfe5e1; scroll-margin-top: 24px; }
+.review-overview { display: flex; flex-wrap: wrap; gap: 12px; padding: 20px; background: #edf4f1; }
+.review-overview a { color: #123f42; font-weight: 600; padding: 8px; }
+.single-review .approval-check { margin: 16px 0; }
+.single-review .final-approval-card { max-width: 760px; }
