@@ -12,7 +12,7 @@
     <div>
         <span class="eyebrow">CALL REVIEW WORKSPACE</span>
         <h1>Review and complete this call</h1>
-        <p>Review this call in one place. Link the client and review the CRM note to approve; tasks and email are optional.</p>
+        <p>Review this call in one place. Link the client and review the CRM note to approve; approving emails the note to the client. Tasks are optional.</p>
     </div>
     <span class="save-state" id="saveState">All changes saved</span>
 </header>
@@ -57,10 +57,6 @@
                     <button type="button" class="btn-secondary" onclick="azLink('', '', '')">Unlink</button>
             {% endif %}
                 </div>
-                <label class="apply-all-option">
-            <input type="checkbox" id="azApplyAll">
-            Also link every other call from this number (leave off to link only this call)
-        </label>
         <div id="azResults" style="margin-top:12px;"></div>
             </div>
             <aside class="step-card context-card">
@@ -90,7 +86,7 @@
                 <label class="field-label" for="crmNoteInput">CRM note</label>
                 <textarea name="reviewed_crm_note" form="approvalForm" id="crmNoteInput" rows="12">{{ transcript.crm_note }}</textarea>
                 <label class="approval-check"><input type="checkbox" id="crmReviewed" name="crm_reviewed" value="true" form="approvalForm" required> I have read and checked the CRM note for accuracy.</label>
-                <button type="button" onclick="updateTranscription()">Save note</button>
+                <button type="button" onclick="updateTranscription()">Save Note Changes</button>
                 <label class="field-label" for="reasonForCallInput">Reason for call</label>
                 <textarea id="reasonForCallInput" rows="3">{{ transcript.reason_for_call }}</textarea>
             </div>
@@ -154,12 +150,12 @@
 
     <section class="review-step" id="noteEmailSection">
         <div class="step-heading">
-            <span class="eyebrow">OPTIONAL · EMAIL</span>
+            <span class="eyebrow">SENT ON APPROVAL · EMAIL</span>
             <h2>Review the file-note email</h2>
-            <p>Edit the client-facing copy without changing the CRM note kept on the file.</p>
+            <p>This goes to the client when you approve, so read it here. Editing it changes only the email, not the CRM note kept on the file.</p>
         </div>
         <div class="step-card">
-        <p class="recap-help">This email sends from <strong id="noteEmailFrom"></strong>. Review the wording if you choose to send this email.
+        <p class="recap-help">This email sends from <strong id="noteEmailFrom"></strong> as soon as you approve the call.
            The address comes from the linked Agency Zoom record — when there is none, type one in
            <em>Send to</em> and it sends to that.</p>
 
@@ -193,19 +189,21 @@
         <div class="step-heading">
             <span class="eyebrow">COMPLETE REVIEW</span>
             <h2>Approve this call</h2>
-            <p>Approval saves the reviewed CRM note to AgencyZoom. Tasks and email are optional.</p>
+            <p>Approval saves the reviewed CRM note to AgencyZoom and emails it to the client. Tasks stay optional.</p>
         </div>
         <div class="step-card final-approval-card">
             <p id="reviewRequirements" role="status">Link the client and review the CRM note before approving.</p>
             <form id="approvalForm" method="post" action="/user/transcripts/{{ transcript.id }}/update" onsubmit="return validateApprovalForm(event);">
                 <input type="hidden" name="status" id="statusSelect" value="approved">
-                <label class="approval-check"><input type="checkbox" id="sendEmailOnApproval" name="send_email" value="true"> Send the file-note email when I approve (optional)</label>
+                <!-- The email is not a choice: approving is reading the note and
+                     putting your name to it, which is the review the client's
+                     copy was always waiting on. -->
+                <input type="hidden" name="send_email" value="true">
                 <!-- The address as it stands in the panel above, carried with the
                      approval so the email goes where the agent typed rather than
-                     to whatever was last saved against the draft. Empty on a call
-                     that is not being emailed. -->
+                     to whatever was last saved against the draft. -->
                 <input type="hidden" name="client_email" id="approvalClientEmail" value="">
-                <button type="submit" id="approveButton">Approve call</button>
+                <button type="submit" id="approveButton">Approve &amp; send email</button>
             </form>
         </div>
     </section>
@@ -255,9 +253,6 @@
         refreshReviewRequirements();
     });
     document.getElementById("crmReviewed").addEventListener("change", refreshReviewRequirements);
-    document.getElementById("sendEmailOnApproval").addEventListener("change", event => {
-        document.getElementById("approveButton").textContent = event.target.checked ? "Approve & send email" : "Approve call";
-    });
 
     async function azLoadStatus() {
         const box = document.getElementById("azStatus");
@@ -355,7 +350,9 @@
         body.append("customer_id", customerId);
         body.append("customer_type", customerType || "customer");
         body.append("customer_name", customerName || "");
-        body.append("apply_to_number", document.getElementById("azApplyAll").checked ? "true" : "false");
+        // This call only. Linking from the review page is a judgement about the
+        // call in front of the agent, not about every call that number ever made.
+        body.append("apply_to_number", "false");
         try {
             const res = await fetch(`/api/transcripts/${AZ_TRANSCRIPT_ID}/agencyzoom/link`, { method: "POST", body });
             if (!res.ok) {
@@ -660,25 +657,26 @@
             document.getElementById("crmNoteInput").focus();
             return false;
         }
-        const sendEmail = document.getElementById("sendEmailOnApproval").checked;
-        // The address travels with the approval, so the email goes to what is on
-        // screen. Saving the draft below sends it too, and this is what makes
-        // the two agree if that save is ever the thing that did not happen.
-        document.getElementById("approvalClientEmail").value =
-            sendEmail ? document.getElementById("noteEmailTo").value.trim() : "";
-        if (sendEmail) {
-            const error = noteEmailDraftValidationError();
-            if (error) { showToast(error + " Or uncheck the optional email to approve without sending."); return false; }
-            // Naming the address before it goes, because an email to a client
-            // cannot be recalled and the wrong one is worse than a slow one
-            if (!confirm(`Approve this call and email the note to `
-                         + `${document.getElementById("noteEmailTo").value.trim()}?`)) return false;
+        // Approving emails the client; there is no longer a way to approve
+        // without doing so, which is why the address is checked here and not
+        // left to fail quietly on the server afterwards.
+        const to = document.getElementById("noteEmailTo").value.trim();
+        document.getElementById("approvalClientEmail").value = to;
+        const error = noteEmailDraftValidationError();
+        if (error) {
+            showToast(error + " Approving sends the email, so this has to be right first.");
+            document.getElementById("noteEmailTo").focus();
+            return false;
         }
+        // Naming the address before it goes, because an email to a client
+        // cannot be recalled and the wrong one is worse than a slow one
+        if (!confirm(`Approve this call and email the note to ${to}?`)) return false;
+
         const form = event.currentTarget;
         approvalSubmitting = true;
         document.getElementById("approveButton").disabled = true;
         (async () => {
-            if (sendEmail && !await noteEmailSave()) {
+            if (!await noteEmailSave()) {
                 approvalSubmitting = false;
                 document.getElementById("approveButton").disabled = false;
                 return;
@@ -739,7 +737,10 @@
 
         noteEmailRefreshSendButton();
         const reason = state.blocked_reason || "";
-        blocked.textContent = reason.startsWith("Approve the transcript first") ? "Email is optional. Select it in the approval section when you are ready to send." : reason;
+        // Not a refusal any more: this is simply the step that has not happened
+        // yet, and approving below is what sends it
+        blocked.textContent = reason.startsWith("Approve the transcript first")
+            ? "This sends when you approve the call below." : reason;
         blocked.hidden = !reason;
 
         noteEmailRenderHistory(state.history || []);

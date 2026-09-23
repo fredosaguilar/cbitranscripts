@@ -421,27 +421,28 @@ the note on the file is untouched.
 
 ### Approving is what sends it
 
-**Approve CRM Note and Email**, at the foot of the transcript page, posts the
-note and any follow-ups to Agency Zoom and emails the client, in one act. That
-is the review this email was always waiting on: the agent has just read the
-notes and put their name to them. The button says what it does, and it asks once
-more, naming the address, before anything leaves — an email to a client cannot
-be recalled, and the wrong one is worse than a slow one.
+**Approve & send email**, at the foot of the review, posts the note to Agency
+Zoom and emails the client, in one act. That is the review this email was always
+waiting on: the agent has just read the notes and put their name to them.
 
-A send that cannot happen does not undo the approval. The approval has already
-posted to Agency Zoom, and reversing that because an address is missing would be
-worse than saying plainly that the email did not go, which the page then does in
-amber.
+**There is no way to approve without sending.** The email was briefly an opt-in
+checkbox; it is not one now. A file note the client never receives is a record
+only the agency has seen, which is the thing this feature exists to stop — and
+an optional step at the end of a review is one that gets skipped on a busy
+afternoon, silently, on exactly the calls where the written record matters most.
+So the button says what it does, and it asks once more, naming the address,
+before anything leaves: an email to a client cannot be recalled, and the wrong
+one is worse than a slow one.
 
-**A client with no address on file is asked about, not skipped.** Approving a
-call the CRM holds no email for opens a box to type one into, and the email goes
-as you approve. Leaving it blank approves without emailing, which is still a
-choice someone made rather than something that happened quietly. A typo is said
-plainly — the approval stands and nothing is emailed, rather than the note going
-to whoever happens to be on the record instead.
+The consequence is deliberate and worth knowing: **a call cannot be approved
+until it has an address to send to.** The panel says which field is missing and
+puts the cursor in it. For a client the CRM holds no email for, the agent types
+one — which is exactly what the *Send to* box is for.
 
-The Send Email button is still there for a call approved before this existed, or
-one whose address was added afterwards.
+A send that fails anyway does not undo the approval. The approval has already
+posted to Agency Zoom, and reversing that because the mail server refused would
+be worse than saying plainly that the email did not go, which the page then does
+in amber.
 
 ### When the note names an agent instead of the client
 
@@ -471,7 +472,9 @@ effect, since all of them change the wording.
 Send is blocked, with the reason shown, when the transcript is not approved,
 when the call has no CRM note, or when SMTP is not configured. A missing address
 is the one of these an agent can clear where they stand, so it is put as an
-instruction — type one in *Send to* — rather than as a refusal.
+instruction — type one in *Send to* — rather than as a refusal. On the review
+page an unapproved call reads as "This sends when you approve the call below",
+because that is what it is: a step not yet taken, not a refusal.
 
 **The client is greeted by the name on the linked Agency Zoom record**, falling
 back to caller ID only when there is no link. That is the name the agency files

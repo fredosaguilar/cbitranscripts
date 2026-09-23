@@ -518,17 +518,6 @@ button {
 
 .search-row input { flex: 1 1 280px; }
 
-.apply-all-option {
-    align-items: flex-start;
-    color: #66746f;
-    display: flex;
-    font-weight: 400;
-    gap: 8px;
-    margin-top: 14px;
-}
-
-.apply-all-option input { margin-top: 2px; }
-
 .match-status {
     border-radius: 12px;
     display: flex;
