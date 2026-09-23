@@ -236,6 +236,9 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL")
 N8N_WEBHOOK_DELAY_SECONDS = int(os.getenv("WEBHOOK_SCHEDULER_INTERVAL_SECONDS", "60"))
 WEBHOOK_SCHEDULER_ENABLED = os.getenv("WEBHOOK_SCHEDULER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+# RingCentral recordings may become available after a newer call has already
+# advanced the saved cursor. Revisit a bounded window so those calls get retried.
+WEBHOOK_LOOKBACK_MINUTES = max(0, int(os.getenv("WEBHOOK_LOOKBACK_MINUTES", "120")))
 
 
 def _env_flag(name: str, default: str = "true") -> bool:
@@ -657,6 +660,21 @@ def _get_webhook_start_time_from_cache() -> str | None:
     return cached_start_time_raw or _format_utc_timestamp(cached_start_time)
 
 
+def _get_webhook_fetch_start_time() -> str | None:
+    """Fetch slightly before the cursor to recover late or failed calls.
+
+    A manual rescan can rewind the cursor farther back; the lookback then
+    follows that earlier cursor until the replay catches up.
+    """
+    cursor = _get_webhook_start_time_from_cache()
+    parsed = _parse_iso_datetime(cursor) if cursor else None
+    if parsed is None:
+        return cursor
+    return _format_utc_timestamp(
+        _ensure_utc_datetime(parsed) - timedelta(minutes=WEBHOOK_LOOKBACK_MINUTES)
+    )
+
+
 def _trigger_n8n_webhook(start_time: str):
     if not N8N_WEBHOOK_URL:
         logger.warning("Skipping n8n webhook because N8N_WEBHOOK_URL is not configured")
@@ -674,7 +692,7 @@ def _trigger_n8n_webhook(start_time: str):
             data=json.dumps(payload),
             timeout=30, 
         )
-        print(f"n8n webhook response status: {response.status_code}, body: {response.text}, payload sent: {payload}")
+        response.raise_for_status()
         logger.info(
             "Triggered n8n webhook at %s with status %s and response %s",
             start_time,
@@ -683,7 +701,7 @@ def _trigger_n8n_webhook(start_time: str):
         )
         return True
     except requests.RequestException:
-        logger.warning("Failed to trigger n8n webhook for %s. Will retry in %s seconds.", start_time, N8N_WEBHOOK_DELAY_SECONDS)
+        logger.exception("Failed to trigger n8n webhook for %s. Will retry in %s seconds.", start_time, N8N_WEBHOOK_DELAY_SECONDS)
         return False
 
 
@@ -704,7 +722,7 @@ def _trigger_n8n_webhook_after_delay():
             time.sleep(N8N_WEBHOOK_DELAY_SECONDS)
             continue
 
-        start_time = _get_webhook_start_time_from_cache()
+        start_time = _get_webhook_fetch_start_time()
         if start_time:
             _trigger_n8n_webhook(start_time)
         else:
