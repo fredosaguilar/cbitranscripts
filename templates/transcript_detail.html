@@ -95,11 +95,24 @@
                     <h3>Call transcript</h3>
                     <span class="badge warning">Reference</span>
                 </div>
-                <div class="transcription-box">{{ transcript.transcription_original or transcript.transcription or "No transcript is available." }}</div>
+                {# The English transcript is the reference, on every call. The note,
+                   the analysis and everything anyone acts on are in English, so a
+                   reference in another language is one the reviewer cannot check the
+                   note against -- which is the entire job of this panel. The spoken
+                   words stay below, as the evidence behind the translation. #}
+                <div class="transcription-box">{{ transcript.transcription or "No transcript is available." }}</div>
                 <details>
                     <summary>Edit the full transcription</summary>
                     <textarea id="transcriptionInput" rows="6">{{ transcript.transcription }}</textarea>
                 </details>
+                {% if transcript.transcription_original %}
+                <details>
+                    <summary>
+                        As spoken{% if transcript.original_language %}, in {{ transcript.original_language|title }}{% endif %}
+                    </summary>
+                    <div class="transcription-box">{{ transcript.transcription_original }}</div>
+                </details>
+                {% endif %}
             </aside>
         </div>
     </section>
