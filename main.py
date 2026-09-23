@@ -3257,7 +3257,11 @@ def _note_email_state(db: Session, transcript) -> dict:
                 or _linked_agency_zoom_email(transcript)
                 or _last_note_email_address(db, transcript.id))
     blocker = _note_email_blocker(transcript, to_email)
-    body = _note_email_body(db, transcript, draft)
+    try:
+        body = _note_email_body(db, transcript, draft)
+    except ValueError as exc:
+        body = ""
+        blocker = str(exc)
     staff = _staff_names(db)
 
     # Which language this is going in, and on whose say-so. An agent about to
@@ -3308,9 +3312,12 @@ def preview_note_email(id: str, request: Request, db: Session = Depends(get_db))
         # and the note may well have been edited since.
         body, subject, state = sent.body, sent.subject, "sent"
     elif client_note_email.has_note(transcript):
-        body = client_note_email.compose(
-            transcript, _assigned_agent_name(db, transcript), _staff_names(db),
-            _client_language_tag(transcript))
+        try:
+            body = client_note_email.compose(
+                transcript, _assigned_agent_name(db, transcript), _staff_names(db),
+                _client_language_tag(transcript))
+        except ValueError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         subject, state = client_note_email.SUBJECT, "not drafted yet"
     else:
         body, subject, state = "", client_note_email.SUBJECT, "no note on this call"
@@ -3403,7 +3410,12 @@ def _send_note_email(db: Session, transcript, sent_by: str,
     # Read before a row is written for this send, so it is the address of an
     # earlier email rather than the empty one this send is about to fill in
     previous = _last_note_email_address(db, transcript.id)
-    body = _note_email_body(db, transcript, draft)
+    try:
+        body = _note_email_body(db, transcript, draft)
+    except ValueError as exc:
+        return False, f"__blocked__{exc}"
+    if client_note_email.resolve_language(transcript, _client_language_tag(transcript)) == "es" and "-" * 40 not in body:
+        return False, "__blocked__The Spanish and English email copies must both be present before sending."
     if not body.strip():
         return False, "__blocked__There is no CRM note on this call to send."
 
