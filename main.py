@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, JSON
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import desc, func, or_
+from sqlalchemy import true as sqlalchemy_true
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -249,10 +250,14 @@ WEBHOOK_LOOKBACK_MINUTES = max(0, int(os.getenv("WEBHOOK_LOOKBACK_MINUTES", "120
 
 # Calls shorter than this are kept but not listed: a few seconds is a wrong
 # number, a hang-up or a voicemail drop, and a review queue full of them is one
-# nobody reads to the bottom. Set to 0 to list everything. A call whose length
-# was never recorded is always listed -- unknown is not the same as short, and
-# hiding a call because of a missing field is how a real one disappears.
-MIN_CALL_SECONDS = max(0, int(os.getenv("MIN_CALL_SECONDS", "20")))
+# nobody reads to the bottom.
+#
+# Off by default, and deliberately. usage_sec is whatever the ingesting
+# workflow puts there -- nothing here computes or checks it -- so a threshold
+# in seconds is an assumption about somebody else's field. Turned on at 20
+# against data that was not in seconds, it emptied the list completely.
+# Set it once you have confirmed what that column actually holds.
+MIN_CALL_SECONDS = max(0, int(os.getenv("MIN_CALL_SECONDS", "0")))
 
 
 def _env_flag(name: str, default: str = "true") -> bool:
@@ -1483,10 +1488,15 @@ def list_transcripts(request: Request, db: Session = Depends(get_db)):
     except ValueError:
         per_page = 50
 
+    # Only ever hides a call that positively says it was short. A missing
+    # length is not a short call, and neither is a zero -- a zero-second
+    # recording is far more likely a field nobody filled in than a call that
+    # truly lasted no time. With the threshold off, nothing is hidden at all.
     long_enough = or_(
         models.TranscriptResponse.usage_sec.is_(None),
+        models.TranscriptResponse.usage_sec <= 0,
         models.TranscriptResponse.usage_sec >= MIN_CALL_SECONDS,
-    )
+    ) if MIN_CALL_SECONDS else sqlalchemy_true()
 
     query = db.query(models.TranscriptResponse).filter(long_enough)
     if q:
