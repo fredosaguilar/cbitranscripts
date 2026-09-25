@@ -735,6 +735,10 @@ def _trigger_n8n_webhook_after_delay():
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
+templates.env.globals["portal_base_url"] = (
+    os.getenv("PORTAL_BASE_URL") or
+    "https://columbia-basin-eo-forms-production.up.railway.app"
+).rstrip("/")
 
 
 def format_call_time(value) -> str:
@@ -1491,10 +1495,8 @@ def admins_page(request: Request, db: Session = Depends(get_db)):
     if not current_admin:
         return RedirectResponse(url="/", status_code=303)
 
-    admins = db.query(models.Admin).order_by(models.Admin.username).all()
     return templates.TemplateResponse(request, "admins.html", {
         "request": request,
-        "admins": admins,
         "current_admin": current_admin,
         "error": request.query_params.get("error"),
         "created": request.query_params.get("created"),
