@@ -716,3 +716,11 @@ button {
 .review-overview a { color: #123f42; font-weight: 600; padding: 8px; }
 .single-review .approval-check { margin: 16px 0; }
 .single-review .final-approval-card { max-width: 760px; }
+
+/* Who confirmed the note and when, under the checkbox that says so. */
+.reviewed-note {
+    color: #66746f;
+    display: block;
+    font-size: 0.78rem;
+    margin: -6px 0 12px 26px;
+}

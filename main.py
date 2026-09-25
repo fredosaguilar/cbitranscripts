@@ -188,6 +188,8 @@ def on_startup():
         "CREATE INDEX IF NOT EXISTS ix_client_note_emails_transcript_id ON client_note_emails (transcript_id)",
         "ALTER TABLE client_note_emails ADD COLUMN IF NOT EXISTS note_fingerprint VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS follow_up_task_state TEXT",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS crm_reviewed_at TIMESTAMP",
+        "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS crm_reviewed_by VARCHAR",
         # A user may be email-only, with no Pushover key
         "ALTER TABLE users_tokens ALTER COLUMN token DROP NOT NULL",
     ]
@@ -3111,6 +3113,26 @@ def update_status(
     return RedirectResponse(url=f"/user/transcripts/{id}", status_code=303)
 
 
+@app.post("/api/transcripts/{id}/crm-reviewed")
+# Remember that somebody read the CRM note, so they are not asked again.
+def set_crm_reviewed(id: str, payload: dict, request: Request, db: Session = Depends(get_db)):
+    admin = get_logged_in_admin(request, db)
+    if not admin:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    transcript = _load_transcript_or_404(db, id)
+
+    reviewed = bool(payload.get("reviewed"))
+    transcript.crm_reviewed_at = datetime.utcnow() if reviewed else None
+    transcript.crm_reviewed_by = admin.username if reviewed else None
+    db.commit()
+
+    return JSONResponse(content={
+        "reviewed": reviewed,
+        "reviewed_by": transcript.crm_reviewed_by,
+        "reviewed_at": transcript.crm_reviewed_at.isoformat() if transcript.crm_reviewed_at else None,
+    })
+
+
 @app.put("/api/transcripts/{id}/transcription")
 # Update editable transcript analysis fields.
 def update_transcription(
@@ -3132,6 +3154,12 @@ def update_transcription(
     if data.follow_up_task is not None:
         transcript.follow_up_task = data.follow_up_task
     if data.crm_note is not None:
+        # Only a real change withdraws the confirmation. Saving the same words
+        # again -- which "Save Note Changes" does whether or not anything was
+        # typed -- is not a reason to make somebody read it a second time.
+        if (data.crm_note or "") != (transcript.crm_note or ""):
+            transcript.crm_reviewed_at = None
+            transcript.crm_reviewed_by = None
         transcript.crm_note = data.crm_note
 
     db.commit()
