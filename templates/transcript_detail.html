@@ -69,7 +69,12 @@
                     <div><dt>Assigned to</dt><dd>{{ transcript.extension_name or transcript.assigned_to or "Unassigned" }}</dd></div>
                 </dl>
                 {% if transcript.file_link or transcript.recordingID %}
-                <audio controls preload="none" class="audio-player" src="/api/transcripts/{{ transcript.id }}/audio"></audio>
+                {# metadata, not none: without the duration the browser has nothing to
+                   scrub against, so the bar sits dead until the call has been played
+                   from the top -- which is the opposite of jumping to the part you
+                   want. It fetches the header, not the recording. #}
+                <audio controls preload="metadata" class="audio-player"
+                       src="/api/transcripts/{{ transcript.id }}/audio"></audio>
                 {% endif %}
             </aside>
         </div>
