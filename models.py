@@ -34,6 +34,27 @@ class Admin(Base):
     created_at = Column(TIMESTAMP, default=datetime.utcnow)
 
 
+class DeletedRecording(Base):
+    """A call somebody deleted on purpose, so the sync stops bringing it back.
+
+    The scheduler re-offers every call from the last couple of hours on each
+    run, and the only thing stopping a re-import was a transcript already
+    existing for that recording. Deleting one therefore un-blocked its own
+    re-import: it reappeared within the minute, which looked like the delete
+    button not working.
+
+    The call's name and time are kept beside the id because "we deleted
+    something" is worth less than being able to say what.
+    """
+
+    __tablename__ = "deleted_recordings"
+
+    recording_id = Column(String, primary_key=True, index=True)
+    client_name = Column(String, nullable=True)
+    start_time = Column(TIMESTAMP, nullable=True)
+    deleted_at = Column(TIMESTAMP, default=datetime.utcnow)
+
+
 class WebhookState(Base):
     __tablename__ = "webhook_state"
 

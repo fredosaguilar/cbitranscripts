@@ -140,6 +140,12 @@ def on_startup():
         "ALTER TABLE users_tokens ADD COLUMN IF NOT EXISTS agency_zoom_employee_id VARCHAR",
         "ALTER TABLE users_tokens ADD COLUMN IF NOT EXISTS agency_zoom_employee_name VARCHAR",
         "CREATE TABLE IF NOT EXISTS reprocess_requests (recording_id VARCHAR PRIMARY KEY, start_time TIMESTAMP, requested_at TIMESTAMP)",
+        """CREATE TABLE IF NOT EXISTS deleted_recordings (
+            recording_id VARCHAR PRIMARY KEY,
+            client_name VARCHAR,
+            start_time TIMESTAMP,
+            deleted_at TIMESTAMP
+        )""",
         "CREATE TABLE IF NOT EXISTS transcription_attempts (recording_id VARCHAR PRIMARY KEY, attempts INTEGER DEFAULT 0, last_error TEXT, updated_at TIMESTAMP)",
         """CREATE TABLE IF NOT EXISTS client_recaps (
             id UUID PRIMARY KEY,
@@ -531,6 +537,45 @@ def _oldest_pending_reprocess_time() -> datetime | None:
         return _ensure_utc_datetime(row.start_time) if row else None
     finally:
         db.close()
+
+
+def _remember_deleted_recording(db: Session, transcript) -> None:
+    """Record that this call was deleted deliberately.
+
+    Without it the next sync brings the call straight back, because the only
+    thing that stopped a re-import was a transcript already existing for that
+    recording -- and deleting it removed exactly that.
+    """
+    recording_id = _clean_string(getattr(transcript, "recordingID", None))
+    if not recording_id:
+        # Nothing to remember it by. A call with no recording id cannot be
+        # re-imported under one either, so it stays deleted regardless.
+        return
+    db.merge(models.DeletedRecording(
+        recording_id=recording_id,
+        client_name=_clean_string(getattr(transcript, "client_name", None)),
+        start_time=getattr(transcript, "start_time", None),
+        deleted_at=datetime.utcnow(),
+    ))
+
+
+def _is_deleted_recording(db: Session, recording_id: str | None) -> bool:
+    cleaned = _clean_string(recording_id)
+    if not cleaned:
+        return False
+    return db.query(models.DeletedRecording).filter(
+        models.DeletedRecording.recording_id == cleaned).first() is not None
+
+
+def _forget_deleted_recording(db: Session, recording_id: str | None) -> None:
+    """Let a call be fetched again, for a reprocess that asked for exactly that."""
+    cleaned = _clean_string(recording_id)
+    if not cleaned:
+        return
+    row = db.query(models.DeletedRecording).filter(
+        models.DeletedRecording.recording_id == cleaned).first()
+    if row is not None:
+        db.delete(row)
 
 
 def _clear_reprocess_request(recording_id: str | None) -> bool:
@@ -1687,6 +1732,7 @@ def bulk_delete_transcripts(
         for id in ids:
             transcript = db.query(models.TranscriptResponse).filter(models.TranscriptResponse.id == id).first()
             if transcript:
+                _remember_deleted_recording(db, transcript)
                 delete_local_audio_file(getattr(transcript, "local_audio_path", None))
                 db.delete(transcript)
                 deleted += 1
@@ -2291,6 +2337,10 @@ def reprocess_transcript(id: str, request: Request, db: Session = Depends(get_db
 
     recording_id = _clean_string(transcript.recordingID)
     _clear_transcription_attempts(db, recording_id)  # a deliberate retry starts fresh
+    # Reprocessing also deletes the call, but asks for it back -- so whatever a
+    # previous delete recorded about this recording has to be lifted, or the
+    # sync would honour it and the call would never return.
+    _forget_deleted_recording(db, recording_id)
     delete_local_audio_file(getattr(transcript, "local_audio_path", None))
     db.delete(transcript)
 
@@ -2327,11 +2377,17 @@ def rescan_from_date(request: Request, rescan_from: str = Form(""), db: Session 
 
 
 @app.post("/admin/transcripts/{id}/delete")
-# Delete a transcript record.
-def delete_transcript(id: str, db: Session = Depends(get_db)):
+# Delete a transcript record, and remember it so the sync leaves it deleted.
+def delete_transcript(id: str, request: Request, db: Session = Depends(get_db)):
+    # Deleting a client's call is not something an unauthenticated request
+    # should be able to do; the bulk route has always checked, this one did not.
+    if not get_logged_in_admin(request, db):
+        return RedirectResponse(url="/", status_code=303)
+
     transcript = db.query(models.TranscriptResponse).filter(models.TranscriptResponse.id == id).first()
 
     if transcript:
+        _remember_deleted_recording(db, transcript)
         delete_local_audio_file(getattr(transcript, "local_audio_path", None))
         db.delete(transcript)
         db.commit()
@@ -2468,6 +2524,21 @@ def create_transcript(
                     "id": str(existing_transcript.id),
                     "recordingID": existing_transcript.recordingID,
                     "duplicate": True,
+                },
+                status_code=200,
+            )
+
+        # Somebody deleted this call. Answered as success rather than as an
+        # error because nothing went wrong and there is nothing to retry: the
+        # call was handled, by being thrown away.
+        if _is_deleted_recording(db, normalized_recording_id):
+            _release_transcription_claim(db, normalized_recording_id)
+            logger.info("Ignoring %s: the call was deleted", normalized_recording_id)
+            return JSONResponse(
+                content={
+                    "message": "This call was deleted and will not be imported again",
+                    "recordingID": normalized_recording_id,
+                    "deleted": True,
                 },
                 status_code=200,
             )
@@ -2681,6 +2752,15 @@ def transcribe_recording_endpoint(payload: dict, db: Session = Depends(get_db)):
     if not audio_url:
         raise HTTPException(status_code=400, detail="file_link or recording_id is required")
 
+    # Deleted on purpose. Refused rather than transcribed, because the sync
+    # offers this call again on every run while the lookback window reaches it,
+    # and reading a discarded call costs the same as reading a real one.
+    # Checked before anything else: whether a call was thrown away has nothing
+    # to do with whether the server can reach OpenAI.
+    if _is_deleted_recording(db, recording_id):
+        logger.info("Not transcribing %s: the call was deleted", recording_id)
+        raise HTTPException(status_code=409, detail="This call was deleted and will not be transcribed")
+
     if not transcription.is_configured():
         raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not configured on the server")
 
@@ -2798,11 +2878,18 @@ def check_recording_id_exists(
         .first()
     )
 
+    # A deleted call answers as handled. This is the question the sync asks
+    # before it does anything, so answering it here is what stops the call
+    # being downloaded and transcribed all over again -- which it was, on every
+    # run for as long as the lookback window reached it, at Whisper's expense.
+    deleted = transcript is None and _is_deleted_recording(db, normalized_recording_id)
+
     return JSONResponse(
         content={
             "recordingID": normalized_recording_id,
-            "exists": transcript is not None,
+            "exists": transcript is not None or deleted,
             "id": str(transcript.id) if transcript else None,
+            "deleted": deleted,
         },
         status_code=200,
     )
