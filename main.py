@@ -247,6 +247,13 @@ WEBHOOK_SCHEDULER_ENABLED = os.getenv("WEBHOOK_SCHEDULER_ENABLED", "true").strip
 # advanced the saved cursor. Revisit a bounded window so those calls get retried.
 WEBHOOK_LOOKBACK_MINUTES = max(0, int(os.getenv("WEBHOOK_LOOKBACK_MINUTES", "120")))
 
+# Calls shorter than this are kept but not listed: a few seconds is a wrong
+# number, a hang-up or a voicemail drop, and a review queue full of them is one
+# nobody reads to the bottom. Set to 0 to list everything. A call whose length
+# was never recorded is always listed -- unknown is not the same as short, and
+# hiding a call because of a missing field is how a real one disappears.
+MIN_CALL_SECONDS = max(0, int(os.getenv("MIN_CALL_SECONDS", "20")))
+
 
 def _env_flag(name: str, default: str = "true") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
@@ -1476,7 +1483,12 @@ def list_transcripts(request: Request, db: Session = Depends(get_db)):
     except ValueError:
         per_page = 50
 
-    query = db.query(models.TranscriptResponse)
+    long_enough = or_(
+        models.TranscriptResponse.usage_sec.is_(None),
+        models.TranscriptResponse.usage_sec >= MIN_CALL_SECONDS,
+    )
+
+    query = db.query(models.TranscriptResponse).filter(long_enough)
     if q:
         like = f"%{q}%"
         query = query.filter(
@@ -1530,9 +1542,10 @@ def list_transcripts(request: Request, db: Session = Depends(get_db)):
         .all()
     )
 
-    total_all = db.query(func.count(models.TranscriptResponse.id)).scalar() or 0
+    total_all = db.query(func.count(models.TranscriptResponse.id)).filter(long_enough).scalar() or 0
     approved_count = (
         db.query(func.count(models.TranscriptResponse.id))
+        .filter(long_enough)
         .filter(models.TranscriptResponse.status == models.TranscriptStatus.approved.value)
         .scalar()
     ) or 0
@@ -2927,6 +2940,22 @@ def agency_zoom_status(id: str, request: Request, db: Session = Depends(get_db))
     return JSONResponse(content={"match": match})
 
 
+def _audio_file_response(path: str, content_type: str) -> FileResponse:
+    """Serve a recording so a player can jump around inside it.
+
+    FileResponse answers a Range request with 206 and a Content-Range, which is
+    what lets someone drag to the part of the call they care about instead of
+    listening from the top. Inline rather than an attachment, because this is
+    something to play, not something to download.
+    """
+    return FileResponse(
+        path,
+        media_type=content_type,
+        filename=os.path.basename(path),
+        content_disposition_type="inline",
+    )
+
+
 @app.get("/api/transcripts/{id}/audio")
 # Stream the transcript audio file, adding RingCentral auth when configured.
 def stream_transcript_audio(id: str, request: Request, db: Session = Depends(get_db)):
@@ -2936,11 +2965,7 @@ def stream_transcript_audio(id: str, request: Request, db: Session = Depends(get
 
     cached_audio_path = get_existing_local_audio_path(getattr(transcript, "local_audio_path", None))
     if cached_audio_path:
-        return FileResponse(
-            cached_audio_path,
-            media_type=guess_audio_content_type(cached_audio_path),
-            filename=os.path.basename(cached_audio_path),
-        )
+        return _audio_file_response(cached_audio_path, guess_audio_content_type(cached_audio_path))
 
     audio_url = resolve_transcript_audio_url(transcript)
     if not audio_url:
@@ -2948,8 +2973,6 @@ def stream_transcript_audio(id: str, request: Request, db: Session = Depends(get
             status_code=404,
             detail="Audio file is not available for this transcript. Add file_link or configure RingCentral account playback from recordingID.",
         )
-
-    byte_range = request.headers.get("range")
 
     try:
         relative_audio_path, content_type = cache_audio_file(transcript, audio_url)
@@ -2971,17 +2994,13 @@ def stream_transcript_audio(id: str, request: Request, db: Session = Depends(get
     if not cached_audio_path or not os.path.exists(cached_audio_path):
         raise HTTPException(status_code=500, detail="Audio was downloaded but the local cache file could not be found.")
 
-    if byte_range:
-        return StreamingResponse(
-            fetch_audio_stream(audio_url, byte_range=byte_range).iter_content(chunk_size=1024 * 64),
-            media_type=content_type,
-        )
-
-    return FileResponse(
-        cached_audio_path,
-        media_type=content_type,
-        filename=os.path.basename(cached_audio_path),
-    )
+    # The file is on disk now, so it is served the same way a cached one is.
+    # A range used to be answered by fetching from RingCentral a second time and
+    # returning 200 with no Content-Range, which is not an answer a browser can
+    # seek against: dragging the scrub bar did nothing, because the response
+    # never said which part of the recording it was. FileResponse answers 206
+    # with the range it actually sent.
+    return _audio_file_response(cached_audio_path, content_type)
 
 
 @app.post("/user/transcripts/{id}/update")
