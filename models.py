@@ -231,6 +231,11 @@ class TranscriptResponse(Base):
     # approval does not post the same note a second time
     agency_zoom_note_posted_at = Column(TIMESTAMP, nullable=True)
     crm_note = Column(Text, nullable=True)
+    # When somebody confirmed they had read the note, and who. Kept so the
+    # confirmation survives a reload, a link, and coming back to the call --
+    # it is a statement a person made, not a state of the page.
+    crm_reviewed_at = Column(TIMESTAMP, nullable=True)
+    crm_reviewed_by = Column(String, nullable=True)
     recordingID = Column(String, nullable=True)
     local_audio_path = Column(String, nullable=True)
     caller_number = Column(String, nullable=True)
