@@ -29,6 +29,11 @@
         </div>
         {% endif %}
 
+        <label>Display name</label>
+        <input type="text" name="display_name" value="{{ user.display_name or '' }}"
+               placeholder="e.g. Henry Hernandez">
+        <small style="display:block; margin:-6px 0 12px; opacity:0.8;">Shown wherever calls are assigned, in place of the extension number. Leave blank to show the number.</small>
+
         <label>Email</label>
         <input type="email" name="email" value="{{ user.email or '' }}"
                placeholder="name@columbiabasininsurance.com">

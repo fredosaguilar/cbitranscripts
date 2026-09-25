@@ -136,6 +136,7 @@ def on_startup():
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS queue_name VARCHAR",
         "ALTER TABLE transcript_responses ADD COLUMN IF NOT EXISTS original_language VARCHAR",
         "ALTER TABLE users_tokens ADD COLUMN IF NOT EXISTS email VARCHAR",
+        "ALTER TABLE users_tokens ADD COLUMN IF NOT EXISTS display_name VARCHAR",
         "ALTER TABLE users_tokens ADD COLUMN IF NOT EXISTS agency_zoom_employee_id VARCHAR",
         "ALTER TABLE users_tokens ADD COLUMN IF NOT EXISTS agency_zoom_employee_name VARCHAR",
         "CREATE TABLE IF NOT EXISTS reprocess_requests (recording_id VARCHAR PRIMARY KEY, start_time TIMESTAMP, requested_at TIMESTAMP)",
@@ -274,6 +275,14 @@ ASSIGNMENT_EMAIL_BLOCKLIST = {
 ASSIGNMENT_EMAILS_ENABLED = _env_flag("ASSIGNMENT_EMAILS_ENABLED")
 # Optional startup seeding: "101:henry@example.com,102:fred@example.com"
 EXTENSION_EMAIL_MAP = os.getenv("EXTENSION_EMAIL_MAP", "")
+
+# Who each extension belongs to, for the screen. Only ever fills a name that is
+# blank, so a name corrected on the dashboard is not overwritten on the next
+# deploy; edit it there, or set this, and either way it sticks.
+EXTENSION_NAME_MAP = os.getenv(
+    "EXTENSION_NAME_MAP",
+    "101:Henry Hernandez,102:Alfredo Aguilar,103:Jesus Quintero",
+)
 
 # Follow-up tasks reach Agency Zoom only when an agent adds them, so nothing is
 # pushed into the CRM without a person deciding it belongs there.
@@ -929,6 +938,89 @@ def _send_assignment_email(transcript, user_email: str):
     )
 
 
+def _seed_extension_names():
+    """Fill in blank agent names from EXTENSION_NAME_MAP.
+
+    Unlike the email seeding below this runs on every start, because it can
+    only ever fill a name that is empty. That makes it safe in the way
+    re-seeding emails was not: there is no deletion to undo, and a name edited
+    on the dashboard is left exactly as it was edited.
+    """
+    entries = [entry.strip() for entry in EXTENSION_NAME_MAP.split(",") if entry.strip()]
+    if not entries:
+        return
+
+    wanted = {}
+    for entry in entries:
+        if ":" not in entry:
+            logger.warning("Ignoring malformed EXTENSION_NAME_MAP entry: %s", entry)
+            continue
+        extension, name = (part.strip() for part in entry.split(":", 1))
+        if extension and name:
+            wanted[extension] = name
+    if not wanted:
+        return
+
+    db = SessionLocal()
+    try:
+        filled = 0
+        for user in db.query(models.UserToken).all():
+            name = wanted.get(_clean_string(user.user_id) or "")
+            if name and not _clean_string(user.display_name):
+                user.display_name = name
+                filled += 1
+        if filled:
+            db.commit()
+            logger.info("Named %s extension(s) from EXTENSION_NAME_MAP", filled)
+    except Exception:
+        logger.exception("Failed to seed extension names")
+    finally:
+        db.close()
+
+
+def agent_display_name(user) -> str:
+    """What to call this person, falling back to the number on their line."""
+    if user is None:
+        return ""
+    return (_clean_string(getattr(user, "display_name", None))
+            or _clean_string(getattr(user, "agency_zoom_employee_name", None))
+            or _clean_string(getattr(user, "user_id", None))
+            or "")
+
+
+def _agent_choices(db: Session) -> list[dict]:
+    """Every assignable agent, as the extension to store and the name to show."""
+    users = db.query(models.UserToken).order_by(models.UserToken.user_id).all()
+    seen, choices = set(), []
+    for user in users:
+        extension = _clean_string(user.user_id)
+        if not extension or extension in seen:
+            continue
+        seen.add(extension)
+        choices.append({"id": extension, "name": agent_display_name(user)})
+    return choices
+
+
+def _viewer_extension(db: Session, admin) -> Optional[str]:
+    """The extension of whoever is looking at the page, if it can be told.
+
+    The portal signs people in by email, and users_tokens is what ties an email
+    to the line their calls arrive on. Without that link there is no honest way
+    to say which calls are theirs -- so the page shows everything rather than
+    guessing, which is the right way round: seeing too much is a nuisance,
+    seeing nothing looks like the app is broken.
+    """
+    email = _clean_string(getattr(admin, "username", None))
+    if not email:
+        return None
+    user = (
+        db.query(models.UserToken)
+        .filter(func.lower(models.UserToken.email) == email.lower())
+        .first()
+    )
+    return _clean_string(user.user_id) if user else None
+
+
 def _seed_extension_emails():
     """Create user records from EXTENSION_EMAIL_MAP the first time the app runs.
 
@@ -1047,6 +1139,7 @@ def bootstrap_admin_account():
 @app.on_event("startup")
 def seed_extension_emails_on_startup():
     _seed_extension_emails()
+    _seed_extension_names()
 
 
 @app.on_event("startup")
@@ -1228,6 +1321,7 @@ def _agency_zoom_employee_name(employee_id: str) -> Optional[str]:
 def add_user(
     request: Request,
     user_id: str = Form(...),
+    display_name: str = Form(""),
     email: str = Form(""),
     user_token: str = Form(""),
     agency_zoom_employee_id: str = Form(""),
@@ -1241,6 +1335,7 @@ def add_user(
     new_user = models.UserToken(
         token_id=str(uuid.uuid4()),
         user_id=_clean_string(user_id),
+        display_name=_clean_string(display_name),
         email=_clean_string(email),
         token=_clean_string(user_token),
         agency_zoom_employee_id=chosen,
@@ -1287,6 +1382,7 @@ def update_user(
     token_id: str,
     request: Request,
     user_id: str = Form(""),
+    display_name: str = Form(""),
     email: str = Form(""),
     user_token: str = Form(""),
     agency_zoom_employee_id: str = Form(""),
@@ -1300,6 +1396,7 @@ def update_user(
         # Editable because a user saved with an email here matches no call at
         # all, and there was previously no way to correct it
         user.user_id = _clean_string(user_id) or user.user_id
+        user.display_name = _clean_string(display_name)
         user.email = _clean_string(email)
         user.token = _clean_string(user_token)
         # A typed id wins, so the mapping is editable even when the picker
@@ -1315,7 +1412,8 @@ def update_user(
 @app.get("/admin/transcripts")
 # Render the transcript list for admin review, with server-side filters and pagination.
 def list_transcripts(request: Request, db: Session = Depends(get_db)):
-    if not get_logged_in_admin(request, db):
+    admin = get_logged_in_admin(request, db)
+    if not admin:
         return RedirectResponse(url="/", status_code=303)
 
     params = request.query_params
@@ -1349,10 +1447,24 @@ def list_transcripts(request: Request, db: Session = Depends(get_db)):
         )
     if status_filter in {status.value for status in models.TranscriptStatus}:
         query = query.filter(models.TranscriptResponse.status == status_filter)
+    # An agent opening this page wants their own work, not the agency's. The
+    # default is theirs plus anything nobody owns yet -- because unassigned
+    # calls are precisely the ones that get missed when everybody assumes
+    # somebody else can see them. "All assignees" is one click away.
+    viewer_extension = _viewer_extension(db, admin)
+    unowned = or_(
+        models.TranscriptResponse.assigned_to.is_(None),
+        models.TranscriptResponse.assigned_to == "",
+    )
     if assigned_filter == "unassigned":
-        query = query.filter(models.TranscriptResponse.assigned_to.is_(None))
+        query = query.filter(unowned)
+    elif assigned_filter == "all":
+        pass
     elif assigned_filter:
         query = query.filter(models.TranscriptResponse.assigned_to == assigned_filter)
+    elif viewer_extension:
+        query = query.filter(
+            or_(models.TranscriptResponse.assigned_to == viewer_extension, unowned))
     parsed_from = _parse_iso_datetime(date_from)
     if parsed_from:
         query = query.filter(models.TranscriptResponse.start_time >= parsed_from)
@@ -1381,8 +1493,8 @@ def list_transcripts(request: Request, db: Session = Depends(get_db)):
     ) or 0
     pending_count = total_all - approved_count
 
-    users = db.query(models.UserToken.user_id).distinct().all()
-    user_ids = sorted([u.user_id for u in users])
+    # The extension is what gets stored; the name is what gets read
+    agents = _agent_choices(db)
 
     filter_params = {
         "q": q or "",
@@ -1399,7 +1511,9 @@ def list_transcripts(request: Request, db: Session = Depends(get_db)):
     return templates.TemplateResponse(request, "transcripts.html", {
         "request": request,
         "transcripts": transcripts,
-        "user_ids": user_ids,
+        "agents": agents,
+        "viewer_extension": viewer_extension,
+        "viewer_name": next((a["name"] for a in agents if a["id"] == viewer_extension), ""),
         "page": page,
         "pages": pages,
         "per_page": per_page,
