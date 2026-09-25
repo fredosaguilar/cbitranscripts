@@ -20,6 +20,11 @@
             Calls answered on this extension are assigned to this user automatically.
         </small>
 
+        <label>Display name</label>
+        <input type="text" name="display_name" placeholder="e.g. Henry Hernandez"
+               value="{{ request.query_params.get('display_name', '') }}">
+        <small style="display:block; margin:-6px 0 12px; opacity:0.8;">Shown wherever calls are assigned, in place of the extension number. Leave blank to show the number.</small>
+
         <label>Email</label>
         <input type="email" name="email" placeholder="name@columbiabasininsurance.com">
         <small style="display:block; margin:-6px 0 12px; opacity:0.8;">

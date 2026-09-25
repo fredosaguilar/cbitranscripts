@@ -115,10 +115,13 @@
         <option value="approved" {% if filters.status == 'approved' %}selected{% endif %}>Approved</option>
     </select>
     <select name="assigned_to">
-        <option value="">All assignees</option>
+        {# The default is the agent's own work plus anything unclaimed. Named
+           rather than blank, so it is obvious the list is filtered. #}
+        <option value="">{% if viewer_extension %}My calls and unassigned{% else %}All assignees{% endif %}</option>
+        <option value="all" {% if filters.assigned_to == 'all' %}selected{% endif %}>All assignees</option>
         <option value="unassigned" {% if filters.assigned_to == 'unassigned' %}selected{% endif %}>Unassigned</option>
-        {% for uid in user_ids %}
-        <option value="{{ uid }}" {% if filters.assigned_to == uid %}selected{% endif %}>{{ uid }}</option>
+        {% for agent in agents %}
+        <option value="{{ agent.id }}" {% if filters.assigned_to == agent.id %}selected{% endif %}>{{ agent.name }}</option>
         {% endfor %}
     </select>
     <input type="date" name="date_from" value="{{ filters.date_from }}" title="From date">
@@ -167,8 +170,8 @@
                 <td>
                     <select class="assign-select" onchange="assignTranscript('{{ item.id }}', this.value)">
                         <option value="">— unassigned —</option>
-                        {% for uid in user_ids %}
-                        <option value="{{ uid }}" {% if item.assigned_to == uid %}selected{% endif %}>{{ uid }}</option>
+                        {% for agent in agents %}
+                        <option value="{{ agent.id }}" {% if item.assigned_to == agent.id %}selected{% endif %}>{{ agent.name }}</option>
                         {% endfor %}
                     </select>
                 </td>

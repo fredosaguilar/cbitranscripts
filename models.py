@@ -14,6 +14,9 @@ class UserToken(Base):
     
     token_id = Column(String, primary_key=True, default=uuid.uuid4, unique=True, index=True)
     user_id = Column(String, nullable=False, index=True)  # store user id directly as string
+    # What to call this person on screen. An extension number identifies a line;
+    # it does not tell anybody whose calls these are.
+    display_name = Column(String, nullable=True)
     email = Column(String, nullable=True)
     token = Column(String, nullable=True)  # Pushover key; optional when only email is used
     agency_zoom_employee_id = Column(String, nullable=True)

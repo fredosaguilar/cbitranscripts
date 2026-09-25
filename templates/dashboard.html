@@ -155,7 +155,7 @@
     <div class="agent-list-mobile" aria-label="Agent mappings">
         {% for user in users_tokens %}
         <a href="/admin/edit-user/{{ user.token_id }}" class="mobile-agent-row">
-            <span><strong>{{ user.agency_zoom_employee_name or user.user_id }}</strong><small>{{ user.email or "Email not added" }}</small></span>
+            <span><strong>{{ user.display_name or user.agency_zoom_employee_name or user.user_id }}</strong><small>{{ user.email or "Email not added" }}</small></span>
             <span>Ext. {{ user.user_id }} <b aria-hidden="true">›</b></span>
         </a>
         {% endfor %}
@@ -166,7 +166,9 @@
             <tbody>
                 {% for user in users_tokens %}
                 <tr>
-                    <td><strong>{{ user.user_id }}</strong>{% if "@" in (user.user_id or "") %}<small class="mapping-error">Not a valid extension</small>{% endif %}</td>
+                    <td><strong>{{ user.display_name or user.user_id }}</strong>
+                        {% if user.display_name %}<small>ext. {{ user.user_id }}</small>{% endif %}
+                        {% if "@" in (user.user_id or "") %}<small class="mapping-error">Not a valid extension</small>{% endif %}</td>
                     <td>{{ user.email or "Not added" }}</td>
                     <td>{{ user.agency_zoom_employee_name or user.agency_zoom_employee_id or "Not mapped" }}</td>
                     <td>{% if user.email %}Email + task{% else %}Task only{% endif %}</td>
