@@ -152,7 +152,7 @@
                 <th>Handled By</th>
                 <th>Client Name</th>
                 <th>Client Number</th>
-                <th>Agency Zoom Task IDs</th>
+                <th>Call Time</th>
                 <th>Status</th>
                 <th>View Details</th>
                 <th>Delete</th>
@@ -195,7 +195,7 @@
                     {% endif %}
                 </td>
                 <td>{{ item.client_number or "-" }}</td>
-                <td>{{ (item.agency_zoom_task_ids or "-").replace('\n', ', ') }}</td>
+                <td class="call-time">{{ item.start_time | call_time }}</td>
 
                 <td>
                     <span class="status {{ item.status.value }}">{{ item.status.value }}</span>

@@ -737,6 +737,34 @@ app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), na
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 
+def format_call_time(value) -> str:
+    """A call's time as the agency would say it: their date, their clock.
+
+    Call times are stored as naive UTC, which is right for comparing and
+    ordering them and wrong for reading. Shown raw, a mid-morning call reads as
+    an evening one -- so the conversion happens here rather than being left to
+    whoever is looking at the page to do in their head.
+    """
+    if not value:
+        return "-"
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+    moment = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        moment = moment.astimezone(ZoneInfo(BUSINESS_TZ))
+    except Exception:
+        # An unknown BUSINESS_TZ should cost the reader the local time, not the
+        # whole page
+        logger.warning("Unknown BUSINESS_TZ %s; showing the call time in UTC", BUSINESS_TZ)
+    return moment.strftime("%b %d, %Y · %I:%M %p").replace(" 0", " ")
+
+
+templates.env.filters["call_time"] = format_call_time
+
+
 # Provide a database session for each request lifecycle.
 def get_db():
     db = SessionLocal()

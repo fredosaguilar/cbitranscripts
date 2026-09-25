@@ -168,3 +168,12 @@
         min-width: 960px;
     }
 }
+
+/* A date and a time are one fact, so they break as one or not at all. The
+   selector matches the table's own cell rule, which sets word-break as well
+   as white-space -- a bare .call-time loses to it and the time still wraps. */
+.table-container td.call-time {
+    white-space: nowrap;
+    overflow-wrap: normal;
+    word-break: normal;
+}
