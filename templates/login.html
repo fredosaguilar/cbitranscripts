@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Login</title>
+    <title>Call Transcripts — Sign In</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
@@ -12,9 +12,14 @@
 </head>
 <body>
     <div class="login-container surface">
-        <div class="login-badge">Admin Portal</div>
+        <div class="login-badge">Call Transcripts</div>
         <h2>Welcome back</h2>
-        <p class="login-subtitle">Sign in to manage tokens and transcripts.</p>
+        <p class="login-subtitle">Use your E&O Forms email and password for both portals.</p>
+        <p><a class="shared-login" href="{{ portal_base_url }}/transcripts">Sign in with Forms Portal</a></p>
+        <p class="login-subtitle">After signing in, select Call Transcripts if the forms page opens. For a password reset, contact your agency admin.</p>
+        <details {% if error %}open{% endif %}>
+        <summary>Existing transcript administrator login</summary>
+        <p class="login-subtitle">For existing standalone admin accounts only. Shared agent accounts use the button above.</p>
         <form action="/admin/login" method="post">
             <label for="username">Username</label>
             <input type="text" name="username" id="username" placeholder="Enter username" required>
@@ -27,6 +32,7 @@
         {% if error %}
         <p class="error">{{ error }}</p>
         {% endif %}
+        </details>
     </div>
 </body>
 </html>
