@@ -1002,6 +1002,28 @@ def resolve_transcript_agency_zoom_match(transcript: Any, jwt_token: Optional[st
     return None
 
 
+def _format_note_call_time(value: Any) -> Optional[str]:
+    """A call's start time as the agency reads it, e.g. "Wed, Oct 8, 2026 at 10:42 AM PDT".
+
+    Call times are stored as naive UTC; shown raw, a morning call would read
+    as an afternoon one on the customer's file.
+    """
+    if not value:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    moment = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    moment = moment.astimezone(_business_tz())
+    hour = moment.strftime("%I").lstrip("0")
+    return (
+        f"{moment.strftime('%a, %b')} {moment.day}, {moment.year} "
+        f"at {hour}:{moment.strftime('%M %p %Z')}"
+    )
+
+
 # Create an Agency Zoom customer note using the transcript CRM note.
 def create_agency_zoom_customer_note_for_transcript(
     transcript: Any,
@@ -1030,8 +1052,16 @@ def create_agency_zoom_customer_note_for_transcript(
     # caller, and a note on a customer file that names the wrong person as the
     # client is worse than one that names nobody.
     client = _clean_string(match.get("name"))
+    header = []
     if client and not note.lower().startswith("client:"):
-        note = f"Client: {client}\n\n{note}"
+        header.append(f"Client: {client}")
+    # When the call happened, in the agency's own time, so a note read weeks
+    # later says when the conversation took place rather than when it posted.
+    call_time = _format_note_call_time(getattr(transcript, "start_time", None))
+    if call_time and not re.search(r"^call:", note, re.IGNORECASE | re.MULTILINE):
+        header.append(f"Call: {call_time}")
+    if header:
+        note = "\n".join(header) + f"\n\n{note}"
 
     # The API posts notes as the integration user, so the agent is named in the
     # note itself and passed as an author id where the API accepts one. Between
