@@ -17,7 +17,9 @@ import hashlib
 import logging
 import os
 import re
+from datetime import datetime, timezone
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
@@ -61,6 +63,8 @@ LANGUAGE_NAMES = {
 CLIENT_EMAIL_FROM = (os.getenv("CLIENT_EMAIL_FROM") or "info@columbiabasininsurance.com").strip()
 
 SUBJECT = os.getenv("CLIENT_NOTE_EMAIL_SUBJECT", "Notes Added to Your File").strip()
+
+BUSINESS_TZ = os.getenv("BUSINESS_TZ", "America/Los_Angeles")
 
 AGENCY_PHONE = os.getenv("AGENCY_PHONE", "509-765-8839").strip()
 AGENCY_ADDRESS = os.getenv("AGENCY_ADDRESS", "21 D St SW, Suite A, Quincy, WA 98848").strip()
@@ -308,6 +312,31 @@ def unsupported_details(note: str | None, *transcripts: str | None,
     return found[:6]
 
 
+def format_call_time(value: Any, long: bool = False) -> Optional[str]:
+    """A call's start time as the agency reads it.
+
+    "Thu, Oct 8, 2026 at 10:42 AM PDT", or with long=True the spelled-out
+    "Thursday, October 8, 2026 at 10:42 AM PDT" a letter to a client wants.
+    Call times are stored as naive UTC; shown raw, a morning call would read as
+    an afternoon one.
+    """
+    if not value:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    moment = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        moment = moment.astimezone(ZoneInfo(BUSINESS_TZ))
+    except Exception:
+        moment = moment.astimezone(timezone.utc)
+    day = moment.strftime("%A, %B" if long else "%a, %b")
+    hour = moment.strftime("%I").lstrip("0")
+    return f"{day} {moment.day}, {moment.year} at {hour}:{moment.strftime('%M %p %Z')}"
+
+
 def has_note(transcript: Any) -> bool:
     return bool(_clean(getattr(transcript, "crm_note", None)))
 
@@ -509,7 +538,13 @@ def _message(transcript: Any, assigned_name: Optional[str],
     who = agent_name(transcript, assigned_name)
     # Without a name the sentence has to stand on its own rather than trail off
     # into "your conversation with ." or name the agency twice over.
-    conversation = f"your conversation with {who} and the notes" if who else "the notes"
+    conversation = f"your conversation with {who}" if who else "your call"
+    # When the call took place, so the client can tell which conversation this
+    # is and the email stands as a dated record on their side as well as ours
+    when = format_call_time(getattr(transcript, "start_time", None), long=True)
+    if when:
+        conversation = f"{conversation} on {when}"
+    conversation = f"{conversation} and the notes" if who or when else "the notes"
     return (
         f"Hello {greeting_name(transcript, staff_names)},\n\n"
         f"Here is a summary of {conversation} we added to your file for our record retention:\n\n"
