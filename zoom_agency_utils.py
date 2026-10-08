@@ -1002,28 +1002,6 @@ def resolve_transcript_agency_zoom_match(transcript: Any, jwt_token: Optional[st
     return None
 
 
-def _format_note_call_time(value: Any) -> Optional[str]:
-    """A call's start time as the agency reads it, e.g. "Wed, Oct 8, 2026 at 10:42 AM PDT".
-
-    Call times are stored as naive UTC; shown raw, a morning call would read
-    as an afternoon one on the customer's file.
-    """
-    if not value:
-        return None
-    if isinstance(value, str):
-        try:
-            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    moment = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-    moment = moment.astimezone(_business_tz())
-    hour = moment.strftime("%I").lstrip("0")
-    return (
-        f"{moment.strftime('%a, %b')} {moment.day}, {moment.year} "
-        f"at {hour}:{moment.strftime('%M %p %Z')}"
-    )
-
-
 # Create an Agency Zoom customer note using the transcript CRM note.
 def create_agency_zoom_customer_note_for_transcript(
     transcript: Any,
@@ -1036,7 +1014,7 @@ def create_agency_zoom_customer_note_for_transcript(
 
     # The analysis's stock disclaimers never reach the CRM, whatever is stored
     # here -- a customer file is for what happened on the call.
-    from client_note_email import strip_boilerplate
+    from client_note_email import format_call_time, strip_boilerplate
     note = strip_boilerplate(note) or note
 
     jwt_token = zomm_agency_login()
@@ -1057,7 +1035,7 @@ def create_agency_zoom_customer_note_for_transcript(
         header.append(f"Client: {client}")
     # When the call happened, in the agency's own time, so a note read weeks
     # later says when the conversation took place rather than when it posted.
-    call_time = _format_note_call_time(getattr(transcript, "start_time", None))
+    call_time = format_call_time(getattr(transcript, "start_time", None))
     if call_time and not re.search(r"^call:", note, re.IGNORECASE | re.MULTILINE):
         header.append(f"Call: {call_time}")
     if header:
