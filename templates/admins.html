@@ -14,8 +14,15 @@
 <div class="notice" style="background:#fde8e8; color:#9b1c1c; padding:10px 14px; border-radius:6px; margin:12px 0;">{{ error }}</div>
 {% endif %}
 {% if created %}
-<div class="notice success">Admin account created</div>
+<div class="notice success">
+    Created the login <b>{{ created }}</b>. They sign in on the login page with exactly that
+    username and the password you set. Capitalisation does not matter.
+</div>
 {% endif %}
+
+<p style="margin:0 0 12px; font-size:0.9rem; opacity:0.85;">
+    Everyone listed here can sign in and has full access: all calls, all users, and these logins.
+</p>
 
 <div class="table-container">
     <table>

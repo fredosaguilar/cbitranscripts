@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 
 import bcrypt
 from jose import jwt, JWTError
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from models import Admin
 
@@ -27,7 +28,18 @@ def verify_password(plain_password, hashed_password):
 
 
 def authenticate_admin(db: Session, username: str, password: str):
-    admin = db.query(Admin).filter(Admin.username == username).first()
+    # Matched without regard to case or surrounding spaces: an account created
+    # as "Henry" could not be used by typing "henry", and a username autofilled
+    # with a trailing space matched nothing at all.
+    cleaned = (username or "").strip()
+    if not cleaned:
+        return False
+
+    admin = (
+        db.query(Admin)
+        .filter(func.lower(Admin.username) == cleaned.lower())
+        .first()
+    )
     if not admin:
         return False
     if not verify_password(password, admin.password_hash):
