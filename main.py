@@ -2952,32 +2952,57 @@ def agency_zoom_status(id: str, request: Request, db: Session = Depends(get_db))
     return JSONResponse(content={"match": match})
 
 
-def _audio_file_response(path: str, content_type: str) -> FileResponse:
+def _audio_file_response(path: str, content_type: str,
+                         download_name: str | None = None) -> FileResponse:
     """Serve a recording so a player can jump around inside it.
 
     FileResponse answers a Range request with 206 and a Content-Range, which is
     what lets someone drag to the part of the call they care about instead of
-    listening from the top. Inline rather than an attachment, because this is
-    something to play, not something to download.
+    listening from the top. Inline for the player; an attachment when someone
+    asked to download it, because a phone has no "save audio as" -- served as
+    an attachment, iOS offers to keep it in Files and Android puts it in
+    Downloads.
     """
     return FileResponse(
         path,
         media_type=content_type,
-        filename=os.path.basename(path),
-        content_disposition_type="inline",
+        filename=download_name or os.path.basename(path),
+        content_disposition_type="attachment" if download_name else "inline",
     )
+
+
+def _audio_download_name(transcript, path: str) -> str:
+    """A file name that says whose call it was and when, e.g. call-Maria-Lopez-2026-10-08-1042.mp3."""
+    client = (_clean_string(transcript.agency_zoom_customer_name)
+              or _clean_string(transcript.client_name)
+              or _clean_string(transcript.from_name) or "")
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", client).strip("-")
+    stamp = ""
+    if transcript.start_time:
+        moment = transcript.start_time
+        moment = moment.replace(tzinfo=timezone.utc) if moment.tzinfo is None else moment
+        try:
+            moment = moment.astimezone(ZoneInfo(BUSINESS_TZ))
+        except Exception:
+            pass
+        stamp = moment.strftime("%Y-%m-%d-%H%M")
+    extension = os.path.splitext(path)[1] or ".mp3"
+    return "-".join(part for part in ("call", slug, stamp) if part) + extension
 
 
 @app.get("/api/transcripts/{id}/audio")
 # Stream the transcript audio file, adding RingCentral auth when configured.
-def stream_transcript_audio(id: str, request: Request, db: Session = Depends(get_db)):
+def stream_transcript_audio(id: str, request: Request, db: Session = Depends(get_db),
+                            download: bool = False):
     transcript = db.query(models.TranscriptResponse).filter(models.TranscriptResponse.id == id).first()
     if transcript is None:
         raise HTTPException(status_code=404, detail="Transcript not found")
 
     cached_audio_path = get_existing_local_audio_path(getattr(transcript, "local_audio_path", None))
     if cached_audio_path:
-        return _audio_file_response(cached_audio_path, guess_audio_content_type(cached_audio_path))
+        return _audio_file_response(
+            cached_audio_path, guess_audio_content_type(cached_audio_path),
+            _audio_download_name(transcript, cached_audio_path) if download else None)
 
     audio_url = resolve_transcript_audio_url(transcript)
     if not audio_url:
@@ -3012,7 +3037,9 @@ def stream_transcript_audio(id: str, request: Request, db: Session = Depends(get
     # seek against: dragging the scrub bar did nothing, because the response
     # never said which part of the recording it was. FileResponse answers 206
     # with the range it actually sent.
-    return _audio_file_response(cached_audio_path, content_type)
+    return _audio_file_response(
+        cached_audio_path, content_type,
+        _audio_download_name(transcript, cached_audio_path) if download else None)
 
 
 @app.post("/user/transcripts/{id}/update")

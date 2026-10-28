@@ -420,4 +420,7 @@ tbody tr:nth-child(even):hover { background: #f2f6fb; }
     .nav-right.open { display: grid; grid-template-columns: 1fr 1fr; }
     .nav-right a { padding: 10px 12px; text-align: center; }
     .stats-row { grid-template-columns: repeat(2, 1fr); }
+    /* Wide tables scroll sideways inside their card instead of off the page */
+    .table-container { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .search-bar input { max-width: none; }
 }
