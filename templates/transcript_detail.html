@@ -75,6 +75,7 @@
                    want. It fetches the header, not the recording. #}
                 <audio controls preload="metadata" class="audio-player"
                        src="/api/transcripts/{{ transcript.id }}/audio"></audio>
+                <a class="download-link" href="/api/transcripts/{{ transcript.id }}/audio?download=true" download>Download audio</a>
                 {% endif %}
             </aside>
         </div>

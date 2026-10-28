@@ -177,3 +177,109 @@
     overflow-wrap: normal;
     word-break: normal;
 }
+
+/* ── Phones ──────────────────────────────────────
+   Below tablet width the ten-column table cannot fit, and sideways scrolling
+   a 960px table on a phone hides most of each call. Each row becomes a card
+   instead, its cells labelled from data-label. Everything here is inside the
+   media query, so the desktop table is untouched. */
+@media (max-width: 768px) {
+    .page-header { flex-direction: column; align-items: stretch; }
+    .bulk-actions .danger-button { width: 100%; min-height: 44px; }
+
+    .search-bar { flex-direction: column; align-items: stretch !important; }
+    .search-bar input,
+    .search-bar select,
+    .search-bar button { width: 100%; max-width: none; min-width: 0 !important; min-height: 44px; }
+    .search-bar > a { text-align: center; padding: 6px 0; }
+
+    .table-container { padding: 0; overflow: visible; background: none; border: none; box-shadow: none; }
+    .table-container table { min-width: 0; table-layout: auto; }
+    .table-container thead { display: none; }
+    .table-container table,
+    .table-container tbody { display: block; }
+
+    .table-container tr.transcript-row {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 6px 12px;
+        margin-bottom: 12px;
+        padding: 14px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: var(--surface);
+        box-shadow: var(--shadow);
+    }
+
+    /* The label sits in the cell's left gutter, so whatever the cell holds --
+       a name and an extension, a link under a name -- flows as it does on desktop */
+    .table-container tr.transcript-row td {
+        display: block;
+        position: relative;
+        grid-column: 1 / -1;
+        padding: 4px 0 4px 108px;
+        min-height: 24px;
+        border: none;
+        font-size: 14px;
+    }
+    .table-container tr.transcript-row td[data-label]::before {
+        content: attr(data-label);
+        position: absolute;
+        left: 0;
+        top: 6px;
+        width: 100px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+    }
+
+    /* Checkbox and row number share the top line of the card */
+    .table-container tr.transcript-row td.cell-select,
+    .table-container tr.transcript-row td.cell-index {
+        display: flex;
+        align-items: center;
+        grid-column: auto;
+        width: auto;
+        padding: 0;
+    }
+    .table-container tr.transcript-row td.cell-index { color: var(--muted); font-size: 12px; }
+    .row-checkbox { width: 22px; height: 22px; }
+
+    .table-container tr.transcript-row td.client-name-cell { display: flex; align-items: flex-start; }
+
+    .assign-select { max-width: none; width: 100%; min-height: 40px; font-size: 14px; }
+
+    /* Actions become full-width tap targets along the bottom of the card */
+    .table-container tr.transcript-row td.cell-actions,
+    .table-container tr.transcript-row td.cell-delete { padding-left: 0; }
+    .table-container tr.transcript-row td.cell-actions {
+        display: flex;
+        gap: 8px;
+        padding-top: 10px;
+        border-top: 1px solid var(--border);
+    }
+    .table-container tr.transcript-row td.cell-actions br { display: none; }
+    .table-container tr.transcript-row td.cell-actions > a,
+    .table-container tr.transcript-row td.cell-actions > button {
+        display: flex;
+        flex: 1 1 0;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        margin: 0;
+        padding: 0 6px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        font-size: 13px;
+        font-weight: 600;
+        text-align: center;
+        text-decoration: none;
+        white-space: normal;
+    }
+    .table-container tr.transcript-row td.cell-delete button { width: 100%; min-height: 40px; }
+
+    .pagination { flex-wrap: wrap; text-align: center; }
+    .pagination a { padding: 10px 12px; }
+}

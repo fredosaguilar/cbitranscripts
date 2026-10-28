@@ -164,10 +164,10 @@
 
         <tbody>
             {% for item in transcripts %}
-            <tr>
-                <td><input type="checkbox" class="row-checkbox" value="{{ item.id }}" onchange="updateCount()"></td>
-                <td>{{ row_offset + loop.index }}</td>
-                <td>
+            <tr class="transcript-row">
+                <td class="cell-select"><input type="checkbox" class="row-checkbox" value="{{ item.id }}" onchange="updateCount()"></td>
+                <td class="cell-index">{{ row_offset + loop.index }}</td>
+                <td data-label="Assigned to">
                     <select class="assign-select" onchange="assignTranscript('{{ item.id }}', this.value)">
                         <option value="">— unassigned —</option>
                         {% for agent in agents %}
@@ -175,7 +175,7 @@
                         {% endfor %}
                     </select>
                 </td>
-                <td>
+                <td data-label="Handled by">
                     {% if item.extension_number %}
                     {{ item.extension_name or "Ext." }}<br><small>ext. {{ item.extension_number }}</small>
                     {% if item.queue_name %}<br><small>via {{ item.queue_name }}</small>{% endif %}
@@ -183,7 +183,7 @@
                     {{ item.owner_id }}
                     {% endif %}
                 </td>
-                <td class="client-name-cell" id="az-cell-{{ item.id }}"
+                <td class="client-name-cell" data-label="Client" id="az-cell-{{ item.id }}"
                     data-client-name="{{ item.client_name or '-' }}">
                     {% if item.agency_zoom_customer_name %}
                     <span class="az-linked" title="Linked Agency Zoom {{ item.agency_zoom_customer_type or 'customer' }}">
@@ -197,21 +197,25 @@
                             onclick="azOpen('{{ item.id }}', '{{ item.client_number or '' }}')">find in AZ</button>
                     {% endif %}
                 </td>
-                <td>{{ item.client_number or "-" }}</td>
-                <td class="call-time">{{ item.start_time | call_time }}</td>
+                <td data-label="Number">{{ item.client_number or "-" }}</td>
+                <td class="call-time" data-label="Call time">{{ item.start_time | call_time }}</td>
 
-                <td>
+                <td data-label="Status">
                     <span class="status {{ item.status.value }}">{{ item.status.value }}</span>
                 </td>
 
-                <td>
+                <td class="cell-actions">
                     <a href="/user/transcripts/{{ item.id }}" class="detail-link">View Details</a>
                     <br>
                     <button type="button" class="az-button"
                             onclick="emailPreview('{{ item.id }}')">Preview email</button>
+                    {% if item.file_link or item.recordingID %}
+                    <br>
+                    <a href="/api/transcripts/{{ item.id }}/audio?download=true" class="az-button download-link" download>Download audio</a>
+                    {% endif %}
                 </td>
 
-                <td>
+                <td class="cell-delete">
                     <form method="post" action="/admin/transcripts/{{ item.id }}/delete" onsubmit="return confirm('Delete this transcript?');">
                         <button type="submit" class="danger-button danger-button-small">Delete</button>
                     </form>

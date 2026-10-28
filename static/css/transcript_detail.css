@@ -555,6 +555,22 @@ button {
     justify-content: space-between;
 }
 
+/* Saves the recording as a file -- on a phone, the player's own menu has no
+   download, so this is the only way to keep a copy */
+.download-link {
+    display: inline-block;
+    margin-top: 10px;
+    border: 1px solid #c9d6d1;
+    border-radius: 8px;
+    color: #123f42;
+    font-size: 0.82rem;
+    font-weight: 600;
+    padding: 6px 12px;
+    text-decoration: none;
+    white-space: nowrap;
+}
+.download-link:hover { background: #edf4f1; }
+
 .transcript-reference details summary,
 .record-details summary {
     color: #123f42;
@@ -708,6 +724,10 @@ button {
     #reviewBack { min-width: 92px; }
     .recap-actions button { flex: 1 1 100%; min-height: 46px; }
     .toast { bottom: 84px; left: 14px; right: 14px; }
+    .download-link { display: flex; align-items: center; justify-content: center; min-height: 44px; }
+    .transcript-reference .transcription-box { max-height: 60vh; }
+    .maintenance-actions > form,
+    .maintenance-actions button { width: 100%; min-height: 46px; }
 }
 
 /* Continuous review: every section stays visible on desktop and mobile. */
