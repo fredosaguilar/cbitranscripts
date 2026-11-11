@@ -2013,7 +2013,10 @@ def _dispatch_follow_up_task(db: Session, transcript, key: str) -> str:
         transcript,
         task_text,
         due_date=entry.get("due_date"),
-        assignee_id=employee_id,
+        # Whoever the agent picked for this task, else the call's own agent.
+        # agent_name stays the call's agent: it is who handled the call, which
+        # the task records whoever ends up doing it.
+        assignee_id=_clean_string(entry.get("assignee_id")) or employee_id,
         agent_name=agent_name,
     )
     if not task_id:
@@ -2119,6 +2122,7 @@ def add_follow_up_task(
     request: Request,
     task: str = Form(...),
     due_date: str = Form(""),
+    assignee_id: str = Form(""),
     db: Session = Depends(get_db),
 ):
     """Queue a single task, creating it only when its due date arrives.
@@ -2144,12 +2148,14 @@ def add_follow_up_task(
     resolved_due_date = _scheduled_due_date(
         _clean_string(due_date) or getattr(transcript, "agency_zoom_due_date", None)
     )
+    previous = state.get(key) or {}
     state[key] = {
         "task": task_text,
         "due_date": resolved_due_date,
         "status": "scheduled",
         "scheduled_at": datetime.utcnow().isoformat(),
     }
+    _set_task_assignee(state[key], _clean_string(assignee_id) or previous.get("assignee_id"))
     _save_task_state(transcript, state)
     db.commit()
 
@@ -2158,6 +2164,7 @@ def add_follow_up_task(
     # background worker creating the same task at the same time.
     return JSONResponse(content={
         "status": "scheduled", "task_id": None, "key": key, "due_date": resolved_due_date,
+        "assignee_id": state[key].get("assignee_id"), "assignee_name": state[key].get("assignee_name"),
     })
 
 
@@ -2205,10 +2212,87 @@ def get_follow_up_state(id: str, request: Request, db: Session = Depends(get_db)
                 "task_id": state.get(_task_key(text), {}).get("task_id"),
                 "due_date": state.get(_task_key(text), {}).get("due_date"),
                 "status": state.get(_task_key(text), {}).get("status"),
+                "assignee_id": state.get(_task_key(text), {}).get("assignee_id"),
+                "assignee_name": state.get(_task_key(text), {}).get("assignee_name"),
             }
             for text in tasks
         ],
         "default_due_date": transcript.agency_zoom_due_date,
+    })
+
+
+# Agency Zoom users change rarely, and the list is asked for on every call page
+_task_assignee_cache: dict = {"at": 0.0, "employees": []}
+_TASK_ASSIGNEE_CACHE_SECONDS = 600
+
+
+def _task_assignee_choices() -> tuple[list, Optional[str]]:
+    """Every Agency Zoom user a task can be assigned to, and why not if none."""
+    if _task_assignee_cache["employees"] and time.time() - _task_assignee_cache["at"] < _TASK_ASSIGNEE_CACHE_SECONDS:
+        return _task_assignee_cache["employees"], None
+    employees, error = list_agency_zoom_employees_with_error()
+    if employees:
+        _task_assignee_cache.update(at=time.time(), employees=employees)
+    return employees, error
+
+
+def _set_task_assignee(entry: dict, assignee_id: Optional[str]) -> None:
+    """Record who a task goes to, by id and by name, or clear it for the call's agent."""
+    assignee_id = _clean_string(assignee_id)
+    if not assignee_id:
+        entry.pop("assignee_id", None)
+        entry.pop("assignee_name", None)
+        return
+    employees, _ = _task_assignee_choices()
+    match = next((e for e in employees if str(e.get("id")) == assignee_id), None)
+    if employees and match is None:
+        raise HTTPException(status_code=400, detail="That Agency Zoom user could not be found.")
+    entry["assignee_id"] = assignee_id
+    entry["assignee_name"] = (match or {}).get("name")
+
+
+@app.get("/api/transcripts/{id}/follow-up/assignees")
+# The Agency Zoom users a task can be assigned to, and the call's own agent.
+def get_follow_up_assignees(id: str, request: Request, db: Session = Depends(get_db)):
+    if not get_logged_in_admin(request, db):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    transcript = _load_transcript_or_404(db, id)
+    employees, error = _task_assignee_choices()
+    default_id, default_name = _assigned_agency_zoom_agent(db, transcript)
+    return JSONResponse(content={
+        "employees": [{"id": e["id"], "name": e["name"]} for e in employees],
+        "default_id": default_id,
+        "default_name": default_name,
+        "error": error,
+    })
+
+
+@app.post("/api/transcripts/{id}/follow-up/assignee")
+# Remember who a task goes to, before it is sent to Agency Zoom.
+def set_follow_up_assignee(
+    id: str,
+    request: Request,
+    task: str = Form(...),
+    assignee_id: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    if not get_logged_in_admin(request, db):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    transcript = _load_transcript_or_404(db, id)
+    task_text = _clean_string(task)
+    if not task_text:
+        raise HTTPException(status_code=400, detail="There is no task to assign.")
+
+    state = _task_state(transcript)
+    entry = state.setdefault(_task_key(task_text), {"task": task_text})
+    if entry.get("task_id"):
+        raise HTTPException(status_code=409, detail="That task is already in Agency Zoom; reassign it there.")
+    _set_task_assignee(entry, assignee_id)
+    _save_task_state(transcript, state)
+    db.commit()
+    return JSONResponse(content={
+        "status": "ok", "assignee_id": entry.get("assignee_id"), "assignee_name": entry.get("assignee_name"),
     })
 
 

@@ -320,10 +320,12 @@ button {
 }
 
 
-.task-due {
+.task-due,
+.task-assignee {
     font-size: 0.78rem;
     padding: 2px 6px;
 }
+.task-assignee { max-width: 220px; }
 
 .task-added {
     font-size: 0.75rem;
@@ -707,6 +709,7 @@ button {
     .follow-up-task-item { align-items: stretch; flex-direction: column; }
     .follow-up-task-item .task-actions { justify-content: flex-start; }
     .task-due { min-height: 42px; }
+    .task-assignee { min-height: 42px; flex: 1 1 100%; max-width: none; }
     .follow-up-add { align-items: stretch; flex-direction: column; }
     .follow-up-add input,
     .follow-up-add button { min-height: 46px; width: 100%; }
