@@ -309,6 +309,8 @@ EXTENSION_NAME_MAP = os.getenv(
 AGENCY_ZOOM_TASK_DISPATCH_INTERVAL_SECONDS = int(
     os.getenv("AGENCY_ZOOM_TASK_DISPATCH_INTERVAL_SECONDS", "60")
 )
+# The time of day, in BUSINESS_TZ, that a task due today is sent to Agency Zoom
+AGENCY_ZOOM_TASK_DISPATCH_TIME = os.getenv("AGENCY_ZOOM_TASK_DISPATCH_TIME", "10:00").strip()
 
 # A reprocess request holds the scheduler cursor until the call is transcribed
 # again; abandoned after this long so one bad call cannot hold it forever.
@@ -1953,13 +1955,28 @@ def _save_task_state(transcript, state: dict) -> None:
     transcript.follow_up_task_state = json.dumps(state)
 
 
-def _agency_today():
-    """The agency's calendar day, not the server's UTC date."""
+def _agency_now():
+    """The agency's local time, not the server's UTC clock."""
     try:
         timezone_info = ZoneInfo(BUSINESS_TZ)
     except Exception:
         timezone_info = timezone.utc
-    return datetime.now(timezone_info).date()
+    return datetime.now(timezone_info)
+
+
+def _agency_today():
+    """The agency's calendar day, not the server's UTC date."""
+    return _agency_now().date()
+
+
+def _task_dispatch_time():
+    """The time of day a scheduled task is sent to Agency Zoom, in agency time."""
+    try:
+        return datetime.strptime(AGENCY_ZOOM_TASK_DISPATCH_TIME, "%H:%M").time()
+    except ValueError:
+        logger.warning("Unusable AGENCY_ZOOM_TASK_DISPATCH_TIME %r; using 10:00",
+                       AGENCY_ZOOM_TASK_DISPATCH_TIME)
+        return datetime.strptime("10:00", "%H:%M").time()
 
 
 def _scheduled_due_date(value: Optional[str]) -> str:
@@ -2019,10 +2036,18 @@ def _dispatch_follow_up_task(db: Session, transcript, key: str) -> str:
 
 
 def _dispatch_due_agency_zoom_tasks_once() -> int:
-    """Send locally queued tasks whose Pacific-time due date has arrived."""
+    """Send locally queued tasks whose due date has arrived, from 10 AM Pacific.
+
+    A task due today waits for the dispatch time rather than going at midnight,
+    so it lands in the agent's Agency Zoom list during the working day. A task
+    whose date has already passed (the app was down, or the agent picked a past
+    date) goes at once.
+    """
     db = SessionLocal()
     delivered = 0
-    today = _agency_today()
+    now = _agency_now()
+    today = now.date()
+    dispatch_open = now.time() >= _task_dispatch_time()
     try:
         transcripts = (
             db.query(models.TranscriptResponse)
@@ -2045,7 +2070,7 @@ def _dispatch_due_agency_zoom_tasks_once() -> int:
                         key, transcript.id, entry.get("due_date"),
                     )
                     continue
-                if due <= today:
+                if due < today or (due == today and dispatch_open):
                     due_keys.append(key)
 
             for key in due_keys:

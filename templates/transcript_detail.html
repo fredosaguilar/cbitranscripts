@@ -136,7 +136,7 @@
             <p>Schedule useful automated follow-ups, edit or remove them, and add any manual tasks the call needs.</p>
         </div>
         <div class="step-card">
-        <p class="step-help">Nothing is sent to the task workflow until you schedule it. Future tasks stay here and are created on their actual due date.</p>
+        <p class="step-help">Nothing is sent to the task workflow until you schedule it. Tasks stay here and are created in Agency Zoom at 10 AM Pacific on their due date.</p>
         {# Numbered the same way the server numbers them, so a button always
            acts on the task it sits next to, whatever the text contains. #}
         {% set follow_up_tasks = (transcript.follow_up_task or "").splitlines()

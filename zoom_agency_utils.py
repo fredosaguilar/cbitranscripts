@@ -30,7 +30,7 @@ PASSWORD = (os.getenv("PASSWORD") or "").strip()
 REQUEST_TIMEOUT = int(os.getenv("AGENCY_ZOOM_TIMEOUT", "30"))
 # Follow-ups are worked in the morning, so a task with no date picked lands at
 # the start of the next business day rather than whenever the call happened.
-TASK_DUE_TIME = os.getenv("AGENCY_ZOOM_TASK_DUE_TIME", "09:00:00")
+TASK_DUE_TIME = os.getenv("AGENCY_ZOOM_TASK_DUE_TIME", "10:00:00")
 TASK_TITLE = os.getenv("AGENCY_ZOOM_TASK_TITLE", "Call follow-up")
 BUSINESS_TZ = os.getenv("BUSINESS_TZ", "America/Los_Angeles")
 TOKEN_REFRESH_BUFFER_SECONDS = int(os.getenv("AGENCY_ZOOM_TOKEN_REFRESH_BUFFER_SECONDS", "60"))
