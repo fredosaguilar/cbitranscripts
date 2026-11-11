@@ -847,7 +847,21 @@ def _task_due_dates(chosen: Any) -> tuple[str, str]:
     if not chosen_date:
         chosen_date = (datetime.now(_business_tz()) + timedelta(days=1)).strftime("%Y-%m-%d")
 
-    return chosen_date, f"{chosen_date} {time_of_day}"
+    # Agency Zoom reads taskDateTime as UTC: a 09:00 sent as-is showed in the
+    # agency's list at 1 AM Pacific. The time is meant in agency time, so it is
+    # converted before it goes.
+    local = None
+    for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            local = datetime.strptime(f"{chosen_date} {time_of_day}", pattern)
+            break
+        except ValueError:
+            continue
+    if local is None:
+        logger.warning("Unusable Agency Zoom task time %r; sending it unconverted", time_of_day)
+        return chosen_date, f"{chosen_date} {time_of_day}"
+    utc = local.replace(tzinfo=_business_tz()).astimezone(timezone.utc)
+    return chosen_date, utc.strftime("%Y-%m-%d %H:%M:%S")
 
 
 # Create one Agency Zoom task for each follow-up line on a transcript.
