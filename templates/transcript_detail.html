@@ -136,7 +136,7 @@
             <p>Schedule useful automated follow-ups, edit or remove them, and add any manual tasks the call needs.</p>
         </div>
         <div class="step-card">
-        <p class="step-help">Nothing is sent to the task workflow until you schedule it. Tasks stay here and are created in Agency Zoom at 10 AM Pacific on their due date.</p>
+        <p class="step-help">Nothing is sent to the task workflow until you schedule it. Tasks stay here and are created in Agency Zoom at 10 AM Pacific on their due date, assigned to whoever you pick beside each one.</p>
         {# Numbered the same way the server numbers them, so a button always
            acts on the task it sits next to, whatever the text contains. #}
         {% set follow_up_tasks = (transcript.follow_up_task or "").splitlines()
@@ -148,6 +148,10 @@
                 <span class="task-text">{{ task }}</span>
                 <div class="task-actions">
                     <input type="date" class="task-due" title="Due date for this task">
+                    <select class="task-assignee" title="Agency Zoom user this task is assigned to"
+                            aria-label="Assign to">
+                        <option value="">Call's agent</option>
+                    </select>
                     <button type="button" class="task-add">Schedule task</button>
                     <button type="button" class="task-edit">Edit</button>
                     <button type="button" class="task-delete">Delete</button>
@@ -556,6 +560,11 @@
     // A date set before the task is scheduled is remembered, so it is still
     // there if the page is reloaded before anyone schedules it.
     document.getElementById("followUpTaskList").addEventListener("change", (event) => {
+        const picker = event.target.closest(".task-assignee");
+        if (picker) {
+            saveTaskAssignee(picker.closest(".follow-up-task-item"), picker);
+            return;
+        }
         const field = event.target.closest(".task-due");
         const item = field && field.closest(".follow-up-task-item");
         if (!item) return;
@@ -573,11 +582,61 @@
             .catch(() => showToast("Could not save the due date for that task."));
     });
 
+    // Who each task goes to. Remembered as soon as it is picked, and still
+    // changeable after scheduling, until the task is actually sent.
+    let taskAssigneeDefault = "";
+
+    function assigneeLabel(picker) {
+        const option = picker && picker.selectedOptions[0];
+        return option ? option.textContent : "";
+    }
+
+    async function loadTaskAssignees() {
+        const pickers = [...document.querySelectorAll(".task-assignee")];
+        if (!pickers.length) return;
+        try {
+            const response = await fetch(`/api/transcripts/{{ transcript.id }}/follow-up/assignees`);
+            if (!response.ok) throw new Error();
+            const data = await response.json();
+            taskAssigneeDefault = data.default_id || "";
+            const first = data.default_name ? `Call's agent (${data.default_name})` : "Call's agent";
+            pickers.forEach(picker => {
+                const chosen = picker.dataset.chosen || picker.value;
+                picker.innerHTML = "";
+                picker.add(new Option(first, ""));
+                (data.employees || []).forEach(employee => {
+                    if (String(employee.id) === String(taskAssigneeDefault)) return;
+                    picker.add(new Option(employee.name, employee.id));
+                });
+                picker.value = chosen && chosen !== String(taskAssigneeDefault) ? chosen : "";
+            });
+            if (data.error && !(data.employees || []).length) {
+                showToast("Could not load Agency Zoom users; tasks go to the call's agent.");
+            }
+        } catch (error) { /* the picker still offers the call's agent */ }
+    }
+
+    function saveTaskAssignee(item, picker) {
+        const body = new FormData();
+        body.append("task", item.querySelector(".task-text").textContent.trim());
+        body.append("assignee_id", picker.value);
+        fetch(`/api/transcripts/{{ transcript.id }}/follow-up/assignee`, { method: "POST", body })
+            .then(async response => {
+                const data = await response.json().catch(() => null);
+                if (!response.ok) throw new Error((data && data.detail) || "");
+                picker.dataset.chosen = data.assignee_id || "";
+                showToast(`Task will be assigned to ${assigneeLabel(picker)}`);
+            })
+            .catch(error => showToast(error.message || "Could not save who that task is assigned to."));
+    }
+
     async function addTaskToAgencyZoom(item, task, button) {
         const due = item.querySelector(".task-due");
+        const assignee = item.querySelector(".task-assignee");
         const body = new FormData();
         body.append("task", task);
         body.append("due_date", due ? due.value : "");
+        body.append("assignee_id", assignee ? assignee.value : "");
 
         button.disabled = true;
         button.textContent = "Scheduling…";
@@ -593,7 +652,8 @@
             }
             if (data.status === "scheduled") {
                 markTaskScheduled(item, data.due_date);
-                showToast(`Task scheduled for ${data.due_date}. It will reach Agency Zoom that day.`);
+                showToast(`Task scheduled for ${data.due_date} and assigned to ${assigneeLabel(assignee)}. ` +
+                          `It will reach Agency Zoom at 10 AM that day.`);
             } else {
                 markTaskAdded(item, data.task_id);
                 showToast(`Task added to Agency Zoom (#${data.task_id})`);
@@ -624,6 +684,8 @@
         if (add) add.remove();
         const due = actions.querySelector(".task-due");
         if (due) due.disabled = true;
+        const assignee = actions.querySelector(".task-assignee");
+        if (assignee) assignee.disabled = true;
         if (!actions.querySelector(".task-added")) {
             const badge = document.createElement("span");
             badge.className = "task-added";
@@ -645,13 +707,22 @@
                 if (!item) return;
                 const due = item.querySelector(".task-due");
                 if (due && entry.due_date) due.value = entry.due_date;
+                const assignee = item.querySelector(".task-assignee");
+                if (assignee && entry.assignee_id) {
+                    assignee.dataset.chosen = entry.assignee_id;
+                    // The full list may not have arrived yet; show the name meanwhile
+                    if (![...assignee.options].some(o => o.value === String(entry.assignee_id))) {
+                        assignee.add(new Option(entry.assignee_name || `User ${entry.assignee_id}`, entry.assignee_id));
+                    }
+                    assignee.value = entry.assignee_id;
+                }
                 if (entry.task_id) markTaskAdded(item, entry.task_id);
                 else if (entry.status === "scheduled") markTaskScheduled(item, entry.due_date);
             });
         } catch (error) { /* the buttons still work without this */ }
     }
 
-    loadFollowUpState();
+    loadFollowUpState().then(loadTaskAssignees);
 
     async function sendFollowUpChange(body, failureMessage) {
         const id = "{{ transcript.id }}";
